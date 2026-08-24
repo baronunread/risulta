@@ -36,6 +36,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
       - name: Build ${{ matrix.artifact }}
         run: bun build --compile --minify --no-compile-autoload-dotenv --target=${{ matrix.target }} app.js --outfile=${{ matrix.artifact }}
       - name: Create checksum
