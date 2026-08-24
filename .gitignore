@@ -1,0 +1,9 @@
+risulta
+hutch
+*.db
+*.db-shm
+*.db-wal
+data/
+dist/
+node_modules/
+.DS_Store

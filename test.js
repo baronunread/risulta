@@ -1,0 +1,187 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import { createServer } from "node:net";
+import { RisultaDatabase } from "./lib/db.js";
+
+const dir = mkdtempSync(`${tmpdir()}/risulta-`);
+const port = await new Promise((resolve, reject) => {
+  const probe = createServer();
+  probe.once("error", reject);
+  probe.listen(0, "127.0.0.1", () => {
+    const selected = probe.address().port;
+    probe.close((error) => error ? reject(error) : resolve(selected));
+  });
+});
+const base = `http://127.0.0.1:${port}`;
+const adminEmail = "admin@example.com";
+const adminPassword = "correct horse battery staple";
+
+function start(extraEnv = {}) {
+  const executable = process.env.RISULTA_TEST_BINARY || process.execPath;
+  const child = spawn(executable, process.env.RISULTA_TEST_BINARY ? [] : ["app.js"], {
+    env: { ...process.env, PORT: String(port), DATA_DIR: dir, RISULTA_MAX_OPEN_SITES: "1", ...extraEnv },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let errors = "";
+  child.stderr.on("data", (chunk) => { errors += chunk; });
+  child.errors = () => errors;
+  return child;
+}
+
+async function ready(child) {
+  await Promise.race([
+    new Promise((resolve) => child.stdout.on("data", (chunk) => { if (String(chunk).includes("risulta on")) resolve(); })),
+    new Promise((_, reject) => child.once("exit", (code) => reject(new Error(`Risulta exited ${code}: ${child.errors()}`)))),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Risulta did not start")), 5000)),
+  ]);
+}
+
+async function stop(child) {
+  child.kill("SIGTERM");
+  const code = await new Promise((resolve) => child.once("exit", resolve));
+  assert.equal(code, 0, `clean shutdown: ${child.errors()}`);
+}
+
+const request = (path, options = {}) => fetch(`${base}${path}`, { redirect: "manual", ...options });
+const form = (values) => new URLSearchParams(values);
+const csrfFrom = (html) => {
+  const match = html.match(/name="csrf" value="([^"]+)"/);
+  assert.ok(match, "CSRF token rendered");
+  return match[1];
+};
+const cookieFrom = (response) => {
+  const value = response.headers.get("set-cookie");
+  assert.ok(value, "session cookie set");
+  return value.split(";")[0];
+};
+
+async function login(email, password) {
+  const response = await request("/login", {
+    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: base },
+    body: form({ email, password }),
+  });
+  assert.equal(response.status, 303);
+  return cookieFrom(response);
+}
+
+let app = start({ RISULTA_ADMIN_EMAIL: adminEmail, RISULTA_ADMIN_PASSWORD: adminPassword });
+await ready(app);
+
+assert.equal((await request("/healthz")).status, 200);
+const anonymous = await request("/");
+assert.equal(anonymous.status, 303);
+assert.equal(anonymous.headers.get("location"), "/login");
+const loginHtml = await (await request("/login")).text();
+assert.match(loginHtml, /Sign in to Risulta/);
+assert.match(loginHtml, /autocomplete="current-password"/);
+
+const badLogin = await request("/login", {
+  method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: base },
+  body: form({ email: adminEmail, password: "wrong password" }),
+});
+assert.equal(badLogin.status, 401);
+assert.match(await badLogin.text(), /Email or password is incorrect/);
+
+const adminCookie = await login(adminEmail, adminPassword);
+const emptySites = await request("/", { headers: { cookie: adminCookie } });
+assert.equal(emptySites.status, 200);
+assert.match(await emptySites.text(), /No websites yet/);
+
+const newSiteHtml = await (await request("/admin/sites/new", { headers: { cookie: adminCookie } })).text();
+const adminCsrf = csrfFrom(newSiteHtml);
+async function createSite(name, domain) {
+  const response = await request("/admin/sites", {
+    method: "POST",
+    headers: { cookie: adminCookie, origin: base, "content-type": "application/x-www-form-urlencoded" },
+    body: form({ csrf: adminCsrf, name, domain }),
+  });
+  assert.equal(response.status, 303);
+}
+await createSite("Alpha", "alpha.example");
+await createSite("Beta", "beta.example");
+
+const control = new DatabaseSync(`${dir}/control.db`, { readOnly: true });
+const sites = control.prepare("SELECT id, name, domain, public_key, db_name FROM sites ORDER BY id").all();
+assert.equal(sites.length, 2);
+const [alpha, beta] = sites;
+
+const trackerResponse = await request(`/js/${alpha.public_key}.js`);
+const tracker = await trackerResponse.text();
+assert.equal(trackerResponse.status, 200);
+assert.ok(Buffer.byteLength(tracker) < 1024, `tracker is ${Buffer.byteLength(tracker)} bytes`);
+assert.match(tracker, /pushState/);
+assert.match(tracker, new RegExp(alpha.public_key));
+const preflight = await request(`/api/event/${alpha.public_key}`, { method: "OPTIONS" });
+assert.equal(preflight.status, 204);
+assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+
+async function event(site, domain, path, referrer = "") {
+  return request(`/api/event/${site.public_key}`, {
+    method: "POST", headers: { "user-agent": "risulta-test" },
+    body: JSON.stringify({ name: "pageview", domain, path, referrer }),
+  });
+}
+assert.equal((await event(alpha, alpha.domain, "/alpha-only")).status, 202);
+assert.equal((await event(alpha, alpha.domain, "/docs", "https://search.example")).status, 202);
+assert.equal((await event(beta, beta.domain, "/beta-only")).status, 202);
+assert.equal((await event(alpha, beta.domain, "/spoofed")).status, 400);
+
+const alphaDashboard = await (await request(`/sites/${alpha.id}?period=30`, { headers: { cookie: adminCookie } })).text();
+assert.match(alphaDashboard, /alpha-only/);
+assert.doesNotMatch(alphaDashboard, /beta-only/);
+assert.match(alphaDashboard, /Last 30 days/);
+assert.match(alphaDashboard, /Skip to content/);
+assert.match(alphaDashboard, new RegExp(`/js/${alpha.public_key}\\.js`));
+const betaDashboard = await (await request(`/sites/${beta.id}`, { headers: { cookie: adminCookie } })).text();
+assert.match(betaDashboard, /beta-only/);
+assert.doesNotMatch(betaDashboard, /alpha-only/);
+
+const usersHtml = await (await request("/admin/users", { headers: { cookie: adminCookie } })).text();
+assert.match(usersHtml, /Create user/);
+const usersCsrf = csrfFrom(usersHtml);
+const viewerEmail = "viewer@example.com";
+const viewerPassword = "viewer password 123";
+const createViewer = await request("/admin/users", {
+  method: "POST",
+  headers: { cookie: adminCookie, origin: base, "content-type": "application/x-www-form-urlencoded" },
+  body: new URLSearchParams([["csrf", usersCsrf], ["email", viewerEmail], ["password", viewerPassword], ["role", "viewer"], ["site", String(alpha.id)]]),
+});
+assert.equal(createViewer.status, 303);
+
+const viewerCookie = await login(viewerEmail, viewerPassword);
+assert.equal((await request(`/sites/${alpha.id}`, { headers: { cookie: viewerCookie } })).status, 200);
+assert.equal((await request(`/sites/${beta.id}`, { headers: { cookie: viewerCookie } })).status, 403);
+assert.equal((await request("/admin/users", { headers: { cookie: viewerCookie } })).status, 403);
+const badCsrf = await request("/logout", {
+  method: "POST", headers: { cookie: viewerCookie, origin: base, "content-type": "application/x-www-form-urlencoded" },
+  body: form({ csrf: "incorrect" }),
+});
+assert.equal(badCsrf.status, 403);
+
+control.close();
+await stop(app);
+
+app = start();
+await ready(app);
+const persistentCookie = await login(adminEmail, adminPassword);
+const persistentDashboard = await (await request(`/sites/${alpha.id}`, { headers: { cookie: persistentCookie } })).text();
+assert.match(persistentDashboard, /alpha-only/, "events persist after restart");
+assert.equal((await request(`/js/${beta.public_key}.js`)).status, 200, "site tracker persists after restart");
+await stop(app);
+
+const legacyDir = mkdtempSync(`${tmpdir()}/risulta-legacy-`);
+const legacySqlite = new DatabaseSync(`${legacyDir}/hutch.db`);
+legacySqlite.exec(`CREATE TABLE events (ts INTEGER NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL, referrer TEXT, visitor TEXT, host TEXT); CREATE TABLE daily_salts (day TEXT PRIMARY KEY, value BLOB NOT NULL);`);
+legacySqlite.prepare("INSERT INTO events (ts, name, path, referrer, visitor, host) VALUES (?, 'pageview', '/legacy', '', 'legacy-visitor', 'legacy.example')").run(Math.floor(Date.now() / 1000));
+legacySqlite.close();
+const migrated = new RisultaDatabase(legacyDir);
+const migratedSite = migrated.control.prepare("SELECT * FROM sites").get();
+assert.equal(migratedSite.domain, "legacy.example");
+assert.equal(migrated.siteStore(migratedSite).analytics(0).summary.pageviews, 1);
+assert.equal(existsSync(`${legacyDir}/hutch.db`), false, "legacy database moved into sites directory");
+migrated.close();
+
+console.log("risulta multi-site self-check OK");
