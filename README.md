@@ -84,9 +84,9 @@ curl https://analytics.example.com/healthz
 
 When the first administrator exists, remove `RISULTA_ADMIN_PASSWORD` and
 `RISULTA_ADMIN_EMAIL` from `/etc/risulta/risulta.env`, then restart Risulta. Caddy
-terminates HTTPS and compresses the tracker. `RISULTA_TRUST_PROXY=1` lets Risulta
-use Caddy's forwarding headers for anonymous daily visitor counts; enable it
-only behind a trusted reverse proxy.
+terminates HTTPS and compresses the tracker. Set `RISULTA_TRUST_PROXY_CIDRS` to
+the IP ranges of proxies that connect directly to Risulta, so it can safely use
+their forwarding headers for anonymous daily visitor counts.
 
 ## Environment
 
@@ -96,7 +96,8 @@ only behind a trusted reverse proxy.
 | `HOST` | `0.0.0.0` | Listen address; use `127.0.0.1` behind Caddy |
 | `DATA_DIR` | `.` | Durable databases and site directory |
 | `RISULTA_BASE_URL` | request origin | Public HTTPS URL used in tracker snippets |
-| `RISULTA_TRUST_PROXY` | unset | Trust forwarding headers when set to `1` |
+| `RISULTA_TRUST_PROXY_CIDRS` | unset | Comma-separated CIDRs allowed to supply forwarding headers |
+| `RISULTA_TRUST_PROXY` | unset | Deprecated compatibility switch, trusts loopback proxies only |
 | `RISULTA_MAX_OPEN_SITES` | `32` | LRU limit for simultaneously open site databases |
 | `RISULTA_INGEST_RATE_LIMIT` | `240` | Maximum accepted analytics events per IP address per minute |
 | `RISULTA_ADMIN_EMAIL` | unset | First administrator email |
