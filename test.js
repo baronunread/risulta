@@ -129,12 +129,30 @@ assert.equal((await event(alpha, alpha.domain, "/docs", "https://search.example"
 assert.equal((await event(beta, beta.domain, "/beta-only")).status, 202);
 assert.equal((await event(alpha, beta.domain, "/spoofed")).status, 400);
 
+const sitesOverview = await (await request("/", { headers: { cookie: adminCookie } })).text();
+assert.match(sitesOverview, /Last 7 days/);
+assert.match(sitesOverview, /site-overview/);
+assert.match(sitesOverview, /<svg/);
+assert.doesNotMatch(sitesOverview, /blobatar\.dev/);
+
 const alphaDashboard = await (await request(`/sites/${alpha.id}?period=30`, { headers: { cookie: adminCookie } })).text();
 assert.match(alphaDashboard, /alpha-only/);
 assert.doesNotMatch(alphaDashboard, /beta-only/);
 assert.match(alphaDashboard, /Last 30 days/);
 assert.match(alphaDashboard, /Skip to content/);
-assert.match(alphaDashboard, new RegExp(`/js/${alpha.public_key}\\.js`));
+assert.doesNotMatch(alphaDashboard, /Install the tracker/);
+assert.match(alphaDashboard, /Website settings/);
+const alphaToday = await (await request(`/sites/${alpha.id}?period=1`, { headers: { cookie: adminCookie } })).text();
+assert.match(alphaToday, /Today/);
+assert.match(alphaToday, /alpha-only/);
+const alphaSettings = await request(`/sites/${alpha.id}/settings`, { headers: { cookie: adminCookie } });
+assert.equal(alphaSettings.status, 200);
+const alphaSettingsHtml = await alphaSettings.text();
+assert.match(alphaSettingsHtml, /Tracker code/);
+assert.match(alphaSettingsHtml, /Risulta analytics/);
+assert.match(alphaSettingsHtml, /Use minimal one-line snippet/);
+assert.match(alphaSettingsHtml, new RegExp(`/js/${alpha.public_key}\\.js`));
+assert.doesNotMatch(alphaSettings.headers.get("content-security-policy"), /blobatar\.dev/);
 const betaDashboard = await (await request(`/sites/${beta.id}`, { headers: { cookie: adminCookie } })).text();
 assert.match(betaDashboard, /beta-only/);
 assert.doesNotMatch(betaDashboard, /alpha-only/);

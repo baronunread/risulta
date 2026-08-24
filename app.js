@@ -10,7 +10,7 @@ import {
 } from "./lib/auth.js";
 import { RisultaDatabase } from "./lib/db.js";
 import { trackerFor } from "./lib/tracker.js";
-import { dashboardPage, loginPage, newSitePage, sitesPage, usersPage } from "./lib/views.js";
+import { dashboardPage, loginPage, newSitePage, settingsPage, sitesPage, usersPage } from "./lib/views.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -36,6 +36,12 @@ const cleanPath = (value) => {
   return path.startsWith("/") ? path.slice(0, 512) : `/${path}`.slice(0, 512);
 };
 const dayKey = (timestamp = Date.now()) => new Date(timestamp).toISOString().slice(0, 10);
+const periodStart = (days) => {
+  const date = new Date();
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() - (days - 1));
+  return Math.floor(date.getTime() / 1000);
+};
 
 function requestBase(req) {
   if (process.env.RISULTA_BASE_URL) return process.env.RISULTA_BASE_URL.replace(/\/$/, "");
@@ -164,7 +170,12 @@ const server = http.createServer(async (req, res) => {
       destroySession(database, req); redirect(res, "/login", { "set-cookie": expiredCookies() }); return;
     }
     if (req.method === "GET" && url.pathname === "/") {
-      html(res, 200, sitesPage({ user, csrf: user.csrf, sites: database.listSitesForUser(user) })); return;
+      const sites = database.listSitesForUser(user);
+      const requestedSite = Number(url.searchParams.get("site"));
+      if (Number.isInteger(requestedSite) && sites.some((site) => site.id === requestedSite)) { redirect(res, `/sites/${requestedSite}`); return; }
+      const overviewSince = periodStart(7);
+      const sitesWithOverview = sites.map((site) => ({ ...site, overview: database.siteStore(site).analytics(overviewSince).summary }));
+      html(res, 200, sitesPage({ user, csrf: user.csrf, sites: sitesWithOverview })); return;
     }
     if (req.method === "GET" && url.pathname === "/admin/sites/new") {
       if (!requireAdmin(user, res)) return;
@@ -203,14 +214,20 @@ const server = http.createServer(async (req, res) => {
       else redirect(res, "/admin/users");
       return;
     }
+    const settingsMatch = url.pathname.match(/^\/sites\/(\d+)\/settings$/);
+    if (req.method === "GET" && settingsMatch) {
+      const site = database.getSiteForUser(Number(settingsMatch[1]), user);
+      if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
+      html(res, 200, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl })); return;
+    }
     const siteMatch = url.pathname.match(/^\/sites\/(\d+)$/);
     if (req.method === "GET" && siteMatch) {
       const site = database.getSiteForUser(Number(siteMatch[1]), user);
       if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
       const requested = Number(url.searchParams.get("period"));
       const days = [1, 7, 30].includes(requested) ? requested : 7;
-      const since = Math.floor(Date.now() / 1000) - (days - 1) * 86400;
-      html(res, 200, dashboardPage({ user, csrf: user.csrf, site, analytics: database.siteStore(site).analytics(since), days, baseUrl })); return;
+      const since = periodStart(days);
+      html(res, 200, dashboardPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), analytics: database.siteStore(site).analytics(since), days, baseUrl })); return;
     }
     send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
   } catch (error) {

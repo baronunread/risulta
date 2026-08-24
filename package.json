@@ -7,12 +7,15 @@
   "scripts": {
     "dev": "bun app.js",
     "lint": "oxlint .",
-    "test": "bun test.js",
+    "test": "bun ./test.js",
     "bench": "bun benchmark.js",
     "build": "bun build --compile --minify --no-compile-autoload-dotenv app.js --outfile risulta"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.80.0",
     "oxlint": "1.80.0"
+  },
+  "dependencies": {
+    "blobatar": "^2.5.0"
   }
 }
