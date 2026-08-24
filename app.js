@@ -10,7 +10,7 @@ import {
 } from "./lib/auth.js";
 import { RisultaDatabase } from "./lib/db.js";
 import { trackerFor } from "./lib/tracker.js";
-import { dashboardPage, loginPage, newSitePage, settingsPage, sitesPage, usersPage } from "./lib/views.js";
+import { accountPage, dashboardPage, loginPage, newSitePage, settingsPage, sitesPage, usersPage } from "./lib/views.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -164,6 +164,23 @@ const server = http.createServer(async (req, res) => {
 
     const user = readSession(database, req);
     if (!user) { redirect(res, "/login"); return; }
+    if (req.method === "GET" && url.pathname === "/account") {
+      html(res, 200, accountPage({ user, csrf: user.csrf })); return;
+    }
+    if (req.method === "POST" && url.pathname === "/account/password") {
+      const form = await formBody(req);
+      if (!sameOrigin(req, baseUrl) || !csrfValid(user, form.get("csrf"))) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8" }); return; }
+      const currentPassword = String(form.get("currentPassword") || "");
+      const newPassword = String(form.get("newPassword") || "");
+      const confirmPassword = String(form.get("confirmPassword") || "");
+      let error = "";
+      if (!verifyPassword(currentPassword, database.findUserById(user.user_id).password_hash)) error = "Enter your current password correctly.";
+      else if (newPassword.length < 12) error = "Choose a new password with at least 12 characters.";
+      else if (newPassword !== confirmPassword) error = "Enter the same new password in both fields.";
+      if (error) { html(res, 400, accountPage({ user, csrf: user.csrf, error })); return; }
+      database.changePassword(user.user_id, hashPassword(newPassword), user.token_hash);
+      html(res, 200, accountPage({ user, csrf: user.csrf, success: "Password changed. Your other active sessions have been signed out." })); return;
+    }
     if (req.method === "POST" && url.pathname === "/logout") {
       const form = await formBody(req);
       if (!sameOrigin(req, baseUrl) || !csrfValid(user, form.get("csrf"))) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8" }); return; }

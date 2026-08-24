@@ -182,12 +182,34 @@ const badCsrf = await request("/logout", {
 });
 assert.equal(badCsrf.status, 403);
 
+const secondAdminCookie = await login(adminEmail, adminPassword);
+const account = await request("/account", { headers: { cookie: adminCookie } });
+assert.equal(account.status, 200);
+const accountHtml = await account.text();
+assert.match(accountHtml, /Change password/);
+assert.match(accountHtml, /signs out your other active sessions/);
+const changedPassword = "a brand new password 123";
+const changePassword = await request("/account/password", {
+  method: "POST",
+  headers: { cookie: adminCookie, origin: base, "content-type": "application/x-www-form-urlencoded" },
+  body: form({ csrf: csrfFrom(accountHtml), currentPassword: adminPassword, newPassword: changedPassword, confirmPassword: changedPassword }),
+});
+assert.equal(changePassword.status, 200);
+assert.match(await changePassword.text(), /other active sessions have been signed out/);
+assert.equal((await request("/", { headers: { cookie: adminCookie } })).status, 200, "current session remains active");
+const revokedSession = await request("/", { headers: { cookie: secondAdminCookie } });
+assert.equal(revokedSession.status, 303);
+assert.equal(revokedSession.headers.get("location"), "/login");
+await assert.rejects(() => login(adminEmail, adminPassword));
+const changedAdminCookie = await login(adminEmail, changedPassword);
+assert.equal((await request("/", { headers: { cookie: changedAdminCookie } })).status, 200);
+
 control.close();
 await stop(app);
 
 app = start();
 await ready(app);
-const persistentCookie = await login(adminEmail, adminPassword);
+const persistentCookie = await login(adminEmail, changedPassword);
 const persistentDashboard = await (await request(`/sites/${alpha.id}`, { headers: { cookie: persistentCookie } })).text();
 assert.match(persistentDashboard, /alpha-only/, "events persist after restart");
 assert.equal((await request(`/js/${beta.public_key}.js`)).status, 200, "site tracker persists after restart");
