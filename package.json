@@ -6,6 +6,7 @@
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "dev": "bun app.js",
+    "seed": "bun seed.js",
     "lint": "oxlint .",
     "test": "bun ./test.js",
     "bench": "bun benchmark.js",

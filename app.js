@@ -1,4 +1,4 @@
-// Risulta — privacy-friendly multi-site analytics in one Bun-compiled binary.
+// Risulta - privacy-friendly multi-site analytics in one Bun-compiled binary.
 // Contract: HTTP on $PORT, durable state in $DATA_DIR, clean SIGTERM.
 import http from "node:http";
 import { createHash } from "node:crypto";

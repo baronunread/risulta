@@ -16,14 +16,14 @@ Ground rules:
 - Scale SQLite with indexes, bounded raw retention, and incremental rollups,
   not an embedded OLAP engine such as chDB.
 
-## M0 — trackable proof of concept ✅
+## M0: trackable proof of concept ✅
 
 - [x] Cookie-free pageviews, referrers, SPA navigation, and daily anonymous
       visitor hashes.
 - [x] WAL-mode SQLite, dashboard periods, current visitors, top pages/sources.
 - [x] Accessible zero-JavaScript dashboard and a Bun-compiled executable.
 
-## M1 — authentication and multi-site isolation ✅
+## M1: authentication and multi-site isolation ✅
 
 This is the top production priority and must remain protected by end-to-end
 tests as the product evolves.
@@ -38,7 +38,7 @@ tests as the product evolves.
 - [x] Tests prove anonymous redirect, admin boundaries, two-site isolation,
       spoof rejection, viewer permissions, and restart persistence.
 
-## M2 — deployable on one VPS ✅
+## M2: deployable on one VPS ✅
 
 - [x] `/healthz`, clean SIGTERM, Caddy example, hardened systemd unit, and
       documented first-server installation.
@@ -49,7 +49,7 @@ tests as the product evolves.
 - [x] Bounded LRU cache for open site databases (32 by default).
 - [x] Mobile dashboard checked at 390 px; WCAG A/AA automated audit clean.
 
-## M3 — production durability (next)
+## M3: production durability (next)
 
 - [ ] SQLite online backup command and documented restore drill.
 - [ ] Schema migration framework with fixtures for every released version.
@@ -58,7 +58,7 @@ tests as the product evolves.
 - [ ] Structured request/error logs and basic operational counters.
 - [ ] Graceful overload behavior and explicit per-IP ingest limits.
 
-## M4 — sustained analytics performance
+## M4: sustained analytics performance
 
 - [ ] Benchmark a release build on representative VPS hardware: ingest RPS,
       p50/p95/p99 latency, dashboard latency, RSS, and disk growth.
