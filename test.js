@@ -191,6 +191,9 @@ assert.doesNotMatch(betaDashboard, /alpha-only/);
 
 const usersHtml = await (await request("/admin/users", { headers: { cookie: adminCookie } })).text();
 assert.match(usersHtml, /Create user/);
+assert.match(usersHtml, /Existing users/);
+assert.match(usersHtml, /user-record/);
+assert.match(usersHtml, /1 account/);
 const usersCsrf = csrfFrom(usersHtml);
 const viewerEmail = "viewer@example.com";
 const viewerPassword = "viewer password 123";
