@@ -26,7 +26,7 @@ const version = await new Promise((resolve, reject) => {
   child.stdout.on("data", (chunk) => { output += chunk; });
   child.once("exit", (code) => code === 0 ? resolve(output.trim()) : reject(new Error("version command failed")));
 });
-assert.equal(version, "dev");
+assert.equal(version, "0.1.0");
 
 function start(extraEnv = {}) {
   const executable = process.env.RISULTA_TEST_BINARY || process.execPath;
@@ -177,6 +177,10 @@ const alphaSettings = await request(`/sites/${alpha.id}/settings`, { headers: { 
 assert.equal(alphaSettings.status, 200);
 const alphaSettingsHtml = await alphaSettings.text();
 assert.match(alphaSettingsHtml, /Tracker code/);
+assert.match(alphaSettingsHtml, /favicon-light\.svg/);
+assert.match(alphaSettingsHtml, /favicon-dark\.svg/);
+assert.match(alphaSettingsHtml, /View source on GitHub/);
+assert.match(alphaSettingsHtml, /v0\.1\.0/);
 assert.match(alphaSettingsHtml, /Risulta analytics/);
 assert.match(alphaSettingsHtml, /Use minimal one-line snippet/);
 assert.match(alphaSettingsHtml, new RegExp(`/js/${alpha.public_key}\\.js`));

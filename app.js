@@ -11,6 +11,7 @@ import {
 } from "./lib/auth.js";
 import { RisultaDatabase } from "./lib/db.js";
 import { trackerFor } from "./lib/tracker.js";
+import { VERSION } from "./lib/version.js";
 import { accountPage, dashboardPage, loginPage, newSitePage, settingsPage, sitesPage, usersPage } from "./lib/views.js";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -18,7 +19,6 @@ const HOST = process.env.HOST || "0.0.0.0";
 const DATA_DIR = process.env.DATA_DIR || ".";
 const trustedProxyConfig = process.env.RISULTA_TRUST_PROXY_CIDRS
   || (process.env.RISULTA_TRUST_PROXY === "1" ? "127.0.0.1/32,::1/128" : "");
-const VERSION = "dev";
 if (process.argv[2] === "--version" || process.argv[2] === "version") {
   console.log(VERSION);
   process.exit(0);
@@ -195,11 +195,15 @@ const server = http.createServer(async (req, res) => {
   const trackerMatch = url.pathname.match(/^\/js\/([A-Za-z0-9_-]+)\.js$/);
   const eventMatch = url.pathname.match(/^\/api\/event\/([A-Za-z0-9_-]+)$/);
   try {
-    if (req.method === "GET" && url.pathname === "/favicon.svg") {
-      send(res, 200, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#171717"/><path fill="#fff" d="M8 22h3V15H8zm6 0h3V10h-3zm6 0h3V6h-3z"/></svg>', { "content-type": "image/svg+xml", "cache-control": "public, max-age=31536000, immutable" }); return;
+    if (req.method === "GET" && ["/favicon-light.svg", "/favicon-dark.svg"].includes(url.pathname)) {
+      const dark = url.pathname === "/favicon-dark.svg";
+      const background = dark ? "#000000" : "#ffffff";
+      const foreground = dark ? "#ededed" : "#171717";
+      const border = dark ? "#2e2e2e" : "#eaeaea";
+      send(res, 200, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="1" y="1" width="30" height="30" rx="8" fill="${background}" stroke="${border}" stroke-width="2"/><path fill="${foreground}" d="M8 23h3V16H8zm6 0h3V11h-3zm6 0h3V7h-3z"/></svg>`, { "content-type": "image/svg+xml", "cache-control": "public, max-age=31536000, immutable" }); return;
     }
     if (req.method === "GET" && url.pathname === "/site.webmanifest") {
-      send(res, 200, JSON.stringify({ name: "Risulta", short_name: "Risulta", icons: [{ src: "/favicon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }], theme_color: "#171717", background_color: "#ffffff", display: "standalone" }), { "content-type": "application/manifest+json", "cache-control": "public, max-age=86400" }); return;
+      send(res, 200, JSON.stringify({ name: "Risulta", short_name: "Risulta", icons: [{ src: "/favicon-light.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }], theme_color: "#171717", background_color: "#ffffff", display: "standalone" }), { "content-type": "application/manifest+json", "cache-control": "public, max-age=86400" }); return;
     }
     if (req.method === "GET" && url.pathname === "/ui.js") {
       send(res, 200, `document.addEventListener("DOMContentLoaded",()=>{const role=document.querySelector("#role"),assign=document.querySelector("#viewer-websites");const sync=()=>{if(!role||!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input").forEach(input=>input.disabled=!viewer)};role?.addEventListener("change",sync);sync();document.querySelectorAll("[data-copy-code]").forEach(button=>button.addEventListener("click",async()=>{const toggle=document.querySelector(".snippet-toggle"),snippet=document.querySelector(toggle?.checked?"#minimal-snippet":"#formatted-snippet"),status=document.querySelector("#copy-status");if(!snippet||!status)return;try{await navigator.clipboard.writeText(snippet.textContent);status.textContent="Code copied."}catch{status.textContent="Copy failed. Select the code and copy it manually."}}));const chart=document.querySelector(".chart"),guide=chart?.querySelector(".chart-guide"),tooltip=chart?.querySelector(".chart-tooltip"),points=[...(chart?.querySelectorAll(".chart-point")||[])];const activate=point=>{points.forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&tooltip&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false;tooltip.setAttribute("x",x);tooltip.textContent=point.dataset.value;tooltip.hidden=false}};chart?.addEventListener("pointermove",event=>{const box=chart.getBoundingClientRect(),x=(event.clientX-box.left)/box.width*960;activate(points.reduce((nearest,point)=>Math.abs(Number(point.getAttribute("cx"))-x)<Math.abs(Number(nearest.getAttribute("cx"))-x)?point:nearest,points[0]))});chart?.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart?.addEventListener("pointerleave",()=>{points.forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true;if(tooltip)tooltip.hidden=true});});`, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
