@@ -209,6 +209,8 @@ assert.match(usersHtml, /user-record/);
 assert.match(usersHtml, /1 account/);
 assert.match(usersHtml, /data-multi-select/);
 assert.match(usersHtml, /data-site-option/);
+assert.match(usersHtml, /data-single-select/);
+assert.match(usersHtml, /data-single-option/);
 const usersCsrf = csrfFrom(usersHtml);
 const viewerEmail = "viewer@example.com";
 const viewerPassword = "viewer password 123";
