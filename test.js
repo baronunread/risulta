@@ -90,6 +90,9 @@ let app = start({ RISULTA_ADMIN_EMAIL: adminEmail, RISULTA_ADMIN_PASSWORD: admin
 await ready(app);
 
 assert.equal((await request("/healthz")).status, 200);
+const metrics = await (await request("/metrics")).text();
+assert.match(metrics, /events_accepted_total/);
+assert.match(metrics, /open_site_databases/);
 const anonymous = await request("/");
 assert.equal(anonymous.status, 303);
 assert.equal(anonymous.headers.get("location"), "/login");

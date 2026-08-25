@@ -30,6 +30,13 @@ const INGEST_RATE_LIMIT = Number.isFinite(configuredIngestLimit) && configuredIn
 const INGEST_RATE_WINDOW = 60 * 1000;
 const MAX_INGEST_RATE_KEYS = 10_000;
 const ingestRates = new Map();
+const runtimeCounters = new Map([
+  ["events_accepted_total", 0], ["events_rejected_total", 0], ["auth_failures_total", 0],
+  ["database_errors_total", 0], ["rate_limits_total", 0],
+]);
+const logLevel = process.env.RISULTA_LOG_LEVEL || "info";
+const incrementCounter = (name) => runtimeCounters.set(name, (runtimeCounters.get(name) || 0) + 1);
+const operationalLog = (record) => { if (logLevel !== "silent") console.error(JSON.stringify({ time: new Date().toISOString(), ...record })); };
 let nextIngestRateSweep = 0;
 mkdirSync(DATA_DIR, { recursive: true });
 const database = new RisultaDatabase(DATA_DIR);
@@ -191,10 +198,13 @@ function requireAdmin(user, res) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const startedAt = performance.now();
   const baseUrl = requestBase(req);
   const url = new URL(req.url || "/", baseUrl);
   const trackerMatch = url.pathname.match(/^\/js\/([A-Za-z0-9_-]+)\.js$/);
   const eventMatch = url.pathname.match(/^\/api\/event\/([A-Za-z0-9_-]+)$/);
+  const safeRoute = trackerMatch ? "/js/:key.js" : eventMatch ? "/api/event/:key" : url.pathname;
+  res.once("finish", () => operationalLog({ type: "request", method: req.method, route: safeRoute, status: res.statusCode, duration_ms: Math.round(performance.now() - startedAt) }));
   try {
     if (req.method === "GET" && url.pathname === "/avatar.svg") {
       const seed = createHash("sha256").update(String(url.searchParams.get("name") || "Risulta").slice(0, 80)).digest("hex");
@@ -219,6 +229,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/healthz") {
       send(res, 200, "ok\n", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return;
     }
+    if (req.method === "GET" && url.pathname === "/metrics") {
+      const metricsRemote = cleanIp(req.socket.remoteAddress);
+      if (metricsRemote !== "127.0.0.1" && metricsRemote !== "::1" && !trustedProxy(metricsRemote)) { send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8" }); return; }
+      const metrics = [...runtimeCounters.entries()].map(([name, value]) => `${name} ${value}`).concat(`open_site_databases ${database.openSiteCount()}`, `rate_limit_keys ${ingestRates.size}`).join("\n");
+      send(res, 200, `${metrics}\n`, { "content-type": "text/plain; version=0.0.4", "cache-control": "no-store" }); return;
+    }
     if (req.method === "OPTIONS" && eventMatch) {
       send(res, 204, "", { "access-control-allow-origin": "*", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "86400" }); return;
     }
@@ -236,6 +252,7 @@ const server = http.createServer(async (req, res) => {
         if (event.name !== "pageview" || cleanDomain(event.domain) !== cleanDomain(site.domain)) throw new Error("invalid event");
         const rate = ingestAllowed(clientIp(req));
         if (!rate.allowed) {
+          incrementCounter("rate_limits_total");
           send(res, 429, "Too many analytics events. Try again shortly.", {
             "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*", "cache-control": "no-store", "retry-after": String(rate.retryAfter),
           });
@@ -244,8 +261,10 @@ const server = http.createServer(async (req, res) => {
         const now = Date.now();
         const store = database.siteStore(site);
         store.insert({ ts: Math.floor(now / 1000), name: "pageview", path: cleanPath(event.path), referrer: String(event.referrer || "").slice(0, 512), visitor: visitorHash(store, req, now) });
+        incrementCounter("events_accepted_total");
         send(res, 202, "", { "access-control-allow-origin": "*", "cache-control": "no-store" });
       } catch {
+        incrementCounter("events_rejected_total");
         send(res, 400, "Invalid analytics event", { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*", "cache-control": "no-store" });
       }
       return;
@@ -263,6 +282,7 @@ const server = http.createServer(async (req, res) => {
       const rateKey = `${clientIp(req)}:${email}`;
       const user = database.findUserByEmail(email);
       if (!loginAllowed(rateKey) || !user || !verifyPassword(password, user.password_hash)) {
+        incrementCounter("auth_failures_total");
         recordLoginFailure(rateKey);
         html(res, 401, loginPage({ error: "Email or password is incorrect.", hasUsers: database.userCount() > 0, email })); return;
       }
@@ -386,7 +406,8 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
   } catch (error) {
-    console.error(error);
+    incrementCounter("database_errors_total");
+    operationalLog({ type: "error", route: safeRoute, error: error instanceof Error ? error.name : "unknown" });
     if (!res.headersSent) send(res, 500, "Internal server error", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
     else res.end();
   }
