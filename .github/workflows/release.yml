@@ -39,8 +39,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Build ${{ matrix.artifact }}
         run: |
-          sed "s/const VERSION = \"dev\";/const VERSION = \"${GITHUB_REF_NAME}\";/" app.js > release-app.js
-          bun build --compile --minify --no-compile-autoload-dotenv --target=${{ matrix.target }} release-app.js --outfile=${{ matrix.artifact }}
+          RISULTA_VERSION="${GITHUB_REF_NAME}" RISULTA_BUILD_TARGET="${{ matrix.target }}" RISULTA_BUILD_OUTFILE="${{ matrix.artifact }}" bun run build
       - name: Create checksum
         run: sha256sum ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
       - uses: actions/attest-build-provenance@v2

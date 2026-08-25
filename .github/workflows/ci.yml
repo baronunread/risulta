@@ -19,5 +19,5 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun test.js
-      - run: bun build --compile --minify --no-compile-autoload-dotenv app.js --outfile risulta
+      - run: bun run build
       - run: RISULTA_TEST_BINARY=./risulta bun test.js
