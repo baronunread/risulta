@@ -16,6 +16,11 @@ const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
 const DATA_DIR = process.env.DATA_DIR || ".";
 const TRUST_PROXY = process.env.RISULTA_TRUST_PROXY === "1";
+const VERSION = "dev";
+if (process.argv[2] === "--version" || process.argv[2] === "version") {
+  console.log(VERSION);
+  process.exit(0);
+}
 mkdirSync(DATA_DIR, { recursive: true });
 const database = new RisultaDatabase(DATA_DIR);
 

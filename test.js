@@ -19,6 +19,14 @@ const base = `http://127.0.0.1:${port}`;
 const adminEmail = "admin@example.com";
 const adminPassword = "correct horse battery staple";
 
+const version = await new Promise((resolve, reject) => {
+  const child = spawn(process.execPath, ["app.js", "--version"]);
+  let output = "";
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.once("exit", (code) => code === 0 ? resolve(output.trim()) : reject(new Error("version command failed")));
+});
+assert.equal(version, "dev");
+
 function start(extraEnv = {}) {
   const executable = process.env.RISULTA_TEST_BINARY || process.execPath;
   const child = spawn(executable, process.env.RISULTA_TEST_BINARY ? [] : ["app.js"], {
