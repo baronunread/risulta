@@ -206,13 +206,27 @@ const badCsrf = await request("/logout", {
   body: form({ csrf: "incorrect" }),
 });
 assert.equal(badCsrf.status, 403);
+const viewerAccount = await request("/account", { headers: { cookie: viewerCookie } });
+const deleteViewer = await request("/account/delete", {
+  method: "POST", headers: { cookie: viewerCookie, origin: base, "content-type": "application/x-www-form-urlencoded" },
+  body: form({ csrf: csrfFrom(await viewerAccount.text()), confirmation: "DELETE" }),
+});
+assert.equal(deleteViewer.status, 303);
+assert.equal((await request("/", { headers: { cookie: viewerCookie } })).status, 303, "deleted account session is invalid");
 
 const secondAdminCookie = await login(adminEmail, adminPassword);
 const account = await request("/account", { headers: { cookie: adminCookie } });
 assert.equal(account.status, 200);
 const accountHtml = await account.text();
 assert.match(accountHtml, /Change password/);
+assert.match(accountHtml, /Display name/);
 assert.match(accountHtml, /signs out your other active sessions/);
+const updateProfile = await request("/account/profile", {
+  method: "POST", headers: { cookie: adminCookie, origin: base, "content-type": "application/x-www-form-urlencoded" },
+  body: form({ csrf: csrfFrom(accountHtml), displayName: "Admin User", email: adminEmail, currentPassword: adminPassword }),
+});
+assert.equal(updateProfile.status, 200);
+assert.match(await updateProfile.text(), /Profile updated/);
 const changedPassword = "a brand new password 123";
 const changePassword = await request("/account/password", {
   method: "POST",
@@ -254,7 +268,7 @@ assert.ok(existsSync(`${snapshot}/control.db`));
 assert.ok(existsSync(`${snapshot}/sites/${alpha.db_name}`));
 const restored = new RisultaDatabase(snapshot);
 assert.equal(restored.siteStore(restored.getSiteByKey(alpha.public_key)).analytics(0).summary.pageviews, 2, "backup contains analytics events");
-assert.equal(Number(restored.control.prepare("PRAGMA user_version").get().user_version), 2, "control schema version is recorded");
+assert.equal(Number(restored.control.prepare("PRAGMA user_version").get().user_version), 3, "control schema version is recorded");
 restored.close();
 
 const legacyDir = mkdtempSync(`${tmpdir()}/risulta-legacy-`);
@@ -267,7 +281,7 @@ const migratedSite = migrated.control.prepare("SELECT * FROM sites").get();
 assert.equal(migratedSite.domain, "legacy.example");
 assert.equal(migrated.siteStore(migratedSite).analytics(0).summary.pageviews, 1);
 assert.equal(existsSync(`${legacyDir}/hutch.db`), false, "legacy database moved into sites directory");
-assert.equal(Number(migrated.control.prepare("PRAGMA user_version").get().user_version), 2, "legacy control database is migrated");
+assert.equal(Number(migrated.control.prepare("PRAGMA user_version").get().user_version), 3, "legacy control database is migrated");
 assert.equal(Number(migrated.siteStore(migratedSite).db.prepare("PRAGMA user_version").get().user_version), 3, "legacy site database is migrated");
 migrated.close();
 

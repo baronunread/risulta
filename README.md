@@ -11,6 +11,7 @@ Requires [Bun](https://bun.sh/).
 
 ```sh
 RISULTA_ADMIN_EMAIL=you@example.com \
+RISULTA_ADMIN_DISPLAY_NAME='Your name' \
 RISULTA_ADMIN_PASSWORD='use-a-long-unique-password' \
 bun run dev
 ```
@@ -32,6 +33,7 @@ The compiled executable needs no Bun installation at runtime:
 ```sh
 PORT=3000 DATA_DIR=./data \
 RISULTA_ADMIN_EMAIL=you@example.com \
+RISULTA_ADMIN_DISPLAY_NAME='Your name' \
 RISULTA_ADMIN_PASSWORD='use-a-long-unique-password' \
 ./risulta
 ```
@@ -108,6 +110,7 @@ their forwarding headers for anonymous daily visitor counts.
 | `RISULTA_MAX_OPEN_SITES` | `32` | LRU limit for simultaneously open site databases |
 | `RISULTA_INGEST_RATE_LIMIT` | `240` | Maximum accepted analytics events per IP address per minute |
 | `RISULTA_ADMIN_EMAIL` | unset | First administrator email |
+| `RISULTA_ADMIN_DISPLAY_NAME` | unset | First administrator display name |
 | `RISULTA_ADMIN_PASSWORD` | unset | First administrator password (12+ characters) |
 | `RISULTA_SITE_DOMAIN` | `legacy.local` | Domain assigned when migrating an old one-site database |
 

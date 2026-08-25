@@ -54,8 +54,9 @@ if (process.argv[2] === "backup") {
 
 const adminEmail = normalizeEmail(process.env.RISULTA_ADMIN_EMAIL);
 const adminPassword = process.env.RISULTA_ADMIN_PASSWORD || "";
+const adminDisplayName = String(process.env.RISULTA_ADMIN_DISPLAY_NAME || "").trim().slice(0, 80);
 if (!database.userCount() && adminEmail && adminPassword.length >= 12) {
-  database.createUser(adminEmail, hashPassword(adminPassword), "admin");
+  database.createUser(adminEmail, hashPassword(adminPassword), "admin", [], adminDisplayName);
   console.log(`created administrator ${adminEmail}`);
 } else if (!database.userCount() && (adminEmail || adminPassword)) {
   console.error("administrator bootstrap skipped: set a valid email and a password of at least 12 characters");
@@ -276,6 +277,29 @@ const server = http.createServer(async (req, res) => {
       if (error) { html(res, 400, accountPage({ user, csrf: user.csrf, error })); return; }
       database.changePassword(user.user_id, hashPassword(newPassword), user.token_hash);
       html(res, 200, accountPage({ user, csrf: user.csrf, success: "Password changed. Your other active sessions have been signed out." })); return;
+    }
+    if (req.method === "POST" && url.pathname === "/account/profile") {
+      const form = await formBody(req);
+      if (!sameOrigin(req, baseUrl) || !csrfValid(user, form.get("csrf"))) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8" }); return; }
+      const displayName = String(form.get("displayName") || "").trim().slice(0, 80);
+      const email = normalizeEmail(form.get("email"));
+      const currentPassword = String(form.get("currentPassword") || "");
+      const storedUser = database.findUserById(user.user_id);
+      let error = "";
+      if (!displayName) error = "Enter your display name.";
+      else if (!email.includes("@")) error = "Enter a valid email address.";
+      else if (!verifyPassword(currentPassword, storedUser.password_hash)) error = "Enter your current password correctly.";
+      if (error) { html(res, 400, accountPage({ user, csrf: user.csrf, profileError: error })); return; }
+      try { database.updateProfile(user.user_id, displayName, email); }
+      catch { html(res, 409, accountPage({ user, csrf: user.csrf, profileError: "That email address is already in use." })); return; }
+      html(res, 200, accountPage({ user: { ...user, display_name: displayName, email }, csrf: user.csrf, profileSuccess: "Profile updated." })); return;
+    }
+    if (req.method === "POST" && url.pathname === "/account/delete") {
+      const form = await formBody(req);
+      if (!sameOrigin(req, baseUrl) || !csrfValid(user, form.get("csrf"))) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8" }); return; }
+      if (form.get("confirmation") !== "DELETE") { html(res, 400, accountPage({ user, csrf: user.csrf, deleteError: "Type DELETE to confirm account deletion." })); return; }
+      if (!database.deleteUser(user.user_id)) { html(res, 400, accountPage({ user, csrf: user.csrf, deleteError: "Add another administrator before deleting the last administrator account." })); return; }
+      redirect(res, "/login", { "set-cookie": expiredCookies() }); return;
     }
     if (req.method === "POST" && url.pathname === "/logout") {
       const form = await formBody(req);
