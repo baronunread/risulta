@@ -75,7 +75,7 @@ async function login(email, password) {
   return cookieFrom(response);
 }
 
-let app = start({ RISULTA_ADMIN_EMAIL: adminEmail, RISULTA_ADMIN_PASSWORD: adminPassword });
+let app = start({ RISULTA_ADMIN_EMAIL: adminEmail, RISULTA_ADMIN_PASSWORD: adminPassword, RISULTA_INGEST_RATE_LIMIT: "3" });
 await ready(app);
 
 assert.equal((await request("/healthz")).status, 200);
@@ -136,6 +136,10 @@ assert.equal((await event(alpha, alpha.domain, "/alpha-only")).status, 202);
 assert.equal((await event(alpha, alpha.domain, "/docs", "https://search.example")).status, 202);
 assert.equal((await event(beta, beta.domain, "/beta-only")).status, 202);
 assert.equal((await event(alpha, beta.domain, "/spoofed")).status, 400);
+const rateLimited = await event(alpha, alpha.domain, "/too-many-events");
+assert.equal(rateLimited.status, 429);
+assert.equal(rateLimited.headers.get("access-control-allow-origin"), "*");
+assert.ok(Number(rateLimited.headers.get("retry-after")) >= 1);
 
 const sitesOverview = await (await request("/", { headers: { cookie: adminCookie } })).text();
 assert.match(sitesOverview, /Last 7 days/);

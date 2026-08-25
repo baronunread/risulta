@@ -21,6 +21,13 @@ if (process.argv[2] === "--version" || process.argv[2] === "version") {
   console.log(VERSION);
   process.exit(0);
 }
+const configuredIngestLimit = Number(process.env.RISULTA_INGEST_RATE_LIMIT || 240);
+const INGEST_RATE_LIMIT = Number.isFinite(configuredIngestLimit) && configuredIngestLimit >= 1
+  ? Math.floor(configuredIngestLimit) : 240;
+const INGEST_RATE_WINDOW = 60 * 1000;
+const MAX_INGEST_RATE_KEYS = 10_000;
+const ingestRates = new Map();
+let nextIngestRateSweep = 0;
 mkdirSync(DATA_DIR, { recursive: true });
 const database = new RisultaDatabase(DATA_DIR);
 
@@ -61,6 +68,21 @@ function clientIp(req) {
     if (ip) return ip.trim();
   }
   return req.socket.remoteAddress || "";
+}
+
+function ingestAllowed(ip, now = Date.now()) {
+  if (now >= nextIngestRateSweep) {
+    for (const [key, state] of ingestRates) if (state.resetAt <= now) ingestRates.delete(key);
+    nextIngestRateSweep = now + INGEST_RATE_WINDOW;
+  }
+  let state = ingestRates.get(ip);
+  if (!state || state.resetAt <= now) {
+    if (ingestRates.size >= MAX_INGEST_RATE_KEYS) return { allowed: false, retryAfter: 60 };
+    state = { count: 0, resetAt: now + INGEST_RATE_WINDOW };
+    ingestRates.set(ip, state);
+  }
+  state.count += 1;
+  return { allowed: state.count <= INGEST_RATE_LIMIT, retryAfter: Math.max(1, Math.ceil((state.resetAt - now) / 1000)) };
 }
 
 function visitorHash(store, req, timestamp) {
@@ -137,6 +159,13 @@ const server = http.createServer(async (req, res) => {
       try {
         const event = analyticsEvent(await jsonBody(req));
         if (event.name !== "pageview" || cleanDomain(event.domain) !== cleanDomain(site.domain)) throw new Error("invalid event");
+        const rate = ingestAllowed(clientIp(req));
+        if (!rate.allowed) {
+          send(res, 429, "Too many analytics events. Try again shortly.", {
+            "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*", "cache-control": "no-store", "retry-after": String(rate.retryAfter),
+          });
+          return;
+        }
         const now = Date.now();
         const store = database.siteStore(site);
         store.insert({ ts: Math.floor(now / 1000), name: "pageview", path: cleanPath(event.path), referrer: String(event.referrer || "").slice(0, 512), visitor: visitorHash(store, req, now) });
