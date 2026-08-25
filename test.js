@@ -179,10 +179,12 @@ const alphaSettingsHtml = await alphaSettings.text();
 assert.match(alphaSettingsHtml, /Tracker code/);
 assert.match(alphaSettingsHtml, /favicon-light\.svg/);
 assert.match(alphaSettingsHtml, /favicon-dark\.svg/);
+assert.match(alphaSettingsHtml, /ui\.js\?v=/);
 assert.match(alphaSettingsHtml, /View source on GitHub/);
 assert.match(alphaSettingsHtml, new RegExp(version));
 assert.match(alphaSettingsHtml, /Risulta analytics/);
 assert.match(alphaSettingsHtml, /Use minimal one-line snippet/);
+assert.match(alphaSettingsHtml, /Copy code/);
 assert.match(alphaSettingsHtml, new RegExp(`/js/${alpha.public_key}\\.js`));
 assert.doesNotMatch(alphaSettings.headers.get("content-security-policy"), /blobatar\.dev/);
 const betaDashboard = await (await request(`/sites/${beta.id}`, { headers: { cookie: adminCookie } })).text();
@@ -227,10 +229,15 @@ assert.equal(account.status, 200);
 const accountHtml = await account.text();
 assert.match(accountHtml, /Change password/);
 assert.match(accountHtml, /Display name/);
+assert.match(accountHtml, /Your avatar is generated from your display name/);
+assert.match(accountHtml, /data-avatar-preview/);
+const avatarResponse = await request("/avatar.svg?name=Admin%20User");
+assert.equal(avatarResponse.status, 200);
+assert.match(avatarResponse.headers.get("content-type"), /image\/svg\+xml/);
 assert.match(accountHtml, /signs out your other active sessions/);
 const updateProfile = await request("/account/profile", {
   method: "POST", headers: { cookie: adminCookie, origin: base, "content-type": "application/x-www-form-urlencoded" },
-  body: form({ csrf: csrfFrom(accountHtml), displayName: "Admin User", email: adminEmail, currentPassword: adminPassword }),
+  body: form({ csrf: csrfFrom(accountHtml), displayName: "Admin User", email: adminEmail }),
 });
 assert.equal(updateProfile.status, 200);
 assert.match(await updateProfile.text(), /Profile updated/);
