@@ -42,8 +42,6 @@ tests as the product evolves.
 
 - [x] `/healthz`, clean SIGTERM, Caddy example, hardened systemd unit, and
       documented first-server installation.
-- [x] Old one-site `risulta.db` and pre-rename `hutch.db` migration into the
-      multi-site layout.
 - [x] Source and compiled executable run the same end-to-end suite.
 - [x] Tracker byte budget: 638 B raw / 441 B gzip at the current revision.
 - [x] Bounded LRU cache for open site databases (32 by default).

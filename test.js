@@ -271,18 +271,5 @@ assert.equal(restored.siteStore(restored.getSiteByKey(alpha.public_key)).analyti
 assert.equal(Number(restored.control.prepare("PRAGMA user_version").get().user_version), 3, "control schema version is recorded");
 restored.close();
 
-const legacyDir = mkdtempSync(`${tmpdir()}/risulta-legacy-`);
-const legacySqlite = new DatabaseSync(`${legacyDir}/hutch.db`);
-legacySqlite.exec(`CREATE TABLE events (ts INTEGER NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL, referrer TEXT, visitor TEXT, host TEXT); CREATE TABLE daily_salts (day TEXT PRIMARY KEY, value BLOB NOT NULL);`);
-legacySqlite.prepare("INSERT INTO events (ts, name, path, referrer, visitor, host) VALUES (?, 'pageview', '/legacy', '', 'legacy-visitor', 'legacy.example')").run(Math.floor(Date.now() / 1000));
-legacySqlite.close();
-const migrated = new RisultaDatabase(legacyDir);
-const migratedSite = migrated.control.prepare("SELECT * FROM sites").get();
-assert.equal(migratedSite.domain, "legacy.example");
-assert.equal(migrated.siteStore(migratedSite).analytics(0).summary.pageviews, 1);
-assert.equal(existsSync(`${legacyDir}/hutch.db`), false, "legacy database moved into sites directory");
-assert.equal(Number(migrated.control.prepare("PRAGMA user_version").get().user_version), 3, "legacy control database is migrated");
-assert.equal(Number(migrated.siteStore(migratedSite).db.prepare("PRAGMA user_version").get().user_version), 3, "legacy site database is migrated");
-migrated.close();
 
 console.log("risulta multi-site self-check OK");

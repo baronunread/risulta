@@ -112,7 +112,6 @@ their forwarding headers for anonymous daily visitor counts.
 | `RISULTA_ADMIN_EMAIL` | unset | First administrator email |
 | `RISULTA_ADMIN_DISPLAY_NAME` | unset | First administrator display name |
 | `RISULTA_ADMIN_PASSWORD` | unset | First administrator password (12+ characters) |
-| `RISULTA_SITE_DOMAIN` | `legacy.local` | Domain assigned when migrating an old one-site database |
 
 ## Database migrations
 
@@ -121,10 +120,6 @@ control database and every website database. A migration runs once in a SQLite
 transaction and records its version with `PRAGMA user_version`. Keep a recent
 snapshot before upgrading, then verify the migration through the normal startup
 and dashboard checks.
-
-Risulta recognizes an old `DATA_DIR/risulta.db` or pre-rename `hutch.db` on first
-startup, checkpoints it, moves it into the per-site directory, and creates a
-matching website entry.
 
 ## Performance baseline
 
