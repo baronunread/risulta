@@ -149,7 +149,7 @@ const securityHeaders = {
 };
 const htmlHeaders = {
   ...securityHeaders, "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
-  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
 };
 
 function send(res, status, body = "", headers = {}) {
@@ -194,6 +194,15 @@ const server = http.createServer(async (req, res) => {
   const trackerMatch = url.pathname.match(/^\/js\/([A-Za-z0-9_-]+)\.js$/);
   const eventMatch = url.pathname.match(/^\/api\/event\/([A-Za-z0-9_-]+)$/);
   try {
+    if (req.method === "GET" && url.pathname === "/favicon.svg") {
+      send(res, 200, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#171717"/><path fill="#fff" d="M8 22h3V15H8zm6 0h3V10h-3zm6 0h3V6h-3z"/></svg>', { "content-type": "image/svg+xml", "cache-control": "public, max-age=31536000, immutable" }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/site.webmanifest") {
+      send(res, 200, JSON.stringify({ name: "Risulta", short_name: "Risulta", icons: [{ src: "/favicon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }], theme_color: "#171717", background_color: "#ffffff", display: "standalone" }), { "content-type": "application/manifest+json", "cache-control": "public, max-age=86400" }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/ui.js") {
+      send(res, 200, `document.addEventListener("DOMContentLoaded",()=>{const role=document.querySelector("#role"),assign=document.querySelector("#viewer-websites");const sync=()=>{if(!role||!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input").forEach(input=>input.disabled=!viewer)};role?.addEventListener("change",sync);sync();document.querySelectorAll("[data-copy-code]").forEach(button=>button.addEventListener("click",async()=>{const toggle=document.querySelector(".snippet-toggle"),snippet=document.querySelector(toggle?.checked?"#minimal-snippet":"#formatted-snippet"),status=document.querySelector("#copy-status");if(!snippet||!status)return;try{await navigator.clipboard.writeText(snippet.textContent);status.textContent="Code copied."}catch{status.textContent="Copy failed. Select the code and copy it manually."}}));const chart=document.querySelector(".chart"),guide=chart?.querySelector(".chart-guide");const activate=point=>{chart.querySelectorAll(".chart-point").forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false}};chart?.addEventListener("pointermove",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart?.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart?.addEventListener("pointerleave",()=>{chart.querySelectorAll(".chart-point").forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true});});`, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
+    }
     if (req.method === "GET" && url.pathname === "/healthz") {
       send(res, 200, "ok\n", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return;
     }
