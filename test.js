@@ -183,7 +183,7 @@ assert.match(alphaSettingsHtml, /ui\.js\?v=/);
 assert.match(alphaSettingsHtml, /View source on GitHub/);
 assert.match(alphaSettingsHtml, new RegExp(version));
 assert.match(alphaSettingsHtml, /Risulta analytics/);
-assert.match(alphaSettingsHtml, /Use minimal one-line snippet/);
+assert.doesNotMatch(alphaSettingsHtml, /Use minimal one-line snippet/);
 assert.match(alphaSettingsHtml, /Copy code/);
 assert.match(alphaSettingsHtml, new RegExp(`/js/${alpha.public_key}\\.js`));
 assert.doesNotMatch(alphaSettings.headers.get("content-security-policy"), /blobatar\.dev/);
