@@ -54,6 +54,16 @@ async function stop(child) {
   assert.equal(code, 0, `clean shutdown: ${child.errors()}`);
 }
 
+async function command(args, env = {}) {
+  const executable = process.env.RISULTA_TEST_BINARY || process.execPath;
+  const child = spawn(executable, process.env.RISULTA_TEST_BINARY ? args : ["app.js", ...args], { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  let output = "", errors = "";
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.stderr.on("data", (chunk) => { errors += chunk; });
+  const code = await new Promise((resolve) => child.once("exit", resolve));
+  return { code, output, errors };
+}
+
 const request = (path, options = {}) => fetch(`${base}${path}`, { redirect: "manual", ...options });
 const form = (values) => new URLSearchParams(values);
 const csrfFrom = (html) => {
@@ -235,6 +245,17 @@ await ready(app);
 const trustedForwardedCookie = await login(adminEmail, changedPassword, { origin: secureBase, "x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.7" });
 assert.match(trustedForwardedCookie, /^__Host-risulta_session=/, "trusted forwarding headers enable secure cookies");
 await stop(app);
+const backupDir = mkdtempSync(`${tmpdir()}/risulta-backups-`);
+const backupResult = await command(["backup", backupDir], { DATA_DIR: dir });
+assert.equal(backupResult.code, 0, backupResult.errors);
+const snapshot = backupResult.output.match(/backup created at (.+)\n/)?.[1];
+assert.ok(snapshot, "backup path is reported");
+assert.ok(existsSync(`${snapshot}/control.db`));
+assert.ok(existsSync(`${snapshot}/sites/${alpha.db_name}`));
+const restored = new RisultaDatabase(snapshot);
+assert.equal(restored.siteStore(restored.getSiteByKey(alpha.public_key)).analytics(0).summary.pageviews, 2, "backup contains analytics events");
+assert.equal(Number(restored.control.prepare("PRAGMA user_version").get().user_version), 2, "control schema version is recorded");
+restored.close();
 
 const legacyDir = mkdtempSync(`${tmpdir()}/risulta-legacy-`);
 const legacySqlite = new DatabaseSync(`${legacyDir}/hutch.db`);
@@ -246,6 +267,8 @@ const migratedSite = migrated.control.prepare("SELECT * FROM sites").get();
 assert.equal(migratedSite.domain, "legacy.example");
 assert.equal(migrated.siteStore(migratedSite).analytics(0).summary.pageviews, 1);
 assert.equal(existsSync(`${legacyDir}/hutch.db`), false, "legacy database moved into sites directory");
+assert.equal(Number(migrated.control.prepare("PRAGMA user_version").get().user_version), 2, "legacy control database is migrated");
+assert.equal(Number(migrated.siteStore(migratedSite).db.prepare("PRAGMA user_version").get().user_version), 3, "legacy site database is migrated");
 migrated.close();
 
 console.log("risulta multi-site self-check OK");

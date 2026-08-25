@@ -53,9 +53,16 @@ provide unique counts without retaining IP addresses or allowing visitors to be
 linked across days.
 
 Back up the entire `DATA_DIR`, including `control.db` and `sites/`. SQLite's
-online backup API is planned for zero-downtime snapshots; until then, stop Risulta
-briefly or use a SQLite-aware backup tool rather than copying active database
-files individually.
+online backup command creates a consistent snapshot without stopping Risulta:
+
+```sh
+./risulta backup /var/backups/risulta
+```
+
+To test a restore, stop Risulta, move the current data directory aside, copy the
+contents of one snapshot into the empty data directory, start Risulta, and sign
+in to verify websites and recent events. Keep backups outside `DATA_DIR`; the
+command creates one timestamped directory containing `control.db` and `sites/`.
 
 ## Deploy on a Debian/Ubuntu VPS
 
@@ -103,6 +110,14 @@ their forwarding headers for anonymous daily visitor counts.
 | `RISULTA_ADMIN_EMAIL` | unset | First administrator email |
 | `RISULTA_ADMIN_PASSWORD` | unset | First administrator password (12+ characters) |
 | `RISULTA_SITE_DOMAIN` | `legacy.local` | Domain assigned when migrating an old one-site database |
+
+## Database migrations
+
+Risulta applies numbered SQLite migrations at startup, independently for the
+control database and every website database. A migration runs once in a SQLite
+transaction and records its version with `PRAGMA user_version`. Keep a recent
+snapshot before upgrading, then verify the migration through the normal startup
+and dashboard checks.
 
 Risulta recognizes an old `DATA_DIR/risulta.db` or pre-rename `hutch.db` on first
 startup, checkpoints it, moves it into the per-site directory, and creates a
