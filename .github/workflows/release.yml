@@ -38,7 +38,9 @@ jobs:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - name: Build ${{ matrix.artifact }}
-        run: bun build --compile --minify --no-compile-autoload-dotenv --target=${{ matrix.target }} app.js --outfile=${{ matrix.artifact }}
+        run: |
+          sed "s/const VERSION = \"dev\";/const VERSION = \"${GITHUB_REF_NAME}\";/" app.js > release-app.js
+          bun build --compile --minify --no-compile-autoload-dotenv --target=${{ matrix.target }} release-app.js --outfile=${{ matrix.artifact }}
       - name: Create checksum
         run: sha256sum ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
       - uses: actions/attest-build-provenance@v2
@@ -60,6 +62,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Create release manifest
+        run: node scripts/release-manifest.mjs "$GITHUB_REF_NAME" dist
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
