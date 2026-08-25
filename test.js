@@ -26,7 +26,7 @@ const version = await new Promise((resolve, reject) => {
   child.stdout.on("data", (chunk) => { output += chunk; });
   child.once("exit", (code) => code === 0 ? resolve(output.trim()) : reject(new Error("version command failed")));
 });
-assert.match(version, /^(v\d+\.\d+\.\d+-\d+-g[0-9a-f]+|[0-9a-f]+)(-dirty)?$/);
+assert.match(version, /^(v\d+\.\d+\.\d+(?:-\d+-g[0-9a-f]+)?|[0-9a-f]+)(-dirty)?$/);
 
 function start(extraEnv = {}) {
   const executable = process.env.RISULTA_TEST_BINARY || process.execPath;
