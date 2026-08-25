@@ -168,6 +168,8 @@ assert.match(alphaDashboard, /Skip to content/);
 assert.doesNotMatch(alphaDashboard, /Install the tracker/);
 assert.match(alphaDashboard, /Website settings/);
 assert.match(alphaDashboard, /site-switcher/);
+assert.match(alphaDashboard, /aria-label="Website settings"/);
+assert.doesNotMatch(alphaDashboard, />Switch<\/button>/);
 assert.match(alphaDashboard, /Top pages/);
 assert.match(alphaDashboard, /View details/);
 const alphaPages = await request(`/sites/${alpha.id}/pages?period=30`, { headers: { cookie: adminCookie } });
