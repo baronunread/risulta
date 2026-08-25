@@ -33,6 +33,25 @@ let nextIngestRateSweep = 0;
 mkdirSync(DATA_DIR, { recursive: true });
 const database = new RisultaDatabase(DATA_DIR);
 
+if (process.argv[2] === "backup") {
+  const destination = process.argv[3];
+  if (!destination || process.argv[4]) {
+    console.error("Usage: risulta backup <destination-directory>");
+    database.close();
+    process.exit(1);
+  }
+  try {
+    const snapshot = await database.snapshot(destination);
+    console.log(`backup created at ${snapshot}`);
+    database.close();
+    process.exit(0);
+  } catch (error) {
+    console.error(`backup failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    database.close();
+    process.exit(1);
+  }
+}
+
 const adminEmail = normalizeEmail(process.env.RISULTA_ADMIN_EMAIL);
 const adminPassword = process.env.RISULTA_ADMIN_PASSWORD || "";
 if (!database.userCount() && adminEmail && adminPassword.length >= 12) {
