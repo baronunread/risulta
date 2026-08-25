@@ -16,6 +16,7 @@ const port = await new Promise((resolve, reject) => {
   });
 });
 const base = `http://127.0.0.1:${port}`;
+const secureBase = `https://127.0.0.1:${port}`;
 const adminEmail = "admin@example.com";
 const adminPassword = "correct horse battery staple";
 
@@ -66,9 +67,9 @@ const cookieFrom = (response) => {
   return value.split(";")[0];
 };
 
-async function login(email, password) {
+async function login(email, password, headers = {}) {
   const response = await request("/login", {
-    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: base },
+    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", origin: base, ...headers },
     body: form({ email, password }),
   });
   assert.equal(response.status, 303);
@@ -94,6 +95,8 @@ assert.equal(badLogin.status, 401);
 assert.match(await badLogin.text(), /Email or password is incorrect/);
 
 const adminCookie = await login(adminEmail, adminPassword);
+const untrustedForwardedCookie = await login(adminEmail, adminPassword, { "x-forwarded-proto": "https" });
+assert.match(untrustedForwardedCookie, /^risulta_session=/, "untrusted forwarding headers are ignored");
 const emptySites = await request("/", { headers: { cookie: adminCookie } });
 assert.equal(emptySites.status, 200);
 assert.match(await emptySites.text(), /No websites yet/);
@@ -225,6 +228,12 @@ const persistentCookie = await login(adminEmail, changedPassword);
 const persistentDashboard = await (await request(`/sites/${alpha.id}`, { headers: { cookie: persistentCookie } })).text();
 assert.match(persistentDashboard, /alpha-only/, "events persist after restart");
 assert.equal((await request(`/js/${beta.public_key}.js`)).status, 200, "site tracker persists after restart");
+await stop(app);
+
+app = start({ RISULTA_TRUST_PROXY_CIDRS: "127.0.0.1/32" });
+await ready(app);
+const trustedForwardedCookie = await login(adminEmail, changedPassword, { origin: secureBase, "x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.7" });
+assert.match(trustedForwardedCookie, /^__Host-risulta_session=/, "trusted forwarding headers enable secure cookies");
 await stop(app);
 
 const legacyDir = mkdtempSync(`${tmpdir()}/risulta-legacy-`);

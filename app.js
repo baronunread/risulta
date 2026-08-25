@@ -3,6 +3,7 @@
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
+import { isIP } from "node:net";
 import {
   clearLoginFailures, createSession, csrfValid, destroySession, expiredCookies,
   hashPassword, loginAllowed, normalizeEmail, readSession, recordLoginFailure,
@@ -15,7 +16,8 @@ import { accountPage, dashboardPage, loginPage, newSitePage, settingsPage, sites
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
 const DATA_DIR = process.env.DATA_DIR || ".";
-const TRUST_PROXY = process.env.RISULTA_TRUST_PROXY === "1";
+const trustedProxyConfig = process.env.RISULTA_TRUST_PROXY_CIDRS
+  || (process.env.RISULTA_TRUST_PROXY === "1" ? "127.0.0.1/32,::1/128" : "");
 const VERSION = "dev";
 if (process.argv[2] === "--version" || process.argv[2] === "version") {
   console.log(VERSION);
@@ -43,6 +45,39 @@ if (!database.userCount() && adminEmail && adminPassword.length >= 12) {
 const cleanHost = (value) => String(value || "localhost").split(",")[0].trim().slice(0, 255);
 const cleanDomain = (value) => String(value || "").trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0].replace(/:\d+$/, "").replace(/\.$/, "").slice(0, 253);
 const validDomain = (value) => value === "localhost" || (/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value));
+const cleanIp = (value) => {
+  const ip = String(value || "").trim();
+  const mappedIpv4 = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)?.[1];
+  return isIP(mappedIpv4 || ip) ? mappedIpv4 || ip : "";
+};
+const ipValue = (ip) => {
+  if (isIP(ip) === 4) return ip.split(".").reduce((value, part) => value << 8n | BigInt(Number(part)), 0n);
+  const sections = ip.includes("::") ? ip.split("::") : [ip, ""];
+  const left = sections[0] ? sections[0].split(":") : [];
+  const right = sections[1] ? sections[1].split(":") : [];
+  const ipv4 = right.at(-1)?.includes(".") ? right.pop().split(".").flatMap((part, index, parts) => index % 2 ? [] : [((Number(part) << 8) + Number(parts[index + 1])).toString(16)]) : [];
+  const values = [...left, ...Array(8 - left.length - right.length - ipv4.length).fill("0"), ...right, ...ipv4];
+  return values.reduce((value, part) => value << 16n | BigInt(`0x${part}`), 0n);
+};
+function trustedProxyCidrs(value) {
+  if (!value) return [];
+  return value.split(",").map((entry) => {
+    const [address, prefixValue, ...rest] = entry.trim().split("/");
+    const family = isIP(address);
+    const bits = family === 4 ? 32 : 128;
+    const prefix = prefixValue === undefined ? bits : Number(prefixValue);
+    if (rest.length || !family || !Number.isInteger(prefix) || prefix < 0 || prefix > bits) throw new Error("RISULTA_TRUST_PROXY_CIDRS must contain valid IPv4 or IPv6 CIDRs");
+    const mask = prefix === 0 ? 0n : (1n << BigInt(bits)) - (1n << BigInt(bits - prefix));
+    return { family, mask, network: ipValue(address) & mask };
+  });
+}
+const TRUSTED_PROXY_CIDRS = trustedProxyCidrs(trustedProxyConfig);
+const trustedProxy = (ip) => {
+  const family = isIP(ip);
+  if (!family) return false;
+  const value = ipValue(ip);
+  return TRUSTED_PROXY_CIDRS.some((cidr) => cidr.family === family && (value & cidr.mask) === cidr.network);
+};
 const cleanPath = (value) => {
   const path = String(value || "").trim();
   return path.startsWith("/") ? path.slice(0, 512) : `/${path}`.slice(0, 512);
@@ -57,17 +92,16 @@ const periodStart = (days) => {
 
 function requestBase(req) {
   if (process.env.RISULTA_BASE_URL) return process.env.RISULTA_BASE_URL.replace(/\/$/, "");
-  const forwardedProto = TRUST_PROXY ? String(req.headers["x-forwarded-proto"] || "").split(",")[0] : "";
+  const forwardedProto = trustedProxy(cleanIp(req.socket.remoteAddress)) ? String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase() : "";
   return `${forwardedProto === "https" ? "https" : "http"}://${cleanHost(req.headers.host)}`;
 }
 
 function clientIp(req) {
-  if (TRUST_PROXY) {
-    const forwarded = req.headers["x-forwarded-for"];
-    const ip = (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0]);
-    if (ip) return ip.trim();
-  }
-  return req.socket.remoteAddress || "";
+  const remote = cleanIp(req.socket.remoteAddress);
+  if (!trustedProxy(remote)) return remote;
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",").map(cleanIp).filter(Boolean);
+  for (let index = forwarded.length - 1; index >= 0; index -= 1) if (!trustedProxy(forwarded[index])) return forwarded[index];
+  return forwarded[0] || remote;
 }
 
 function ingestAllowed(ip, now = Date.now()) {
