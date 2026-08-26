@@ -68,6 +68,15 @@ command creates one timestamped directory containing `control.db` and `sites/`.
 
 ## Deploy on a Debian/Ubuntu VPS
 
+For a guided Debian or Ubuntu installation or update, run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/baronunread/risulta/main/deploy/install.sh | sudo sh
+```
+
+The installer downloads and verifies the latest release, creates the systemd
+service, and can configure Caddy for HTTPS.
+
 Build on Linux for the target server, then copy `risulta` and the provided
 deployment files:
 
