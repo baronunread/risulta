@@ -54,6 +54,56 @@ reported by the browser before accepting an event. Daily salted visitor hashes
 provide unique counts without retaining IP addresses or allowing visitors to be
 linked across days.
 
+## Analytics metric definitions
+
+- **Unique visitor**: one browser identity, derived from the visitor's IP address
+  and User-Agent with a random, site-local salt for the current UTC day. Neither
+  input is stored.
+- **Unique visitor-day**: a unique visitor counted within one UTC day. Seven and
+  thirty-day totals use this metric because daily salts intentionally prevent
+  people from being linked across days.
+- **Visit**: a sequence of pageviews by one daily visitor identity, where a gap
+  of more than 30 minutes starts a new visit. A visit spanning midnight starts
+  again because the visitor identity resets.
+- **Current visitor**: a distinct daily visitor identity with a pageview in the
+  last five minutes.
+
+Daily and hourly chart points count unique visitors within their individual UTC
+intervals. Never add them together to derive a period total.
+
+## Acquisition attribution
+
+Risulta reads standard `utm_source`, `utm_medium`, `utm_campaign`,
+`utm_content`, and `utm_term` parameters from the landing page URL. Attribution
+is fixed when a visit starts and remains with subsequent pageviews in that
+30-minute visit. Untagged external landings use the referrer's hostname as the
+source. Direct visits are reported as **Direct / None**. Values are trimmed and
+bounded before storage.
+
+## Custom events
+
+The tracker exposes `window.risulta.track(name, value)`. Event names must use
+lowercase letters, numbers, and underscores, begin with a letter, and be at
+most 64 characters. `value` is optional and must be a finite number from zero
+to 1,000,000,000. Risulta sends the current page context automatically; direct
+API callers must provide a path and the configured website domain. Events are
+best effort, deduplicated only by the reporting model, and retries can create
+another event.
+
+## Reports and API access
+
+The dashboard links to a full report for pages, sources, mediums, campaigns,
+and events. Reports support exact filters for `path`, `source`, `medium`,
+`campaign`, and `event`, pagination up to 100 rows, and CSV download.
+
+Signed-in users can also request `GET /api/sites/<id>/stats`. It accepts
+`period` (`1`, `7`, or `30`), or a UTC `from` and `to` date range up to 366
+days, plus `dimension` (`path`, `source`, `medium`, `campaign`, or `event`),
+the same exact-match filters, `limit`, `offset`, and `sort` (`visitors`,
+`pageviews`, or `value`). The response is JSON with the site, selected range,
+unfiltered traffic summary, and bounded report rows. Website access rules apply
+to both the API and CSV export.
+
 Back up the entire `DATA_DIR`, including `control.db` and `sites/`. SQLite's
 online backup command creates a consistent snapshot without stopping Risulta:
 

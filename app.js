@@ -12,8 +12,9 @@ import {
 } from "./lib/auth.js";
 import { RisultaDatabase } from "./lib/db.js";
 import { trackerFor } from "./lib/tracker.js";
+import { dailyVisitorId } from "./lib/visitor.js";
 import { VERSION } from "./lib/version.js";
-import { accountPage, dashboardPage, loginPage, newSitePage, settingsPage, sitesPage, usersPage } from "./lib/views.js";
+import { accountPage, dashboardPage, loginPage, newSitePage, reportsPage, settingsPage, sitesPage, usersPage } from "./lib/views.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -103,6 +104,24 @@ const cleanPath = (value) => {
   const path = String(value || "").trim();
   return path.startsWith("/") ? path.slice(0, 512) : `/${path}`.slice(0, 512);
 };
+const cleanCampaignValue = (value, max = 100) => String(value || "").trim().slice(0, max);
+function acquisitionAttribution(event) {
+  const path = cleanPath(event.path);
+  const parameters = new URL(path, "https://risulta.invalid").searchParams;
+  const source = cleanCampaignValue(parameters.get("utm_source"));
+  try {
+    const referrerHost = cleanDomain(new URL(event.referrer).hostname);
+    return {
+      source: source || (referrerHost === cleanDomain(event.domain) ? "" : referrerHost),
+      medium: cleanCampaignValue(parameters.get("utm_medium")),
+      campaign: cleanCampaignValue(parameters.get("utm_campaign"), 120),
+      content: cleanCampaignValue(parameters.get("utm_content"), 120),
+      term: cleanCampaignValue(parameters.get("utm_term"), 120),
+    };
+  } catch {
+    return { source, medium: cleanCampaignValue(parameters.get("utm_medium")), campaign: cleanCampaignValue(parameters.get("utm_campaign"), 120), content: cleanCampaignValue(parameters.get("utm_content"), 120), term: cleanCampaignValue(parameters.get("utm_term"), 120) };
+  }
+}
 const dayKey = (timestamp = Date.now()) => new Date(timestamp).toISOString().slice(0, 10);
 const periodStart = (days) => {
   const date = new Date();
@@ -110,6 +129,26 @@ const periodStart = (days) => {
   date.setUTCDate(date.getUTCDate() - (days - 1));
   return Math.floor(date.getTime() / 1000);
 };
+function customRange(from, to) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from || "") || !/^\d{4}-\d{2}-\d{2}$/.test(to || "")) return null;
+  const since = Date.parse(`${from}T00:00:00Z`) / 1000;
+  const until = Date.parse(`${to}T00:00:00Z`) / 1000 + 86400;
+  const days = (until - since) / 86400;
+  const tomorrow = periodStart(1) + 86400;
+  if (!Number.isInteger(since) || !Number.isInteger(until) || days < 1 || days > 366 || until > tomorrow) return null;
+  return { since, until, days, from, to };
+}
+function reportingRange(url) {
+  const range = customRange(url.searchParams.get("from"), url.searchParams.get("to"));
+  const days = range?.days || ([1, 7, 30].includes(Number(url.searchParams.get("period"))) ? Number(url.searchParams.get("period")) : 7);
+  return { since: range?.since || periodStart(days), until: range?.until || Number.MAX_SAFE_INTEGER, days, range };
+}
+function reportRequest(url) {
+  const dimension = ["path", "source", "medium", "campaign", "event"].includes(url.searchParams.get("dimension")) ? url.searchParams.get("dimension") : "path";
+  const text = (name, max = 512) => String(url.searchParams.get(name) || "").trim().slice(0, max);
+  return { dimension, filters: { path: text("path"), source: text("source", 100), medium: text("medium", 100), campaign: text("campaign", 120), event: text("event", 64) }, page: { limit: Number(url.searchParams.get("limit")) || 50, offset: Number(url.searchParams.get("offset")) || 0, sort: url.searchParams.get("sort") || "visitors" } };
+}
+function csvValue(value) { return `"${String(value ?? "").replaceAll('"', '""')}"`; }
 
 function requestBase(req) {
   if (process.env.RISULTA_BASE_URL) return process.env.RISULTA_BASE_URL.replace(/\/$/, "");
@@ -141,8 +180,7 @@ function ingestAllowed(ip, now = Date.now()) {
 }
 
 function visitorHash(store, req, timestamp) {
-  return createHash("sha256").update(store.salt(dayKey(timestamp))).update(clientIp(req))
-    .update(String(req.headers["user-agent"] || "")).digest("hex").slice(0, 24);
+  return dailyVisitorId(store.salt(dayKey(timestamp)), clientIp(req), String(req.headers["user-agent"] || ""));
 }
 
 const securityHeaders = {
@@ -172,11 +210,14 @@ async function jsonBody(req, max = 4096) {
 }
 function analyticsEvent(payload) {
   if (Object.prototype.toString.call(payload?.path) !== "[object String]") throw new Error("invalid event path");
+  const value = payload?.value;
+  if (value !== undefined && (!Number.isFinite(value) || value < 0 || value > 1_000_000_000)) throw new Error("invalid event value");
   return {
     name: String(payload?.name || ""),
     path: payload.path,
     domain: String(payload?.domain || ""),
     referrer: String(payload?.referrer || ""),
+    value: value ?? null,
   };
 }
 function sameOrigin(req, baseUrl) {
@@ -233,7 +274,7 @@ const server = http.createServer(async (req, res) => {
       if (!site) { send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" }); return; }
       try {
         const event = analyticsEvent(await jsonBody(req));
-        if (event.name !== "pageview" || cleanDomain(event.domain) !== cleanDomain(site.domain)) throw new Error("invalid event");
+        if (!/^[a-z][a-z0-9_]{0,63}$/.test(event.name) || cleanDomain(event.domain) !== cleanDomain(site.domain)) throw new Error("invalid event");
         const rate = ingestAllowed(clientIp(req));
         if (!rate.allowed) {
           send(res, 429, "Too many analytics events. Try again shortly.", {
@@ -243,7 +284,7 @@ const server = http.createServer(async (req, res) => {
         }
         const now = Date.now();
         const store = database.siteStore(site);
-        store.insert({ ts: Math.floor(now / 1000), name: "pageview", path: cleanPath(event.path), referrer: String(event.referrer || "").slice(0, 512), visitor: visitorHash(store, req, now) });
+        store.insert({ ts: Math.floor(now / 1000), name: event.name, path: cleanPath(event.path), referrer: String(event.referrer || "").slice(0, 512), visitor: visitorHash(store, req, now), attribution: acquisitionAttribution(event), value: event.value });
         send(res, 202, "", { "access-control-allow-origin": "*", "cache-control": "no-store" });
       } catch {
         send(res, 400, "Invalid analytics event", { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*", "cache-control": "no-store" });
@@ -271,8 +312,33 @@ const server = http.createServer(async (req, res) => {
       redirect(res, "/", { "set-cookie": sessionCookie(session.token, baseUrl.startsWith("https://")) }); return;
     }
 
+    const statsMatch = url.pathname.match(/^\/api\/sites\/(\d+)\/stats$/);
+    const csvMatch = url.pathname.match(/^\/sites\/(\d+)\/reports\.csv$/);
     const user = readSession(database, req);
+    if (req.method === "GET" && (statsMatch || csvMatch)) {
+      if (!user) { send(res, 401, "Authentication required", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
+      const site = database.getSiteForUser(Number((statsMatch || csvMatch)[1]), user);
+      if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
+      const range = reportingRange(url);
+      const request = reportRequest(url);
+      const report = database.siteStore(site).report(range.since, range.until, request.dimension, request.filters, request.page);
+      if (statsMatch) {
+        const analytics = database.siteStore(site).analytics(range.since, [], [], range.until);
+        send(res, 200, JSON.stringify({ site: { id: site.id, name: site.name, domain: site.domain }, range: { since: range.since, until: range.until }, summary: analytics.summary, report }), { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); return;
+      }
+      const body = ["label,pageviews,visitors,value", ...report.rows.map((row) => [row.label, row.pageviews, row.visitors, row.value].map(csvValue).join(","))].join("\n");
+      send(res, 200, `${body}\n`, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${site.domain}-${report.dimension}.csv"`, "cache-control": "no-store" }); return;
+    }
     if (!user) { redirect(res, "/login"); return; }
+    const reportsMatch = url.pathname.match(/^\/sites\/(\d+)\/reports$/);
+    if (req.method === "GET" && reportsMatch) {
+      const site = database.getSiteForUser(Number(reportsMatch[1]), user);
+      if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
+      const range = reportingRange(url);
+      const request = reportRequest(url);
+      const report = database.siteStore(site).report(range.since, range.until, request.dimension, request.filters, request.page);
+      html(res, 200, reportsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), report, range, baseUrl })); return;
+    }
     if (req.method === "GET" && url.pathname === "/account") {
       html(res, 200, accountPage({ user, csrf: user.csrf })); return;
     }
@@ -364,16 +430,52 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && settingsMatch) {
       const site = database.getSiteForUser(Number(settingsMatch[1]), user);
       if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
-      html(res, 200, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl })); return;
+      html(res, 200, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals: database.listGoals(site.id), funnels: database.listFunnels(site.id) })); return;
+    }
+    const goalsMatch = url.pathname.match(/^\/sites\/(\d+)\/goals$/);
+    if (req.method === "POST" && goalsMatch) {
+      const site = database.getSiteForUser(Number(goalsMatch[1]), user);
+      if (!site || !requireAdmin(user, res)) return;
+      const form = await formBody(req);
+      if (!sameOrigin(req, baseUrl) || !csrfValid(user, form.get("csrf"))) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8" }); return; }
+      const name = String(form.get("name") || "").trim().slice(0, 100);
+      const eventName = String(form.get("eventName") || "").trim();
+      const path = String(form.get("path") || "").trim();
+      const goalError = !name ? "Enter a goal name." : !/^[a-z][a-z0-9_]{0,63}$/.test(eventName) ? "Use a valid event name." : "";
+      if (goalError) { html(res, 400, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals: database.listGoals(site.id), funnels: database.listFunnels(site.id), goalError })); return; }
+      try { database.createGoal(site.id, name, eventName, path ? cleanPath(path) : ""); }
+      catch { html(res, 409, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals: database.listGoals(site.id), funnels: database.listFunnels(site.id), goalError: "That goal name is already in use." })); return; }
+      redirect(res, `/sites/${site.id}/settings`); return;
+    }
+    const funnelsMatch = url.pathname.match(/^\/sites\/(\d+)\/funnels$/);
+    if (req.method === "POST" && funnelsMatch) {
+      const site = database.getSiteForUser(Number(funnelsMatch[1]), user);
+      if (!site || !requireAdmin(user, res)) return;
+      const form = await formBody(req);
+      if (!sameOrigin(req, baseUrl) || !csrfValid(user, form.get("csrf"))) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8" }); return; }
+      const name = String(form.get("name") || "").trim().slice(0, 100);
+      const goalIds = form.getAll("goal").map(Number).filter(Number.isInteger);
+      const goals = database.listGoals(site.id);
+      const funnelError = !name ? "Enter a funnel name." : goalIds.length < 2 ? "Select at least two goals." : new Set(goalIds).size !== goalIds.length ? "Choose each goal once." : "";
+      if (funnelError) { html(res, 400, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals, funnels: database.listFunnels(site.id), funnelError })); return; }
+      try { database.createFunnel(site.id, name, goalIds); }
+      catch { html(res, 409, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals, funnels: database.listFunnels(site.id), funnelError: "Unable to save this funnel." })); return; }
+      redirect(res, `/sites/${site.id}/settings`); return;
     }
     const siteMatch = url.pathname.match(/^\/sites\/(\d+)$/);
     if (req.method === "GET" && siteMatch) {
       const site = database.getSiteForUser(Number(siteMatch[1]), user);
       if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
       const requested = Number(url.searchParams.get("period"));
-      const days = [1, 7, 30].includes(requested) ? requested : 7;
-      const since = periodStart(days);
-      html(res, 200, dashboardPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), analytics: database.siteStore(site).analytics(since), days, baseUrl })); return;
+      const range = customRange(url.searchParams.get("from"), url.searchParams.get("to"));
+      const days = range?.days || ([1, 7, 30].includes(requested) ? requested : 7);
+      const since = range?.since || periodStart(days);
+      const until = range?.until || Number.MAX_SAFE_INTEGER;
+      const goals = database.listGoals(site.id);
+      const metric = ["visitors", "visits", "pageviews"].includes(url.searchParams.get("metric")) ? url.searchParams.get("metric") : "visitors";
+      const store = database.siteStore(site);
+      const comparison = url.searchParams.get("compare") === "1" ? store.analytics(since - days * 86400, [], [], since).summary : null;
+      html(res, 200, dashboardPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), analytics: store.analytics(since, goals, database.listFunnels(site.id), until), days, metric, comparison, dateRange: range, baseUrl })); return;
     }
     send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
   } catch (error) {
