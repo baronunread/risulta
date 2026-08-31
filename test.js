@@ -103,7 +103,7 @@ async function login(email, password, headers = {}) {
   return cookieFrom(response);
 }
 
-let app = start({ RISULTA_ADMIN_EMAIL: adminEmail, RISULTA_ADMIN_PASSWORD: adminPassword, RISULTA_INGEST_RATE_LIMIT: "4" });
+let app = start({ RISULTA_ADMIN_EMAIL: adminEmail, RISULTA_ADMIN_PASSWORD: adminPassword, RISULTA_INGEST_RATE_LIMIT: "5" });
 await ready(app);
 
 assert.equal((await request("/healthz")).status, 200);
@@ -151,6 +151,7 @@ const tracker = await trackerResponse.text();
 assert.equal(trackerResponse.status, 200);
 assert.ok(Buffer.byteLength(tracker) < 1024, `tracker is ${Buffer.byteLength(tracker)} bytes`);
 assert.match(tracker, /pushState/);
+assert.match(tracker, /risulta/);
 assert.match(tracker, new RegExp(alpha.public_key));
 const preflight = await request(`/api/event/${alpha.public_key}`, { method: "OPTIONS" });
 assert.equal(preflight.status, 204);
@@ -162,10 +163,18 @@ async function event(site, domain, path, referrer = "", headers = {}) {
     body: JSON.stringify({ name: "pageview", domain, path, referrer }),
   });
 }
+async function customEvent(site, domain, name, path, value) {
+  return request(`/api/event/${site.public_key}`, {
+    method: "POST", headers: { "user-agent": "risulta-custom-event" },
+    body: JSON.stringify({ name, domain, path, value }),
+  });
+}
 assert.equal((await event(alpha, alpha.domain, "/alpha-only")).status, 202);
 assert.equal((await event(alpha, alpha.domain, "/docs", "https://search.example")).status, 202);
 assert.equal((await event(beta, beta.domain, "/beta-only")).status, 202);
 assert.equal((await event(alpha, alpha.domain, "/pricing?utm_source=newsletter&utm_medium=email&utm_campaign=launch&utm_content=hero&utm_term=analytics", "", { "user-agent": "campaign-test" })).status, 202);
+assert.equal((await customEvent(alpha, alpha.domain, "signup", "/pricing", 49)).status, 202);
+assert.equal((await customEvent(alpha, alpha.domain, "Signup", "/pricing", 49)).status, 400, "custom event names are bounded");
 assert.equal((await event(alpha, beta.domain, "/spoofed")).status, 400);
 const rateLimited = await event(alpha, alpha.domain, "/too-many-events");
 assert.equal(rateLimited.status, 429);
@@ -175,6 +184,7 @@ const alphaEvents = new DatabaseSync(`${dir}/sites/${alpha.db_name}`, { readOnly
 assert.deepEqual({ ...alphaEvents.prepare("SELECT source, medium, campaign, content, term FROM events WHERE path LIKE '/pricing%' ").get() }, {
   source: "newsletter", medium: "email", campaign: "launch", content: "hero", term: "analytics",
 });
+assert.deepEqual({ ...alphaEvents.prepare("SELECT name, value FROM events WHERE name = 'signup'").get() }, { name: "signup", value: 49 });
 alphaEvents.close();
 
 const sitesOverview = await (await request("/", { headers: { cookie: adminCookie } })).text();
@@ -307,7 +317,7 @@ assert.ok(existsSync(`${snapshot}/control.db`));
 assert.ok(existsSync(`${snapshot}/sites/${alpha.db_name}`));
 const restored = new RisultaDatabase(snapshot);
 assert.equal(restored.siteStore(restored.getSiteByKey(alpha.public_key)).analytics(0).summary.pageviews, 3, "backup contains analytics events");
-assert.equal(Number(restored.control.prepare("PRAGMA user_version").get().user_version), 3, "control schema version is recorded");
+assert.equal(Number(restored.control.prepare("PRAGMA user_version").get().user_version), 4, "control schema version is recorded");
 restored.close();
 
 

@@ -190,11 +190,14 @@ async function jsonBody(req, max = 4096) {
 }
 function analyticsEvent(payload) {
   if (Object.prototype.toString.call(payload?.path) !== "[object String]") throw new Error("invalid event path");
+  const value = payload?.value;
+  if (value !== undefined && (!Number.isFinite(value) || value < 0 || value > 1_000_000_000)) throw new Error("invalid event value");
   return {
     name: String(payload?.name || ""),
     path: payload.path,
     domain: String(payload?.domain || ""),
     referrer: String(payload?.referrer || ""),
+    value: value ?? null,
   };
 }
 function sameOrigin(req, baseUrl) {
@@ -251,7 +254,7 @@ const server = http.createServer(async (req, res) => {
       if (!site) { send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" }); return; }
       try {
         const event = analyticsEvent(await jsonBody(req));
-        if (event.name !== "pageview" || cleanDomain(event.domain) !== cleanDomain(site.domain)) throw new Error("invalid event");
+        if (!/^[a-z][a-z0-9_]{0,63}$/.test(event.name) || cleanDomain(event.domain) !== cleanDomain(site.domain)) throw new Error("invalid event");
         const rate = ingestAllowed(clientIp(req));
         if (!rate.allowed) {
           send(res, 429, "Too many analytics events. Try again shortly.", {
@@ -261,7 +264,7 @@ const server = http.createServer(async (req, res) => {
         }
         const now = Date.now();
         const store = database.siteStore(site);
-        store.insert({ ts: Math.floor(now / 1000), name: "pageview", path: cleanPath(event.path), referrer: String(event.referrer || "").slice(0, 512), visitor: visitorHash(store, req, now), attribution: acquisitionAttribution(event) });
+        store.insert({ ts: Math.floor(now / 1000), name: event.name, path: cleanPath(event.path), referrer: String(event.referrer || "").slice(0, 512), visitor: visitorHash(store, req, now), attribution: acquisitionAttribution(event), value: event.value });
         send(res, 202, "", { "access-control-allow-origin": "*", "cache-control": "no-store" });
       } catch {
         send(res, 400, "Invalid analytics event", { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*", "cache-control": "no-store" });

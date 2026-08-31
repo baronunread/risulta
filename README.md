@@ -80,6 +80,16 @@ is fixed when a visit starts and remains with subsequent pageviews in that
 source. Direct visits are reported as **Direct / None**. Values are trimmed and
 bounded before storage.
 
+## Custom events
+
+The tracker exposes `window.risulta.track(name, value)`. Event names must use
+lowercase letters, numbers, and underscores, begin with a letter, and be at
+most 64 characters. `value` is optional and must be a finite number from zero
+to 1,000,000,000. Risulta sends the current page context automatically; direct
+API callers must provide a path and the configured website domain. Events are
+best effort, deduplicated only by the reporting model, and retries can create
+another event.
+
 Back up the entire `DATA_DIR`, including `control.db` and `sites/`. SQLite's
 online backup command creates a consistent snapshot without stopping Risulta:
 
