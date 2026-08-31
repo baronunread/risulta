@@ -90,6 +90,20 @@ API callers must provide a path and the configured website domain. Events are
 best effort, deduplicated only by the reporting model, and retries can create
 another event.
 
+## Reports and API access
+
+The dashboard links to a full report for pages, sources, mediums, campaigns,
+and events. Reports support exact filters for `path`, `source`, `medium`,
+`campaign`, and `event`, pagination up to 100 rows, and CSV download.
+
+Signed-in users can also request `GET /api/sites/<id>/stats`. It accepts
+`period` (`1`, `7`, or `30`), or a UTC `from` and `to` date range up to 366
+days, plus `dimension` (`path`, `source`, `medium`, `campaign`, or `event`),
+the same exact-match filters, `limit`, `offset`, and `sort` (`visitors`,
+`pageviews`, or `value`). The response is JSON with the site, selected range,
+unfiltered traffic summary, and bounded report rows. Website access rules apply
+to both the API and CSV export.
+
 Back up the entire `DATA_DIR`, including `control.db` and `sites/`. SQLite's
 online backup command creates a consistent snapshot without stopping Risulta:
 
