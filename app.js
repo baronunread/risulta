@@ -425,7 +425,10 @@ const server = http.createServer(async (req, res) => {
       const days = [1, 7, 30].includes(requested) ? requested : 7;
       const since = periodStart(days);
       const goals = database.listGoals(site.id);
-      html(res, 200, dashboardPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), analytics: database.siteStore(site).analytics(since, goals, database.listFunnels(site.id)), days, baseUrl })); return;
+      const metric = ["visitors", "visits", "pageviews"].includes(url.searchParams.get("metric")) ? url.searchParams.get("metric") : "visitors";
+      const store = database.siteStore(site);
+      const comparison = url.searchParams.get("compare") === "1" ? store.analytics(since - days * 86400, [], [], since).summary : null;
+      html(res, 200, dashboardPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), analytics: store.analytics(since, goals, database.listFunnels(site.id)), days, metric, comparison, baseUrl })); return;
     }
     send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
   } catch (error) {
