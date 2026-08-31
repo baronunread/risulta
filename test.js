@@ -165,7 +165,7 @@ async function event(site, domain, path, referrer = "", headers = {}) {
 }
 async function customEvent(site, domain, name, path, value) {
   return request(`/api/event/${site.public_key}`, {
-    method: "POST", headers: { "user-agent": "risulta-custom-event" },
+    method: "POST", headers: { "user-agent": "campaign-test" },
     body: JSON.stringify({ name, domain, path, value }),
   });
 }
@@ -222,6 +222,16 @@ assert.match(alphaSettingsHtml, /Use minimal one-line snippet/);
 assert.match(alphaSettingsHtml, /Copy code/);
 assert.match(alphaSettingsHtml, new RegExp(`/js/${alpha.public_key}\\.js`));
 assert.doesNotMatch(alphaSettings.headers.get("content-security-policy"), /blobatar\.dev/);
+const createGoal = await request(`/sites/${alpha.id}/goals`, {
+  method: "POST",
+  headers: { cookie: adminCookie, origin: base, "content-type": "application/x-www-form-urlencoded" },
+  body: form({ csrf: csrfFrom(alphaSettingsHtml), name: "Signup", eventName: "signup", path: "/pricing" }),
+});
+assert.equal(createGoal.status, 303);
+const alphaDashboardWithGoal = await (await request(`/sites/${alpha.id}?period=30`, { headers: { cookie: adminCookie } })).text();
+assert.match(alphaDashboardWithGoal, /Goals/);
+assert.match(alphaDashboardWithGoal, /Signup/);
+assert.match(alphaDashboardWithGoal, /50\.0% conversion rate/);
 const betaDashboard = await (await request(`/sites/${beta.id}`, { headers: { cookie: adminCookie } })).text();
 assert.match(betaDashboard, /beta-only/);
 assert.doesNotMatch(betaDashboard, /alpha-only/);
