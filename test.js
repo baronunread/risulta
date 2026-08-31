@@ -206,6 +206,10 @@ const alphaPageviews = await (await request(`/sites/${alpha.id}?period=30&metric
 assert.match(alphaPageviews, /Chart metric/);
 assert.match(alphaPageviews, /Previous period: 0 pageviews/);
 assert.match(alphaPageviews, /Hide comparison/);
+const today = new Date().toISOString().slice(0, 10);
+const alphaCustomRange = await (await request(`/sites/${alpha.id}?from=${today}&to=${today}&metric=visits`, { headers: { cookie: adminCookie } })).text();
+assert.match(alphaCustomRange, new RegExp(`${today} to ${today}`));
+assert.match(alphaCustomRange, /Apply range/);
 const alphaToday = await (await request(`/sites/${alpha.id}?period=1`, { headers: { cookie: adminCookie } })).text();
 assert.match(alphaToday, /Today/);
 assert.match(alphaToday, /alpha-only/);

@@ -129,6 +129,15 @@ const periodStart = (days) => {
   date.setUTCDate(date.getUTCDate() - (days - 1));
   return Math.floor(date.getTime() / 1000);
 };
+function customRange(from, to) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from || "") || !/^\d{4}-\d{2}-\d{2}$/.test(to || "")) return null;
+  const since = Date.parse(`${from}T00:00:00Z`) / 1000;
+  const until = Date.parse(`${to}T00:00:00Z`) / 1000 + 86400;
+  const days = (until - since) / 86400;
+  const tomorrow = periodStart(1) + 86400;
+  if (!Number.isInteger(since) || !Number.isInteger(until) || days < 1 || days > 366 || until > tomorrow) return null;
+  return { since, until, days, from, to };
+}
 
 function requestBase(req) {
   if (process.env.RISULTA_BASE_URL) return process.env.RISULTA_BASE_URL.replace(/\/$/, "");
@@ -422,13 +431,15 @@ const server = http.createServer(async (req, res) => {
       const site = database.getSiteForUser(Number(siteMatch[1]), user);
       if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
       const requested = Number(url.searchParams.get("period"));
-      const days = [1, 7, 30].includes(requested) ? requested : 7;
-      const since = periodStart(days);
+      const range = customRange(url.searchParams.get("from"), url.searchParams.get("to"));
+      const days = range?.days || ([1, 7, 30].includes(requested) ? requested : 7);
+      const since = range?.since || periodStart(days);
+      const until = range?.until || Number.MAX_SAFE_INTEGER;
       const goals = database.listGoals(site.id);
       const metric = ["visitors", "visits", "pageviews"].includes(url.searchParams.get("metric")) ? url.searchParams.get("metric") : "visitors";
       const store = database.siteStore(site);
       const comparison = url.searchParams.get("compare") === "1" ? store.analytics(since - days * 86400, [], [], since).summary : null;
-      html(res, 200, dashboardPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), analytics: store.analytics(since, goals, database.listFunnels(site.id)), days, metric, comparison, baseUrl })); return;
+      html(res, 200, dashboardPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), analytics: store.analytics(since, goals, database.listFunnels(site.id), until), days, metric, comparison, dateRange: range, baseUrl })); return;
     }
     send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
   } catch (error) {
