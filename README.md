@@ -54,6 +54,32 @@ reported by the browser before accepting an event. Daily salted visitor hashes
 provide unique counts without retaining IP addresses or allowing visitors to be
 linked across days.
 
+## Analytics metric definitions
+
+- **Unique visitor**: one browser identity, derived from the visitor's IP address
+  and User-Agent with a random, site-local salt for the current UTC day. Neither
+  input is stored.
+- **Unique visitor-day**: a unique visitor counted within one UTC day. Seven and
+  thirty-day totals use this metric because daily salts intentionally prevent
+  people from being linked across days.
+- **Visit**: a sequence of pageviews by one daily visitor identity, where a gap
+  of more than 30 minutes starts a new visit. A visit spanning midnight starts
+  again because the visitor identity resets.
+- **Current visitor**: a distinct daily visitor identity with a pageview in the
+  last five minutes.
+
+Daily and hourly chart points count unique visitors within their individual UTC
+intervals. Never add them together to derive a period total.
+
+## Acquisition attribution
+
+Risulta reads standard `utm_source`, `utm_medium`, `utm_campaign`,
+`utm_content`, and `utm_term` parameters from the landing page URL. Attribution
+is fixed when a visit starts and remains with subsequent pageviews in that
+30-minute visit. Untagged external landings use the referrer's hostname as the
+source. Direct visits are reported as **Direct / None**. Values are trimmed and
+bounded before storage.
+
 Back up the entire `DATA_DIR`, including `control.db` and `sites/`. SQLite's
 online backup command creates a consistent snapshot without stopping Risulta:
 

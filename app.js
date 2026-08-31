@@ -12,6 +12,7 @@ import {
 } from "./lib/auth.js";
 import { RisultaDatabase } from "./lib/db.js";
 import { trackerFor } from "./lib/tracker.js";
+import { dailyVisitorId } from "./lib/visitor.js";
 import { VERSION } from "./lib/version.js";
 import { accountPage, dashboardPage, loginPage, newSitePage, settingsPage, sitesPage, usersPage } from "./lib/views.js";
 
@@ -103,6 +104,24 @@ const cleanPath = (value) => {
   const path = String(value || "").trim();
   return path.startsWith("/") ? path.slice(0, 512) : `/${path}`.slice(0, 512);
 };
+const cleanCampaignValue = (value, max = 100) => String(value || "").trim().slice(0, max);
+function acquisitionAttribution(event) {
+  const path = cleanPath(event.path);
+  const parameters = new URL(path, "https://risulta.invalid").searchParams;
+  const source = cleanCampaignValue(parameters.get("utm_source"));
+  try {
+    const referrerHost = cleanDomain(new URL(event.referrer).hostname);
+    return {
+      source: source || (referrerHost === cleanDomain(event.domain) ? "" : referrerHost),
+      medium: cleanCampaignValue(parameters.get("utm_medium")),
+      campaign: cleanCampaignValue(parameters.get("utm_campaign"), 120),
+      content: cleanCampaignValue(parameters.get("utm_content"), 120),
+      term: cleanCampaignValue(parameters.get("utm_term"), 120),
+    };
+  } catch {
+    return { source, medium: cleanCampaignValue(parameters.get("utm_medium")), campaign: cleanCampaignValue(parameters.get("utm_campaign"), 120), content: cleanCampaignValue(parameters.get("utm_content"), 120), term: cleanCampaignValue(parameters.get("utm_term"), 120) };
+  }
+}
 const dayKey = (timestamp = Date.now()) => new Date(timestamp).toISOString().slice(0, 10);
 const periodStart = (days) => {
   const date = new Date();
@@ -141,8 +160,7 @@ function ingestAllowed(ip, now = Date.now()) {
 }
 
 function visitorHash(store, req, timestamp) {
-  return createHash("sha256").update(store.salt(dayKey(timestamp))).update(clientIp(req))
-    .update(String(req.headers["user-agent"] || "")).digest("hex").slice(0, 24);
+  return dailyVisitorId(store.salt(dayKey(timestamp)), clientIp(req), String(req.headers["user-agent"] || ""));
 }
 
 const securityHeaders = {
@@ -243,7 +261,7 @@ const server = http.createServer(async (req, res) => {
         }
         const now = Date.now();
         const store = database.siteStore(site);
-        store.insert({ ts: Math.floor(now / 1000), name: "pageview", path: cleanPath(event.path), referrer: String(event.referrer || "").slice(0, 512), visitor: visitorHash(store, req, now) });
+        store.insert({ ts: Math.floor(now / 1000), name: "pageview", path: cleanPath(event.path), referrer: String(event.referrer || "").slice(0, 512), visitor: visitorHash(store, req, now), attribution: acquisitionAttribution(event) });
         send(res, 202, "", { "access-control-allow-origin": "*", "cache-control": "no-store" });
       } catch {
         send(res, 400, "Invalid analytics event", { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*", "cache-control": "no-store" });

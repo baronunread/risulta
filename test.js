@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:net";
 import { RisultaDatabase } from "./lib/db.js";
+import { dailyVisitorId } from "./lib/visitor.js";
 
 const dir = mkdtempSync(`${tmpdir()}/risulta-`);
 const port = await new Promise((resolve, reject) => {
@@ -19,6 +20,22 @@ const base = `http://127.0.0.1:${port}`;
 const secureBase = `https://127.0.0.1:${port}`;
 const adminEmail = "admin@example.com";
 const adminPassword = "correct horse battery staple";
+
+const visitorSalt = Buffer.alloc(32, 1);
+assert.equal(dailyVisitorId(visitorSalt, "203.0.113.7", "test-agent"), dailyVisitorId(visitorSalt, "203.0.113.7", "test-agent"));
+assert.notEqual(dailyVisitorId(visitorSalt, "203.0.113.7", "test-agent"), dailyVisitorId(Buffer.alloc(32, 2), "203.0.113.7", "test-agent"), "daily salts reset visitor identities");
+assert.notEqual(dailyVisitorId(visitorSalt, "203.0.113.7", "test-agent"), dailyVisitorId(visitorSalt, "203.0.113.8", "test-agent"), "changed IP changes visitor identity");
+assert.notEqual(dailyVisitorId(visitorSalt, "203.0.113.7", "test-agent"), dailyVisitorId(visitorSalt, "203.0.113.7", "other-agent"), "changed User-Agent changes visitor identity");
+const privacyDatabase = new RisultaDatabase(mkdtempSync(`${tmpdir()}/risulta-privacy-`));
+const privacyAlpha = privacyDatabase.createSite("Privacy Alpha", "privacy-alpha.example");
+const privacyBeta = privacyDatabase.createSite("Privacy Beta", "privacy-beta.example");
+const privacyDay = "2026-08-31";
+const alphaStore = privacyDatabase.siteStore(privacyAlpha);
+const betaStore = privacyDatabase.siteStore(privacyBeta);
+assert.notDeepEqual(alphaStore.salt(privacyDay), alphaStore.salt("2026-09-01"), "site salts rotate at the UTC day boundary");
+assert.notDeepEqual(alphaStore.salt(privacyDay), betaStore.salt(privacyDay), "site salts isolate visitor identities");
+assert.equal(alphaStore.db.prepare("PRAGMA table_info(events)").all().some((column) => /ip|agent/i.test(column.name)), false, "analytics storage has no raw IP or User-Agent fields");
+privacyDatabase.close();
 
 const version = await new Promise((resolve, reject) => {
   const child = spawn(process.execPath, ["app.js", "--version"]);
@@ -86,7 +103,7 @@ async function login(email, password, headers = {}) {
   return cookieFrom(response);
 }
 
-let app = start({ RISULTA_ADMIN_EMAIL: adminEmail, RISULTA_ADMIN_PASSWORD: adminPassword, RISULTA_INGEST_RATE_LIMIT: "3" });
+let app = start({ RISULTA_ADMIN_EMAIL: adminEmail, RISULTA_ADMIN_PASSWORD: adminPassword, RISULTA_INGEST_RATE_LIMIT: "4" });
 await ready(app);
 
 assert.equal((await request("/healthz")).status, 200);
@@ -139,20 +156,26 @@ const preflight = await request(`/api/event/${alpha.public_key}`, { method: "OPT
 assert.equal(preflight.status, 204);
 assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
 
-async function event(site, domain, path, referrer = "") {
+async function event(site, domain, path, referrer = "", headers = {}) {
   return request(`/api/event/${site.public_key}`, {
-    method: "POST", headers: { "user-agent": "risulta-test" },
+    method: "POST", headers: { "user-agent": "risulta-test", ...headers },
     body: JSON.stringify({ name: "pageview", domain, path, referrer }),
   });
 }
 assert.equal((await event(alpha, alpha.domain, "/alpha-only")).status, 202);
 assert.equal((await event(alpha, alpha.domain, "/docs", "https://search.example")).status, 202);
 assert.equal((await event(beta, beta.domain, "/beta-only")).status, 202);
+assert.equal((await event(alpha, alpha.domain, "/pricing?utm_source=newsletter&utm_medium=email&utm_campaign=launch&utm_content=hero&utm_term=analytics", "", { "user-agent": "campaign-test" })).status, 202);
 assert.equal((await event(alpha, beta.domain, "/spoofed")).status, 400);
 const rateLimited = await event(alpha, alpha.domain, "/too-many-events");
 assert.equal(rateLimited.status, 429);
 assert.equal(rateLimited.headers.get("access-control-allow-origin"), "*");
 assert.ok(Number(rateLimited.headers.get("retry-after")) >= 1);
+const alphaEvents = new DatabaseSync(`${dir}/sites/${alpha.db_name}`, { readOnly: true });
+assert.deepEqual({ ...alphaEvents.prepare("SELECT source, medium, campaign, content, term FROM events WHERE path LIKE '/pricing%' ").get() }, {
+  source: "newsletter", medium: "email", campaign: "launch", content: "hero", term: "analytics",
+});
+alphaEvents.close();
 
 const sitesOverview = await (await request("/", { headers: { cookie: adminCookie } })).text();
 assert.match(sitesOverview, /Last 7 days/);
@@ -164,6 +187,8 @@ const alphaDashboard = await (await request(`/sites/${alpha.id}?period=30`, { he
 assert.match(alphaDashboard, /alpha-only/);
 assert.doesNotMatch(alphaDashboard, /beta-only/);
 assert.match(alphaDashboard, /Last 30 days/);
+assert.match(alphaDashboard, /Unique visitor-days/);
+assert.match(alphaDashboard, /Top campaigns/);
 assert.match(alphaDashboard, /Skip to content/);
 assert.doesNotMatch(alphaDashboard, /Install the tracker/);
 assert.match(alphaDashboard, /Website settings/);
@@ -281,7 +306,7 @@ assert.ok(snapshot, "backup path is reported");
 assert.ok(existsSync(`${snapshot}/control.db`));
 assert.ok(existsSync(`${snapshot}/sites/${alpha.db_name}`));
 const restored = new RisultaDatabase(snapshot);
-assert.equal(restored.siteStore(restored.getSiteByKey(alpha.public_key)).analytics(0).summary.pageviews, 2, "backup contains analytics events");
+assert.equal(restored.siteStore(restored.getSiteByKey(alpha.public_key)).analytics(0).summary.pageviews, 3, "backup contains analytics events");
 assert.equal(Number(restored.control.prepare("PRAGMA user_version").get().user_version), 3, "control schema version is recorded");
 restored.close();
 
