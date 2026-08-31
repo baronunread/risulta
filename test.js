@@ -228,10 +228,24 @@ const createGoal = await request(`/sites/${alpha.id}/goals`, {
   body: form({ csrf: csrfFrom(alphaSettingsHtml), name: "Signup", eventName: "signup", path: "/pricing" }),
 });
 assert.equal(createGoal.status, 303);
+const createPageviewGoal = await request(`/sites/${alpha.id}/goals`, {
+  method: "POST",
+  headers: { cookie: adminCookie, origin: base, "content-type": "application/x-www-form-urlencoded" },
+  body: form({ csrf: csrfFrom(alphaSettingsHtml), name: "Viewed pricing", eventName: "pageview", path: "/pricing?utm_source=newsletter&utm_medium=email&utm_campaign=launch&utm_content=hero&utm_term=analytics" }),
+});
+assert.equal(createPageviewGoal.status, 303);
+const goalRows = control.prepare("SELECT id, name FROM goals WHERE site_id = ? ORDER BY id").all(alpha.id);
+const createFunnel = await request(`/sites/${alpha.id}/funnels`, {
+  method: "POST",
+  headers: { cookie: adminCookie, origin: base, "content-type": "application/x-www-form-urlencoded" },
+  body: new URLSearchParams([["csrf", csrfFrom(alphaSettingsHtml)], ["name", "Pricing signup"], ["goal", String(goalRows.find((goal) => goal.name === "Viewed pricing").id)], ["goal", String(goalRows.find((goal) => goal.name === "Signup").id)]]),
+});
+assert.equal(createFunnel.status, 303);
 const alphaDashboardWithGoal = await (await request(`/sites/${alpha.id}?period=30`, { headers: { cookie: adminCookie } })).text();
 assert.match(alphaDashboardWithGoal, /Goals/);
 assert.match(alphaDashboardWithGoal, /Signup/);
 assert.match(alphaDashboardWithGoal, /50\.0% conversion rate/);
+assert.match(alphaDashboardWithGoal, /Pricing signup/);
 const betaDashboard = await (await request(`/sites/${beta.id}`, { headers: { cookie: adminCookie } })).text();
 assert.match(betaDashboard, /beta-only/);
 assert.doesNotMatch(betaDashboard, /alpha-only/);

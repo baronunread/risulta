@@ -385,7 +385,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && settingsMatch) {
       const site = database.getSiteForUser(Number(settingsMatch[1]), user);
       if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
-      html(res, 200, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals: database.listGoals(site.id) })); return;
+      html(res, 200, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals: database.listGoals(site.id), funnels: database.listFunnels(site.id) })); return;
     }
     const goalsMatch = url.pathname.match(/^\/sites\/(\d+)\/goals$/);
     if (req.method === "POST" && goalsMatch) {
@@ -397,9 +397,24 @@ const server = http.createServer(async (req, res) => {
       const eventName = String(form.get("eventName") || "").trim();
       const path = String(form.get("path") || "").trim();
       const goalError = !name ? "Enter a goal name." : !/^[a-z][a-z0-9_]{0,63}$/.test(eventName) ? "Use a valid event name." : "";
-      if (goalError) { html(res, 400, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals: database.listGoals(site.id), goalError })); return; }
+      if (goalError) { html(res, 400, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals: database.listGoals(site.id), funnels: database.listFunnels(site.id), goalError })); return; }
       try { database.createGoal(site.id, name, eventName, path ? cleanPath(path) : ""); }
-      catch { html(res, 409, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals: database.listGoals(site.id), goalError: "That goal name is already in use." })); return; }
+      catch { html(res, 409, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals: database.listGoals(site.id), funnels: database.listFunnels(site.id), goalError: "That goal name is already in use." })); return; }
+      redirect(res, `/sites/${site.id}/settings`); return;
+    }
+    const funnelsMatch = url.pathname.match(/^\/sites\/(\d+)\/funnels$/);
+    if (req.method === "POST" && funnelsMatch) {
+      const site = database.getSiteForUser(Number(funnelsMatch[1]), user);
+      if (!site || !requireAdmin(user, res)) return;
+      const form = await formBody(req);
+      if (!sameOrigin(req, baseUrl) || !csrfValid(user, form.get("csrf"))) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8" }); return; }
+      const name = String(form.get("name") || "").trim().slice(0, 100);
+      const goalIds = form.getAll("goal").map(Number).filter(Number.isInteger);
+      const goals = database.listGoals(site.id);
+      const funnelError = !name ? "Enter a funnel name." : goalIds.length < 2 ? "Select at least two goals." : new Set(goalIds).size !== goalIds.length ? "Choose each goal once." : "";
+      if (funnelError) { html(res, 400, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals, funnels: database.listFunnels(site.id), funnelError })); return; }
+      try { database.createFunnel(site.id, name, goalIds); }
+      catch { html(res, 409, settingsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), baseUrl, goals, funnels: database.listFunnels(site.id), funnelError: "Unable to save this funnel." })); return; }
       redirect(res, `/sites/${site.id}/settings`); return;
     }
     const siteMatch = url.pathname.match(/^\/sites\/(\d+)$/);
@@ -409,7 +424,8 @@ const server = http.createServer(async (req, res) => {
       const requested = Number(url.searchParams.get("period"));
       const days = [1, 7, 30].includes(requested) ? requested : 7;
       const since = periodStart(days);
-      html(res, 200, dashboardPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), analytics: database.siteStore(site).analytics(since, database.listGoals(site.id)), days, baseUrl })); return;
+      const goals = database.listGoals(site.id);
+      html(res, 200, dashboardPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), analytics: database.siteStore(site).analytics(since, goals, database.listFunnels(site.id)), days, baseUrl })); return;
     }
     send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
   } catch (error) {
