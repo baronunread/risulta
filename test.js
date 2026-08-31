@@ -212,6 +212,12 @@ const csv = await request(`/sites/${alpha.id}/reports.csv?period=30&dimension=ca
 assert.equal(csv.status, 200);
 assert.match(csv.headers.get("content-type"), /text\/csv/);
 assert.match(await csv.text(), /"launch"/);
+const fullReport = await request(`/sites/${alpha.id}/reports?period=30&dimension=campaign&campaign=launch&limit=1`, { headers: { cookie: adminCookie } });
+assert.equal(fullReport.status, 200);
+const fullReportHtml = await fullReport.text();
+assert.match(fullReportHtml, /Full report/);
+assert.match(fullReportHtml, /Download CSV/);
+assert.match(fullReportHtml, /launch/);
 const alphaPageviews = await (await request(`/sites/${alpha.id}?period=30&metric=pageviews&compare=1`, { headers: { cookie: adminCookie } })).text();
 assert.match(alphaPageviews, /Chart metric/);
 assert.match(alphaPageviews, /Previous period: 0 pageviews/);

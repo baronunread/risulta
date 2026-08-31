@@ -14,7 +14,7 @@ import { RisultaDatabase } from "./lib/db.js";
 import { trackerFor } from "./lib/tracker.js";
 import { dailyVisitorId } from "./lib/visitor.js";
 import { VERSION } from "./lib/version.js";
-import { accountPage, dashboardPage, loginPage, newSitePage, settingsPage, sitesPage, usersPage } from "./lib/views.js";
+import { accountPage, dashboardPage, loginPage, newSitePage, reportsPage, settingsPage, sitesPage, usersPage } from "./lib/views.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -330,6 +330,15 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, `${body}\n`, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${site.domain}-${report.dimension}.csv"`, "cache-control": "no-store" }); return;
     }
     if (!user) { redirect(res, "/login"); return; }
+    const reportsMatch = url.pathname.match(/^\/sites\/(\d+)\/reports$/);
+    if (req.method === "GET" && reportsMatch) {
+      const site = database.getSiteForUser(Number(reportsMatch[1]), user);
+      if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
+      const range = reportingRange(url);
+      const request = reportRequest(url);
+      const report = database.siteStore(site).report(range.since, range.until, request.dimension, request.filters, request.page);
+      html(res, 200, reportsPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), report, range, baseUrl })); return;
+    }
     if (req.method === "GET" && url.pathname === "/account") {
       html(res, 200, accountPage({ user, csrf: user.csrf })); return;
     }
