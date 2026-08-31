@@ -202,6 +202,16 @@ assert.match(alphaDashboard, /Top campaigns/);
 assert.match(alphaDashboard, /Skip to content/);
 assert.doesNotMatch(alphaDashboard, /Install the tracker/);
 assert.match(alphaDashboard, /Website settings/);
+const stats = await request(`/api/sites/${alpha.id}/stats?period=30&dimension=campaign&campaign=launch`, { headers: { cookie: adminCookie } });
+assert.equal(stats.status, 200);
+const statsBody = await stats.json();
+assert.equal(statsBody.site.id, alpha.id);
+assert.equal(statsBody.report.dimension, "campaign");
+assert.equal(statsBody.report.rows[0].label, "launch");
+const csv = await request(`/sites/${alpha.id}/reports.csv?period=30&dimension=campaign&campaign=launch`, { headers: { cookie: adminCookie } });
+assert.equal(csv.status, 200);
+assert.match(csv.headers.get("content-type"), /text\/csv/);
+assert.match(await csv.text(), /"launch"/);
 const alphaPageviews = await (await request(`/sites/${alpha.id}?period=30&metric=pageviews&compare=1`, { headers: { cookie: adminCookie } })).text();
 assert.match(alphaPageviews, /Chart metric/);
 assert.match(alphaPageviews, /Previous period: 0 pageviews/);
@@ -276,6 +286,7 @@ assert.equal(createViewer.status, 303);
 const viewerCookie = await login(viewerEmail, viewerPassword);
 assert.equal((await request(`/sites/${alpha.id}`, { headers: { cookie: viewerCookie } })).status, 200);
 assert.equal((await request(`/sites/${beta.id}`, { headers: { cookie: viewerCookie } })).status, 403);
+assert.equal((await request(`/api/sites/${beta.id}/stats`, { headers: { cookie: viewerCookie } })).status, 403);
 assert.equal((await request("/admin/users", { headers: { cookie: viewerCookie } })).status, 403);
 const badCsrf = await request("/logout", {
   method: "POST", headers: { cookie: viewerCookie, origin: base, "content-type": "application/x-www-form-urlencoded" },

@@ -138,6 +138,17 @@ function customRange(from, to) {
   if (!Number.isInteger(since) || !Number.isInteger(until) || days < 1 || days > 366 || until > tomorrow) return null;
   return { since, until, days, from, to };
 }
+function reportingRange(url) {
+  const range = customRange(url.searchParams.get("from"), url.searchParams.get("to"));
+  const days = range?.days || ([1, 7, 30].includes(Number(url.searchParams.get("period"))) ? Number(url.searchParams.get("period")) : 7);
+  return { since: range?.since || periodStart(days), until: range?.until || Number.MAX_SAFE_INTEGER, days, range };
+}
+function reportRequest(url) {
+  const dimension = ["path", "source", "medium", "campaign", "event"].includes(url.searchParams.get("dimension")) ? url.searchParams.get("dimension") : "path";
+  const text = (name, max = 512) => String(url.searchParams.get(name) || "").trim().slice(0, max);
+  return { dimension, filters: { path: text("path"), source: text("source", 100), medium: text("medium", 100), campaign: text("campaign", 120), event: text("event", 64) }, page: { limit: Number(url.searchParams.get("limit")) || 50, offset: Number(url.searchParams.get("offset")) || 0, sort: url.searchParams.get("sort") || "visitors" } };
+}
+function csvValue(value) { return `"${String(value ?? "").replaceAll('"', '""')}"`; }
 
 function requestBase(req) {
   if (process.env.RISULTA_BASE_URL) return process.env.RISULTA_BASE_URL.replace(/\/$/, "");
@@ -301,7 +312,23 @@ const server = http.createServer(async (req, res) => {
       redirect(res, "/", { "set-cookie": sessionCookie(session.token, baseUrl.startsWith("https://")) }); return;
     }
 
+    const statsMatch = url.pathname.match(/^\/api\/sites\/(\d+)\/stats$/);
+    const csvMatch = url.pathname.match(/^\/sites\/(\d+)\/reports\.csv$/);
     const user = readSession(database, req);
+    if (req.method === "GET" && (statsMatch || csvMatch)) {
+      if (!user) { send(res, 401, "Authentication required", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
+      const site = database.getSiteForUser(Number((statsMatch || csvMatch)[1]), user);
+      if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
+      const range = reportingRange(url);
+      const request = reportRequest(url);
+      const report = database.siteStore(site).report(range.since, range.until, request.dimension, request.filters, request.page);
+      if (statsMatch) {
+        const analytics = database.siteStore(site).analytics(range.since, [], [], range.until);
+        send(res, 200, JSON.stringify({ site: { id: site.id, name: site.name, domain: site.domain }, range: { since: range.since, until: range.until }, summary: analytics.summary, report }), { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); return;
+      }
+      const body = ["label,pageviews,visitors,value", ...report.rows.map((row) => [row.label, row.pageviews, row.visitors, row.value].map(csvValue).join(","))].join("\n");
+      send(res, 200, `${body}\n`, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${site.domain}-${report.dimension}.csv"`, "cache-control": "no-store" }); return;
+    }
     if (!user) { redirect(res, "/login"); return; }
     if (req.method === "GET" && url.pathname === "/account") {
       html(res, 200, accountPage({ user, csrf: user.csrf })); return;
