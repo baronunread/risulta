@@ -31,6 +31,13 @@ const INGEST_RATE_LIMIT = Number.isFinite(configuredIngestLimit) && configuredIn
 const INGEST_RATE_WINDOW = 60 * 1000;
 const MAX_INGEST_RATE_KEYS = 10_000;
 const ingestRates = new Map();
+const runtimeCounters = new Map([
+  ["events_accepted_total", 0], ["events_rejected_total", 0], ["auth_failures_total", 0],
+  ["database_errors_total", 0], ["rate_limits_total", 0],
+]);
+const logLevel = process.env.RISULTA_LOG_LEVEL || "info";
+const incrementCounter = (name) => runtimeCounters.set(name, (runtimeCounters.get(name) || 0) + 1);
+const operationalLog = (record) => { if (logLevel !== "silent") console.error(JSON.stringify({ time: new Date().toISOString(), ...record })); };
 let nextIngestRateSweep = 0;
 mkdirSync(DATA_DIR, { recursive: true });
 const database = new RisultaDatabase(DATA_DIR);
@@ -232,10 +239,13 @@ function requireAdmin(user, res) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const startedAt = performance.now();
   const baseUrl = requestBase(req);
   const url = new URL(req.url || "/", baseUrl);
   const trackerMatch = url.pathname.match(/^\/js\/([A-Za-z0-9_-]+)\.js$/);
   const eventMatch = url.pathname.match(/^\/api\/event\/([A-Za-z0-9_-]+)$/);
+  const safeRoute = trackerMatch ? "/js/:key.js" : eventMatch ? "/api/event/:key" : url.pathname;
+  res.once("finish", () => operationalLog({ type: "request", method: req.method, route: safeRoute, status: res.statusCode, duration_ms: Math.round(performance.now() - startedAt) }));
   try {
     if (req.method === "GET" && url.pathname === "/avatar.svg") {
       const seed = createHash("sha256").update(String(url.searchParams.get("name") || "Risulta").slice(0, 80)).digest("hex");
@@ -252,13 +262,19 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, JSON.stringify({ name: "Risulta", short_name: "Risulta", icons: [{ src: "/favicon-light.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }], theme_color: "#171717", background_color: "#ffffff", display: "standalone" }), { "content-type": "application/manifest+json", "cache-control": "public, max-age=86400" }); return;
     }
     if (req.method === "GET" && url.pathname === "/ui.js") {
-      send(res, 200, `document.addEventListener("DOMContentLoaded",()=>{const toast=document.createElement("div");toast.className="toast";toast.role="status";toast.ariaLive="polite";let timeout;const notify=message=>{toast.textContent=message;document.body.append(toast);clearTimeout(timeout);timeout=setTimeout(()=>toast.remove(),3000)};const role=document.querySelector("#role"),assign=document.querySelector("#viewer-websites"),sync=()=>{if(!role||!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input").forEach(input=>input.disabled=!viewer)};role?.addEventListener("change",sync);sync();const name=document.querySelector("#display-name"),preview=document.querySelector("[data-avatar-preview]");name?.addEventListener("input",()=>{if(preview)preview.src="/avatar.svg?name="+encodeURIComponent(name.value||"Risulta")});document.querySelectorAll("[data-copy-code]").forEach(button=>{const place=()=>{const toggle=document.querySelector(".snippet-toggle"),snippet=document.querySelector(toggle?.checked?"#minimal-snippet":"#formatted-snippet");if(snippet){button.classList.add("snippet-copy");snippet.append(button)}};place();document.querySelector(".snippet-toggle")?.addEventListener("change",place);button.addEventListener("click",async()=>{const snippet=button.parentElement;try{await navigator.clipboard.writeText(snippet.textContent.replace(button.textContent,""));notify("Code copied.")}catch{notify("Copy failed. Select the code and copy it manually.")}})});const chart=document.querySelector(".chart"),guide=chart?.querySelector(".chart-guide"),tooltip=chart?.querySelector(".chart-tooltip"),points=[...(chart?.querySelectorAll(".chart-point")||[])];const activate=point=>{points.forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&tooltip&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false;tooltip.setAttribute("x",x);tooltip.textContent=point.dataset.value;tooltip.hidden=false}};chart?.addEventListener("pointermove",event=>{const box=chart.getBoundingClientRect(),x=(event.clientX-box.left)/box.width*960;activate(points.reduce((nearest,point)=>Math.abs(Number(point.getAttribute("cx"))-x)<Math.abs(Number(nearest.getAttribute("cx"))-x)?point:nearest,points[0]))});chart?.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart?.addEventListener("pointerleave",()=>{points.forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true;if(tooltip)tooltip.hidden=true});});`, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
+      send(res, 200, `document.addEventListener("DOMContentLoaded",()=>{const toast=document.createElement("div");toast.className="toast";toast.role="status";toast.ariaLive="polite";let timeout;const notify=message=>{toast.textContent=message;document.body.append(toast);clearTimeout(timeout);timeout=setTimeout(()=>toast.remove(),3000)};const role=document.querySelector("#role"),assign=document.querySelector("#viewer-websites"),sync=()=>{if(!role||!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input,select").forEach(input=>input.disabled=!viewer)};role?.addEventListener("change",sync);sync();document.querySelectorAll("[data-site-switcher] select").forEach(select=>select.addEventListener("change",()=>select.form.submit()));const multi=document.querySelector("[data-multi-select]"),selectionLabel=multi?.querySelector("[data-selection-label]"),updateSelection=()=>{if(!multi||!selectionLabel)return;const selected=[...multi.querySelectorAll("[data-site-option]:checked")];selectionLabel.textContent=selected.length===0?"Select websites":selected.length===1?selected[0].dataset.siteName:selected.length+" websites selected"};multi?.querySelectorAll("[data-site-option]").forEach(option=>option.addEventListener("change",updateSelection));updateSelection();document.querySelectorAll("[data-single-select]").forEach(control=>{const input=control.querySelector("[data-single-value]"),label=control.querySelector("[data-single-label]");control.querySelectorAll("[data-single-option]").forEach(option=>option.addEventListener("click",()=>{input.value=option.dataset.value;label.textContent=option.textContent;input.dispatchEvent(new Event("change",{bubbles:true}));control.open=false}))});const name=document.querySelector("#display-name"),preview=document.querySelector("[data-avatar-preview]");name?.addEventListener("input",()=>{if(preview)preview.src="/avatar.svg?name="+encodeURIComponent(name.value||"Risulta")});document.querySelectorAll("[data-copy-code]").forEach(button=>{const place=()=>{const toggle=document.querySelector(".snippet-toggle"),snippet=document.querySelector(toggle?.checked?"#minimal-snippet":"#formatted-snippet");if(snippet){button.classList.add("snippet-copy");snippet.append(button)}};place();document.querySelector(".snippet-toggle")?.addEventListener("change",place);button.addEventListener("click",async()=>{const snippet=button.parentElement;try{await navigator.clipboard.writeText(snippet.textContent.replace(button.textContent,""));notify("Code copied.")}catch{notify("Copy failed. Select the code and copy it manually.")}})});const chart=document.querySelector(".chart"),guide=chart?.querySelector(".chart-guide"),tooltip=chart?.querySelector(".chart-tooltip"),points=[...(chart?.querySelectorAll(".chart-point")||[])];const activate=point=>{points.forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&tooltip&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false;tooltip.setAttribute("x",Math.max(90,Math.min(870,Number(x))));tooltip.textContent=point.dataset.value;tooltip.hidden=false}};chart?.addEventListener("pointermove",event=>{const box=chart.getBoundingClientRect(),x=(event.clientX-box.left)/box.width*960;activate(points.reduce((nearest,point)=>Math.abs(Number(point.getAttribute("cx"))-x)<Math.abs(Number(nearest.getAttribute("cx"))-x)?point:nearest,points[0]))});chart?.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart?.addEventListener("pointerleave",()=>{points.forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true;if(tooltip)tooltip.hidden=true});});`, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
     }
     if (req.method === "GET" && url.pathname === "/ui.js") {
-      send(res, 200, `document.addEventListener("DOMContentLoaded",()=>{const role=document.querySelector("#role"),assign=document.querySelector("#viewer-websites");const sync=()=>{if(!role||!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input").forEach(input=>input.disabled=!viewer)};role?.addEventListener("change",sync);sync();const name=document.querySelector("#display-name"),preview=document.querySelector("[data-avatar-preview]");name?.addEventListener("input",()=>{preview.src="/avatar.svg?name="+encodeURIComponent(name.value||"Risulta")});document.querySelectorAll("[data-copy-code]").forEach(button=>button.addEventListener("click",async()=>{const toggle=document.querySelector(".snippet-toggle"),snippet=document.querySelector(toggle?.checked?"#minimal-snippet":"#formatted-snippet"),status=document.querySelector("#copy-status");if(!snippet||!status)return;try{await navigator.clipboard.writeText(snippet.textContent);status.textContent="Code copied."}catch{status.textContent="Copy failed. Select the code and copy it manually."}}));const chart=document.querySelector(".chart"),guide=chart?.querySelector(".chart-guide"),tooltip=chart?.querySelector(".chart-tooltip"),points=[...(chart?.querySelectorAll(".chart-point")||[])];const activate=point=>{points.forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&tooltip&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false;tooltip.setAttribute("x",x);tooltip.textContent=point.dataset.value;tooltip.hidden=false}};chart?.addEventListener("pointermove",event=>{const box=chart.getBoundingClientRect(),x=(event.clientX-box.left)/box.width*960;activate(points.reduce((nearest,point)=>Math.abs(Number(point.getAttribute("cx"))-x)<Math.abs(Number(nearest.getAttribute("cx"))-x)?point:nearest,points[0]))});chart?.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart?.addEventListener("pointerleave",()=>{points.forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true;if(tooltip)tooltip.hidden=true});});`, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
+      send(res, 200, `document.addEventListener("DOMContentLoaded",()=>{const role=document.querySelector("#role"),assign=document.querySelector("#viewer-websites");const sync=()=>{if(!role||!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input,select").forEach(input=>input.disabled=!viewer)};role?.addEventListener("change",sync);sync();const name=document.querySelector("#display-name"),preview=document.querySelector("[data-avatar-preview]");name?.addEventListener("input",()=>{preview.src="/avatar.svg?name="+encodeURIComponent(name.value||"Risulta")});document.querySelectorAll("[data-copy-code]").forEach(button=>button.addEventListener("click",async()=>{const toggle=document.querySelector(".snippet-toggle"),snippet=document.querySelector(toggle?.checked?"#minimal-snippet":"#formatted-snippet"),status=document.querySelector("#copy-status");if(!snippet||!status)return;try{await navigator.clipboard.writeText(snippet.textContent);status.textContent="Code copied."}catch{status.textContent="Copy failed. Select the code and copy it manually."}}));const chart=document.querySelector(".chart"),guide=chart?.querySelector(".chart-guide"),tooltip=chart?.querySelector(".chart-tooltip"),points=[...(chart?.querySelectorAll(".chart-point")||[])];const activate=point=>{points.forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&tooltip&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false;tooltip.setAttribute("x",Math.max(90,Math.min(870,Number(x))));tooltip.textContent=point.dataset.value;tooltip.hidden=false}};chart?.addEventListener("pointermove",event=>{const box=chart.getBoundingClientRect(),x=(event.clientX-box.left)/box.width*960;activate(points.reduce((nearest,point)=>Math.abs(Number(point.getAttribute("cx"))-x)<Math.abs(Number(nearest.getAttribute("cx"))-x)?point:nearest,points[0]))});chart?.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart?.addEventListener("pointerleave",()=>{points.forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true;if(tooltip)tooltip.hidden=true});});`, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
     }
     if (req.method === "GET" && url.pathname === "/healthz") {
       send(res, 200, "ok\n", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/metrics") {
+      const metricsRemote = cleanIp(req.socket.remoteAddress);
+      if (metricsRemote !== "127.0.0.1" && metricsRemote !== "::1" && !trustedProxy(metricsRemote)) { send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8" }); return; }
+      const metrics = [...runtimeCounters.entries()].map(([name, value]) => `${name} ${value}`).concat(`open_site_databases ${database.openSiteCount()}`, `rate_limit_keys ${ingestRates.size}`).join("\n");
+      send(res, 200, `${metrics}\n`, { "content-type": "text/plain; version=0.0.4", "cache-control": "no-store" }); return;
     }
     if (req.method === "OPTIONS" && eventMatch) {
       send(res, 204, "", { "access-control-allow-origin": "*", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "86400" }); return;
@@ -277,6 +293,7 @@ const server = http.createServer(async (req, res) => {
         if (!/^[a-z][a-z0-9_]{0,63}$/.test(event.name) || cleanDomain(event.domain) !== cleanDomain(site.domain)) throw new Error("invalid event");
         const rate = ingestAllowed(clientIp(req));
         if (!rate.allowed) {
+          incrementCounter("rate_limits_total");
           send(res, 429, "Too many analytics events. Try again shortly.", {
             "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*", "cache-control": "no-store", "retry-after": String(rate.retryAfter),
           });
@@ -287,6 +304,7 @@ const server = http.createServer(async (req, res) => {
         store.insert({ ts: Math.floor(now / 1000), name: event.name, path: cleanPath(event.path), referrer: String(event.referrer || "").slice(0, 512), visitor: visitorHash(store, req, now), attribution: acquisitionAttribution(event), value: event.value });
         send(res, 202, "", { "access-control-allow-origin": "*", "cache-control": "no-store" });
       } catch {
+        incrementCounter("events_rejected_total");
         send(res, 400, "Invalid analytics event", { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*", "cache-control": "no-store" });
       }
       return;
@@ -304,6 +322,7 @@ const server = http.createServer(async (req, res) => {
       const rateKey = `${clientIp(req)}:${email}`;
       const user = database.findUserByEmail(email);
       if (!loginAllowed(rateKey) || !user || !verifyPassword(password, user.password_hash)) {
+        incrementCounter("auth_failures_total");
         recordLoginFailure(rateKey);
         html(res, 401, loginPage({ error: "Email or password is incorrect.", hasUsers: database.userCount() > 0, email })); return;
       }
@@ -426,6 +445,15 @@ const server = http.createServer(async (req, res) => {
       else redirect(res, "/admin/users");
       return;
     }
+    const reportMatch = url.pathname.match(/^\/sites\/(\d+)\/(pages|sources)$/);
+    if (req.method === "GET" && reportMatch) {
+      const site = database.getSiteForUser(Number(reportMatch[1]), user);
+      if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
+      const requested = Number(url.searchParams.get("period"));
+      const days = [1, 7, 30].includes(requested) ? requested : 7;
+      const analytics = database.siteStore(site).analytics(periodStart(days));
+      html(res, 200, reportPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), analytics, days, kind: reportMatch[2] })); return;
+    }
     const settingsMatch = url.pathname.match(/^\/sites\/(\d+)\/settings$/);
     if (req.method === "GET" && settingsMatch) {
       const site = database.getSiteForUser(Number(settingsMatch[1]), user);
@@ -479,7 +507,8 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
   } catch (error) {
-    console.error(error);
+    incrementCounter("database_errors_total");
+    operationalLog({ type: "error", route: safeRoute, error: error instanceof Error ? error.name : "unknown" });
     if (!res.headersSent) send(res, 500, "Internal server error", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
     else res.end();
   }

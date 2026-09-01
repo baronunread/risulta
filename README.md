@@ -168,9 +168,26 @@ their forwarding headers for anonymous daily visitor counts.
 | `RISULTA_TRUST_PROXY` | unset | Deprecated compatibility switch, trusts loopback proxies only |
 | `RISULTA_MAX_OPEN_SITES` | `32` | LRU limit for simultaneously open site databases |
 | `RISULTA_INGEST_RATE_LIMIT` | `240` | Maximum accepted analytics events per IP address per minute |
+| `RISULTA_LOG_LEVEL` | `info` | Set to `silent` to disable structured request logs |
 | `RISULTA_ADMIN_EMAIL` | unset | First administrator email |
 | `RISULTA_ADMIN_DISPLAY_NAME` | unset | First administrator display name |
 | `RISULTA_ADMIN_PASSWORD` | unset | First administrator password (12+ characters) |
+
+## Operational diagnostics
+
+Risulta writes one JSON request record per response to stderr, which systemd
+captures in journald. Records contain the method, normalized route, status, and
+duration. They never include passwords, session or CSRF tokens, tracker keys,
+raw IP addresses, or full user-agent strings. Set `RISULTA_LOG_LEVEL=silent` when
+request logs are not needed.
+
+The loopback-only `/metrics` endpoint exposes bounded runtime counters for
+accepted and rejected events, authentication failures, rate limits, database
+errors, open site databases, and active rate-limit keys:
+
+```sh
+curl http://127.0.0.1:3000/metrics
+```
 
 ## Database migrations
 
