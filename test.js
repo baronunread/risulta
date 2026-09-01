@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:net";
@@ -372,10 +372,20 @@ const snapshot = backupResult.output.match(/backup created at (.+)\n/)?.[1];
 assert.ok(snapshot, "backup path is reported");
 assert.ok(existsSync(`${snapshot}/control.db`));
 assert.ok(existsSync(`${snapshot}/sites/${alpha.db_name}`));
+const manifest = JSON.parse(readFileSync(`${snapshot}/manifest.json`, "utf8"));
+assert.equal(manifest.format, 1);
+assert.equal(manifest.databases.length, 3, "backup manifest includes control and site databases");
+assert.equal(manifest.databases.find((entry) => entry.path === "control.db").schema_version, 4);
+const verifiedBackup = await command(["verify-backup", snapshot], { DATA_DIR: dir });
+assert.equal(verifiedBackup.code, 0, verifiedBackup.errors);
 const restored = new RisultaDatabase(snapshot);
 assert.equal(restored.siteStore(restored.getSiteByKey(alpha.public_key)).analytics(0).summary.pageviews, 3, "backup contains analytics events");
 assert.equal(Number(restored.control.prepare("PRAGMA user_version").get().user_version), 4, "control schema version is recorded");
 restored.close();
+writeFileSync(`${snapshot}/control.db`, "corrupt backup");
+const corruptBackup = await command(["verify-backup", snapshot], { DATA_DIR: dir });
+assert.notEqual(corruptBackup.code, 0);
+assert.match(corruptBackup.errors, /backup (size|checksum) check failed/);
 
 
 console.log("risulta multi-site self-check OK");

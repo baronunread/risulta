@@ -111,10 +111,19 @@ online backup command creates a consistent snapshot without stopping Risulta:
 ./risulta backup /var/backups/risulta
 ```
 
-To test a restore, stop Risulta, move the current data directory aside, copy the
-contents of one snapshot into the empty data directory, start Risulta, and sign
-in to verify websites and recent events. Keep backups outside `DATA_DIR`; the
-command creates one timestamped directory containing `control.db` and `sites/`.
+Each snapshot contains a `manifest.json` with the Risulta version, schema
+versions, site database inventory, file sizes, and SHA-256 checksums. Verify a
+snapshot before restoring it:
+
+```sh
+./risulta verify-backup /var/backups/risulta/<snapshot-directory>
+```
+
+To restore, stop Risulta, verify the snapshot, move the current data directory
+aside, copy the contents of the verified snapshot into the empty data directory,
+start Risulta, and sign in to verify websites and recent events. Keep backups
+outside `DATA_DIR`; the command creates one timestamped directory containing
+`control.db`, `sites/`, and `manifest.json`.
 
 ## Deploy on a Debian/Ubuntu VPS
 
@@ -193,9 +202,10 @@ curl http://127.0.0.1:3000/metrics
 
 Risulta applies numbered SQLite migrations at startup, independently for the
 control database and every website database. A migration runs once in a SQLite
-transaction and records its version with `PRAGMA user_version`. Keep a recent
-snapshot before upgrading, then verify the migration through the normal startup
-and dashboard checks.
+transaction and records its version with `PRAGMA user_version`. Backup manifests
+record those schema versions, so a restore and migration can be audited before
+the service starts. Keep a recent verified snapshot before upgrading, then
+verify the migration through the normal startup and dashboard checks.
 
 ## Performance baseline
 

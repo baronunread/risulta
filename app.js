@@ -10,7 +10,7 @@ import {
   hashPassword, loginAllowed, normalizeEmail, readSession, recordLoginFailure,
   sessionCookie, verifyPassword,
 } from "./lib/auth.js";
-import { RisultaDatabase } from "./lib/db.js";
+import { RisultaDatabase, verifySnapshot } from "./lib/db.js";
 import { trackerFor } from "./lib/tracker.js";
 import { dailyVisitorId } from "./lib/visitor.js";
 import { VERSION } from "./lib/version.js";
@@ -56,6 +56,25 @@ if (process.argv[2] === "backup") {
     process.exit(0);
   } catch (error) {
     console.error(`backup failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    database.close();
+    process.exit(1);
+  }
+}
+
+if (process.argv[2] === "verify-backup") {
+  const snapshot = process.argv[3];
+  if (!snapshot || process.argv[4]) {
+    console.error("Usage: risulta verify-backup <snapshot-directory>");
+    database.close();
+    process.exit(1);
+  }
+  try {
+    const manifest = verifySnapshot(snapshot);
+    console.log(`backup verified at ${snapshot} (${manifest.databases.length} databases)`);
+    database.close();
+    process.exit(0);
+  } catch (error) {
+    console.error(`backup verification failed: ${error instanceof Error ? error.message : "unknown error"}`);
     database.close();
     process.exit(1);
   }
