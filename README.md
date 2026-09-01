@@ -111,10 +111,19 @@ online backup command creates a consistent snapshot without stopping Risulta:
 ./risulta backup /var/backups/risulta
 ```
 
-To test a restore, stop Risulta, move the current data directory aside, copy the
-contents of one snapshot into the empty data directory, start Risulta, and sign
-in to verify websites and recent events. Keep backups outside `DATA_DIR`; the
-command creates one timestamped directory containing `control.db` and `sites/`.
+Each snapshot contains a `manifest.json` with the Risulta version, schema
+versions, site database inventory, file sizes, and SHA-256 checksums. Verify a
+snapshot before restoring it:
+
+```sh
+./risulta verify-backup /var/backups/risulta/<snapshot-directory>
+```
+
+To restore, stop Risulta, verify the snapshot, move the current data directory
+aside, copy the contents of the verified snapshot into the empty data directory,
+start Risulta, and sign in to verify websites and recent events. Keep backups
+outside `DATA_DIR`; the command creates one timestamped directory containing
+`control.db`, `sites/`, and `manifest.json`.
 
 ## Deploy on a Debian/Ubuntu VPS
 
@@ -168,17 +177,35 @@ their forwarding headers for anonymous daily visitor counts.
 | `RISULTA_TRUST_PROXY` | unset | Deprecated compatibility switch, trusts loopback proxies only |
 | `RISULTA_MAX_OPEN_SITES` | `32` | LRU limit for simultaneously open site databases |
 | `RISULTA_INGEST_RATE_LIMIT` | `240` | Maximum accepted analytics events per IP address per minute |
+| `RISULTA_LOG_LEVEL` | `info` | Set to `silent` to disable structured request logs |
 | `RISULTA_ADMIN_EMAIL` | unset | First administrator email |
 | `RISULTA_ADMIN_DISPLAY_NAME` | unset | First administrator display name |
 | `RISULTA_ADMIN_PASSWORD` | unset | First administrator password (12+ characters) |
+
+## Operational diagnostics
+
+Risulta writes one JSON request record per response to stderr, which systemd
+captures in journald. Records contain the method, normalized route, status, and
+duration. They never include passwords, session or CSRF tokens, tracker keys,
+raw IP addresses, or full user-agent strings. Set `RISULTA_LOG_LEVEL=silent` when
+request logs are not needed.
+
+The loopback-only `/metrics` endpoint exposes bounded runtime counters for
+accepted and rejected events, authentication failures, rate limits, database
+errors, open site databases, and active rate-limit keys:
+
+```sh
+curl http://127.0.0.1:3000/metrics
+```
 
 ## Database migrations
 
 Risulta applies numbered SQLite migrations at startup, independently for the
 control database and every website database. A migration runs once in a SQLite
-transaction and records its version with `PRAGMA user_version`. Keep a recent
-snapshot before upgrading, then verify the migration through the normal startup
-and dashboard checks.
+transaction and records its version with `PRAGMA user_version`. Backup manifests
+record those schema versions, so a restore and migration can be audited before
+the service starts. Keep a recent verified snapshot before upgrading, then
+verify the migration through the normal startup and dashboard checks.
 
 ## Performance baseline
 

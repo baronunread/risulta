@@ -5,16 +5,20 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { isIP } from "node:net";
 import { blobatar } from "blobatar/blob";
+import htmxSource from "htmx.org/dist/htmx.min.js" with { type: "text" };
+import htmxSseSource from "htmx.org/dist/ext/hx-sse.min.js" with { type: "text" };
 import {
   clearLoginFailures, createSession, csrfValid, destroySession, expiredCookies,
   hashPassword, loginAllowed, normalizeEmail, readSession, recordLoginFailure,
   sessionCookie, verifyPassword,
 } from "./lib/auth.js";
-import { RisultaDatabase } from "./lib/db.js";
+import { RisultaDatabase, verifySnapshot } from "./lib/db.js";
 import { trackerFor } from "./lib/tracker.js";
 import { dailyVisitorId } from "./lib/visitor.js";
 import { VERSION } from "./lib/version.js";
-import { accountPage, dashboardPage, loginPage, newSitePage, reportsPage, settingsPage, sitesPage, usersPage } from "./lib/views.js";
+import { accountPage, currentVisitorsFragment, dashboardPage, dashboardReportsFragment, liveInstallFragment, liveTrafficFragment, loginPage, newSitePage, reportsPage, settingsPage, sitesPage, usersPage, usersWorkspaceFragment } from "./lib/views.js";
+
+const uiSource = `document.addEventListener("DOMContentLoaded",()=>{const toast=document.createElement("div");toast.className="toast";toast.role="status";toast.ariaLive="polite";let timeout;const notify=message=>{toast.textContent=message;document.body.append(toast);clearTimeout(timeout);timeout=setTimeout(()=>toast.remove(),3000)};const copyText=async value=>{try{await navigator.clipboard.writeText(value);return true}catch{const field=document.createElement("textarea");field.value=value;field.setAttribute("readonly","");field.style.position="fixed";field.style.opacity="0";document.body.append(field);field.select();field.setSelectionRange(0,value.length);let copied=false;try{copied=document.execCommand("copy")}catch{}field.remove();return copied}};const initialized=new WeakSet();const setup=root=>{root.querySelectorAll("#role").forEach(role=>{if(initialized.has(role))return;initialized.add(role);const assign=document.querySelector("#viewer-websites"),sync=()=>{if(!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input").forEach(input=>input.disabled=!viewer)};role.addEventListener("change",sync);sync()});root.querySelectorAll("#display-name").forEach(name=>{if(initialized.has(name))return;initialized.add(name);name.addEventListener("input",()=>{const preview=document.querySelector("[data-avatar-preview]");if(preview)preview.src="/avatar.svg?name="+encodeURIComponent(name.value||"Risulta")})});root.querySelectorAll("[data-copy-code]").forEach(button=>{if(initialized.has(button))return;initialized.add(button);const place=()=>{const toggle=document.querySelector(".snippet-toggle"),formatted=document.querySelector("#formatted-snippet"),minimal=document.querySelector("#minimal-snippet");if(formatted&&minimal){formatted.hidden=!!toggle?.checked;minimal.hidden=!toggle?.checked}const snippet=toggle?.checked?minimal:formatted;if(snippet){button.classList.add("snippet-copy");snippet.append(button)}};place();document.querySelector(".snippet-toggle")?.addEventListener("change",place);button.addEventListener("click",async()=>{const snippet=button.parentElement,value=snippet.querySelector("code")?.textContent||"";notify(await copyText(value)?"Code copied.":"Copy failed. Select the code and copy it manually.")})});root.querySelectorAll(".chart").forEach(chart=>{if(initialized.has(chart))return;initialized.add(chart);const guide=chart.querySelector(".chart-guide"),tooltip=chart.querySelector(".chart-tooltip"),points=[...chart.querySelectorAll(".chart-point")];const activate=point=>{points.forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&tooltip&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false;tooltip.setAttribute("x",x);tooltip.textContent=point.dataset.value;tooltip.hidden=false}};chart.addEventListener("pointermove",event=>{const box=chart.getBoundingClientRect(),x=(event.clientX-box.left)/box.width*960;activate(points.reduce((nearest,point)=>Math.abs(Number(point.getAttribute("cx"))-x)<Math.abs(Number(nearest.getAttribute("cx"))-x)?point:nearest,points[0]))});chart.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart.addEventListener("pointerleave",()=>{points.forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true;if(tooltip)tooltip.hidden=true})})};setup(document);document.addEventListener("htmx:after:swap",()=>setup(document))});`;
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -31,7 +35,15 @@ const INGEST_RATE_LIMIT = Number.isFinite(configuredIngestLimit) && configuredIn
 const INGEST_RATE_WINDOW = 60 * 1000;
 const MAX_INGEST_RATE_KEYS = 10_000;
 const ingestRates = new Map();
+const runtimeCounters = new Map([
+  ["events_accepted_total", 0], ["events_rejected_total", 0], ["auth_failures_total", 0],
+  ["database_errors_total", 0], ["rate_limits_total", 0],
+]);
+const logLevel = process.env.RISULTA_LOG_LEVEL || "info";
+const incrementCounter = (name) => runtimeCounters.set(name, (runtimeCounters.get(name) || 0) + 1);
+const operationalLog = (record) => { if (logLevel !== "silent") console.error(JSON.stringify({ time: new Date().toISOString(), ...record })); };
 let nextIngestRateSweep = 0;
+const liveSubscribers = new Map();
 mkdirSync(DATA_DIR, { recursive: true });
 const database = new RisultaDatabase(DATA_DIR);
 
@@ -49,6 +61,25 @@ if (process.argv[2] === "backup") {
     process.exit(0);
   } catch (error) {
     console.error(`backup failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    database.close();
+    process.exit(1);
+  }
+}
+
+if (process.argv[2] === "verify-backup") {
+  const snapshot = process.argv[3];
+  if (!snapshot || process.argv[4]) {
+    console.error("Usage: risulta verify-backup <snapshot-directory>");
+    database.close();
+    process.exit(1);
+  }
+  try {
+    const manifest = verifySnapshot(snapshot);
+    console.log(`backup verified at ${snapshot} (${manifest.databases.length} databases)`);
+    database.close();
+    process.exit(0);
+  } catch (error) {
+    console.error(`backup verification failed: ${error instanceof Error ? error.message : "unknown error"}`);
     database.close();
     process.exit(1);
   }
@@ -189,7 +220,7 @@ const securityHeaders = {
 };
 const htmlHeaders = {
   ...securityHeaders, "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
-  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
 };
 
 function send(res, status, body = "", headers = {}) {
@@ -197,6 +228,28 @@ function send(res, status, body = "", headers = {}) {
 }
 function html(res, status, body, headers = {}) { send(res, status, body, { ...htmlHeaders, ...headers }); }
 function redirect(res, location, headers = {}) { send(res, 303, "", { ...headers, location, "cache-control": "no-store" }); }
+
+function liveOptions(url) {
+  const range = reportingRange(url);
+  return { ...range, metric: ["visitors", "visits", "pageviews"].includes(url.searchParams.get("metric")) ? url.searchParams.get("metric") : "visitors", compare: url.searchParams.get("compare") === "1" };
+}
+function liveUpdate(site, options) {
+  const store = database.siteStore(site);
+  const goals = database.listGoals(site.id);
+  const analytics = store.analytics(options.since, goals, database.listFunnels(site.id), options.until);
+  const comparison = options.compare ? store.analytics(options.since - options.days * 86400, [], [], options.since).summary : null;
+  const installUpdate = Number(analytics.summary.pageviews) ? liveInstallFragment(true) : "";
+  return `${currentVisitorsFragment(analytics.current)}${liveTrafficFragment({ site, analytics, days: options.days, metric: options.metric, comparison, dateRange: options.range, oob: true })}${dashboardReportsFragment({ site, analytics, days: options.days, dateRange: options.range, oob: true })}${installUpdate}`;
+}
+function writeLive(res, body) {
+  res.write(`data: ${body.replaceAll("\n", "")}\n\n`);
+}
+function publishLive(site) {
+  for (const subscriber of liveSubscribers.get(site.id) || []) {
+    try { writeLive(subscriber.res, liveUpdate(site, subscriber.options)); }
+    catch { subscriber.remove(); }
+  }
+}
 
 async function formBody(req, max = 16 * 1024) {
   let body = "";
@@ -232,10 +285,13 @@ function requireAdmin(user, res) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const startedAt = performance.now();
   const baseUrl = requestBase(req);
   const url = new URL(req.url || "/", baseUrl);
   const trackerMatch = url.pathname.match(/^\/js\/([A-Za-z0-9_-]+)\.js$/);
   const eventMatch = url.pathname.match(/^\/api\/event\/([A-Za-z0-9_-]+)$/);
+  const safeRoute = trackerMatch ? "/js/:key.js" : eventMatch ? "/api/event/:key" : url.pathname;
+  res.once("finish", () => operationalLog({ type: "request", method: req.method, route: safeRoute, status: res.statusCode, duration_ms: Math.round(performance.now() - startedAt) }));
   try {
     if (req.method === "GET" && url.pathname === "/avatar.svg") {
       const seed = createHash("sha256").update(String(url.searchParams.get("name") || "Risulta").slice(0, 80)).digest("hex");
@@ -251,14 +307,23 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/site.webmanifest") {
       send(res, 200, JSON.stringify({ name: "Risulta", short_name: "Risulta", icons: [{ src: "/favicon-light.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }], theme_color: "#171717", background_color: "#ffffff", display: "standalone" }), { "content-type": "application/manifest+json", "cache-control": "public, max-age=86400" }); return;
     }
-    if (req.method === "GET" && url.pathname === "/ui.js") {
-      send(res, 200, `document.addEventListener("DOMContentLoaded",()=>{const toast=document.createElement("div");toast.className="toast";toast.role="status";toast.ariaLive="polite";let timeout;const notify=message=>{toast.textContent=message;document.body.append(toast);clearTimeout(timeout);timeout=setTimeout(()=>toast.remove(),3000)};const role=document.querySelector("#role"),assign=document.querySelector("#viewer-websites"),sync=()=>{if(!role||!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input").forEach(input=>input.disabled=!viewer)};role?.addEventListener("change",sync);sync();const name=document.querySelector("#display-name"),preview=document.querySelector("[data-avatar-preview]");name?.addEventListener("input",()=>{if(preview)preview.src="/avatar.svg?name="+encodeURIComponent(name.value||"Risulta")});document.querySelectorAll("[data-copy-code]").forEach(button=>{const place=()=>{const toggle=document.querySelector(".snippet-toggle"),snippet=document.querySelector(toggle?.checked?"#minimal-snippet":"#formatted-snippet");if(snippet){button.classList.add("snippet-copy");snippet.append(button)}};place();document.querySelector(".snippet-toggle")?.addEventListener("change",place);button.addEventListener("click",async()=>{const snippet=button.parentElement;try{await navigator.clipboard.writeText(snippet.textContent.replace(button.textContent,""));notify("Code copied.")}catch{notify("Copy failed. Select the code and copy it manually.")}})});const chart=document.querySelector(".chart"),guide=chart?.querySelector(".chart-guide"),tooltip=chart?.querySelector(".chart-tooltip"),points=[...(chart?.querySelectorAll(".chart-point")||[])];const activate=point=>{points.forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&tooltip&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false;tooltip.setAttribute("x",x);tooltip.textContent=point.dataset.value;tooltip.hidden=false}};chart?.addEventListener("pointermove",event=>{const box=chart.getBoundingClientRect(),x=(event.clientX-box.left)/box.width*960;activate(points.reduce((nearest,point)=>Math.abs(Number(point.getAttribute("cx"))-x)<Math.abs(Number(nearest.getAttribute("cx"))-x)?point:nearest,points[0]))});chart?.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart?.addEventListener("pointerleave",()=>{points.forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true;if(tooltip)tooltip.hidden=true});});`, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
+    if (req.method === "GET" && url.pathname === "/htmx.js") {
+      send(res, 200, htmxSource, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=31536000, immutable" }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/htmx-sse.js") {
+      send(res, 200, htmxSseSource, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=31536000, immutable" }); return;
     }
     if (req.method === "GET" && url.pathname === "/ui.js") {
-      send(res, 200, `document.addEventListener("DOMContentLoaded",()=>{const role=document.querySelector("#role"),assign=document.querySelector("#viewer-websites");const sync=()=>{if(!role||!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input").forEach(input=>input.disabled=!viewer)};role?.addEventListener("change",sync);sync();const name=document.querySelector("#display-name"),preview=document.querySelector("[data-avatar-preview]");name?.addEventListener("input",()=>{preview.src="/avatar.svg?name="+encodeURIComponent(name.value||"Risulta")});document.querySelectorAll("[data-copy-code]").forEach(button=>button.addEventListener("click",async()=>{const toggle=document.querySelector(".snippet-toggle"),snippet=document.querySelector(toggle?.checked?"#minimal-snippet":"#formatted-snippet"),status=document.querySelector("#copy-status");if(!snippet||!status)return;try{await navigator.clipboard.writeText(snippet.textContent);status.textContent="Code copied."}catch{status.textContent="Copy failed. Select the code and copy it manually."}}));const chart=document.querySelector(".chart"),guide=chart?.querySelector(".chart-guide"),tooltip=chart?.querySelector(".chart-tooltip"),points=[...(chart?.querySelectorAll(".chart-point")||[])];const activate=point=>{points.forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&tooltip&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false;tooltip.setAttribute("x",x);tooltip.textContent=point.dataset.value;tooltip.hidden=false}};chart?.addEventListener("pointermove",event=>{const box=chart.getBoundingClientRect(),x=(event.clientX-box.left)/box.width*960;activate(points.reduce((nearest,point)=>Math.abs(Number(point.getAttribute("cx"))-x)<Math.abs(Number(nearest.getAttribute("cx"))-x)?point:nearest,points[0]))});chart?.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart?.addEventListener("pointerleave",()=>{points.forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true;if(tooltip)tooltip.hidden=true});});`, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
+      send(res, 200, uiSource, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
     }
     if (req.method === "GET" && url.pathname === "/healthz") {
       send(res, 200, "ok\n", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/metrics") {
+      const metricsRemote = cleanIp(req.socket.remoteAddress);
+      if (metricsRemote !== "127.0.0.1" && metricsRemote !== "::1" && !trustedProxy(metricsRemote)) { send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8" }); return; }
+      const metrics = [...runtimeCounters.entries()].map(([name, value]) => `${name} ${value}`).concat(`open_site_databases ${database.openSiteCount()}`, `rate_limit_keys ${ingestRates.size}`).join("\n");
+      send(res, 200, `${metrics}\n`, { "content-type": "text/plain; version=0.0.4", "cache-control": "no-store" }); return;
     }
     if (req.method === "OPTIONS" && eventMatch) {
       send(res, 204, "", { "access-control-allow-origin": "*", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "86400" }); return;
@@ -277,6 +342,7 @@ const server = http.createServer(async (req, res) => {
         if (!/^[a-z][a-z0-9_]{0,63}$/.test(event.name) || cleanDomain(event.domain) !== cleanDomain(site.domain)) throw new Error("invalid event");
         const rate = ingestAllowed(clientIp(req));
         if (!rate.allowed) {
+          incrementCounter("rate_limits_total");
           send(res, 429, "Too many analytics events. Try again shortly.", {
             "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*", "cache-control": "no-store", "retry-after": String(rate.retryAfter),
           });
@@ -285,8 +351,10 @@ const server = http.createServer(async (req, res) => {
         const now = Date.now();
         const store = database.siteStore(site);
         store.insert({ ts: Math.floor(now / 1000), name: event.name, path: cleanPath(event.path), referrer: String(event.referrer || "").slice(0, 512), visitor: visitorHash(store, req, now), attribution: acquisitionAttribution(event), value: event.value });
+        publishLive(site);
         send(res, 202, "", { "access-control-allow-origin": "*", "cache-control": "no-store" });
       } catch {
+        incrementCounter("events_rejected_total");
         send(res, 400, "Invalid analytics event", { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*", "cache-control": "no-store" });
       }
       return;
@@ -304,6 +372,7 @@ const server = http.createServer(async (req, res) => {
       const rateKey = `${clientIp(req)}:${email}`;
       const user = database.findUserByEmail(email);
       if (!loginAllowed(rateKey) || !user || !verifyPassword(password, user.password_hash)) {
+        incrementCounter("auth_failures_total");
         recordLoginFailure(rateKey);
         html(res, 401, loginPage({ error: "Email or password is incorrect.", hasUsers: database.userCount() > 0, email })); return;
       }
@@ -330,6 +399,21 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, `${body}\n`, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${site.domain}-${report.dimension}.csv"`, "cache-control": "no-store" }); return;
     }
     if (!user) { redirect(res, "/login"); return; }
+    const liveMatch = url.pathname.match(/^\/sites\/(\d+)\/live$/);
+    if (req.method === "GET" && liveMatch) {
+      const site = database.getSiteForUser(Number(liveMatch[1]), user);
+      if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
+      const options = liveOptions(url);
+      res.writeHead(200, { ...securityHeaders, "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" });
+      res.flushHeaders();
+      const subscribers = liveSubscribers.get(site.id) || new Set();
+      const subscriber = { res, options, remove: () => { subscribers.delete(subscriber); if (!subscribers.size) liveSubscribers.delete(site.id); } };
+      subscribers.add(subscriber);
+      liveSubscribers.set(site.id, subscribers);
+      writeLive(res, liveUpdate(site, options));
+      req.once("close", subscriber.remove);
+      return;
+    }
     const reportsMatch = url.pathname.match(/^\/sites\/(\d+)\/reports$/);
     if (req.method === "GET" && reportsMatch) {
       const site = database.getSiteForUser(Number(reportsMatch[1]), user);
@@ -418,13 +502,26 @@ const server = http.createServer(async (req, res) => {
       const password = String(form.get("password") || "");
       const role = form.get("role") === "admin" ? "admin" : "viewer";
       const siteIds = form.getAll("site").map(Number).filter(Number.isInteger);
+      const values = { email, role, siteIds };
       let error = "";
       if (!email.includes("@")) error = "Enter a valid email address.";
       else if (password.length < 12) error = "The password must have at least 12 characters.";
       if (!error) { try { database.createUser(email, hashPassword(password), role, siteIds); } catch { error = "A user with that email already exists."; } }
-      if (error) html(res, 400, usersPage({ user, csrf: user.csrf, users: database.listUsers(), sites: database.listSitesForUser(user), error }));
+      const workspace = { csrf: user.csrf, users: database.listUsers(), sites: database.listSitesForUser(user) };
+      if (error && req.headers["hx-request"] === "true") send(res, 400, usersWorkspaceFragment({ ...workspace, error, values }), htmlHeaders);
+      else if (error) html(res, 400, usersPage({ user, ...workspace, error, values }));
+      else if (req.headers["hx-request"] === "true") send(res, 200, usersWorkspaceFragment({ ...workspace, success: "User created." }), htmlHeaders);
       else redirect(res, "/admin/users");
       return;
+    }
+    const reportMatch = url.pathname.match(/^\/sites\/(\d+)\/(pages|sources)$/);
+    if (req.method === "GET" && reportMatch) {
+      const site = database.getSiteForUser(Number(reportMatch[1]), user);
+      if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
+      const requested = Number(url.searchParams.get("period"));
+      const days = [1, 7, 30].includes(requested) ? requested : 7;
+      const analytics = database.siteStore(site).analytics(periodStart(days));
+      html(res, 200, reportPage({ user, csrf: user.csrf, site, sites: database.listSitesForUser(user), analytics, days, kind: reportMatch[2] })); return;
     }
     const settingsMatch = url.pathname.match(/^\/sites\/(\d+)\/settings$/);
     if (req.method === "GET" && settingsMatch) {
@@ -479,7 +576,8 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
   } catch (error) {
-    console.error(error);
+    incrementCounter("database_errors_total");
+    operationalLog({ type: "error", route: safeRoute, error: error instanceof Error ? error.name : "unknown" });
     if (!res.headersSent) send(res, 500, "Internal server error", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
     else res.end();
   }
