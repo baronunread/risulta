@@ -5,6 +5,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { isIP } from "node:net";
 import { blobatar } from "blobatar/blob";
+import htmxSource from "htmx.org/dist/htmx.min.js" with { type: "text" };
+import htmxSseSource from "htmx.org/dist/ext/hx-sse.min.js" with { type: "text" };
 import {
   clearLoginFailures, createSession, csrfValid, destroySession, expiredCookies,
   hashPassword, loginAllowed, normalizeEmail, readSession, recordLoginFailure,
@@ -14,7 +16,9 @@ import { RisultaDatabase, verifySnapshot } from "./lib/db.js";
 import { trackerFor } from "./lib/tracker.js";
 import { dailyVisitorId } from "./lib/visitor.js";
 import { VERSION } from "./lib/version.js";
-import { accountPage, dashboardPage, loginPage, newSitePage, reportsPage, settingsPage, sitesPage, usersPage } from "./lib/views.js";
+import { accountPage, currentVisitorsFragment, dashboardPage, dashboardReportsFragment, liveInstallFragment, liveTrafficFragment, loginPage, newSitePage, reportsPage, settingsPage, sitesPage, usersPage, usersWorkspaceFragment } from "./lib/views.js";
+
+const uiSource = `document.addEventListener("DOMContentLoaded",()=>{const toast=document.createElement("div");toast.className="toast";toast.role="status";toast.ariaLive="polite";let timeout;const notify=message=>{toast.textContent=message;document.body.append(toast);clearTimeout(timeout);timeout=setTimeout(()=>toast.remove(),3000)};const copyText=async value=>{try{await navigator.clipboard.writeText(value);return true}catch{const field=document.createElement("textarea");field.value=value;field.setAttribute("readonly","");field.style.position="fixed";field.style.opacity="0";document.body.append(field);field.select();field.setSelectionRange(0,value.length);let copied=false;try{copied=document.execCommand("copy")}catch{}field.remove();return copied}};const initialized=new WeakSet();const setup=root=>{root.querySelectorAll("#role").forEach(role=>{if(initialized.has(role))return;initialized.add(role);const assign=document.querySelector("#viewer-websites"),sync=()=>{if(!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input").forEach(input=>input.disabled=!viewer)};role.addEventListener("change",sync);sync()});root.querySelectorAll("#display-name").forEach(name=>{if(initialized.has(name))return;initialized.add(name);name.addEventListener("input",()=>{const preview=document.querySelector("[data-avatar-preview]");if(preview)preview.src="/avatar.svg?name="+encodeURIComponent(name.value||"Risulta")})});root.querySelectorAll("[data-copy-code]").forEach(button=>{if(initialized.has(button))return;initialized.add(button);const place=()=>{const toggle=document.querySelector(".snippet-toggle"),formatted=document.querySelector("#formatted-snippet"),minimal=document.querySelector("#minimal-snippet");if(formatted&&minimal){formatted.hidden=!!toggle?.checked;minimal.hidden=!toggle?.checked}const snippet=toggle?.checked?minimal:formatted;if(snippet){button.classList.add("snippet-copy");snippet.append(button)}};place();document.querySelector(".snippet-toggle")?.addEventListener("change",place);button.addEventListener("click",async()=>{const snippet=button.parentElement,value=snippet.querySelector("code")?.textContent||"";notify(await copyText(value)?"Code copied.":"Copy failed. Select the code and copy it manually.")})});root.querySelectorAll(".chart").forEach(chart=>{if(initialized.has(chart))return;initialized.add(chart);const guide=chart.querySelector(".chart-guide"),tooltip=chart.querySelector(".chart-tooltip"),points=[...chart.querySelectorAll(".chart-point")];const activate=point=>{points.forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&tooltip&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false;tooltip.setAttribute("x",x);tooltip.textContent=point.dataset.value;tooltip.hidden=false}};chart.addEventListener("pointermove",event=>{const box=chart.getBoundingClientRect(),x=(event.clientX-box.left)/box.width*960;activate(points.reduce((nearest,point)=>Math.abs(Number(point.getAttribute("cx"))-x)<Math.abs(Number(nearest.getAttribute("cx"))-x)?point:nearest,points[0]))});chart.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart.addEventListener("pointerleave",()=>{points.forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true;if(tooltip)tooltip.hidden=true})})};setup(document);document.addEventListener("htmx:after:swap",()=>setup(document))});`;
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -39,6 +43,7 @@ const logLevel = process.env.RISULTA_LOG_LEVEL || "info";
 const incrementCounter = (name) => runtimeCounters.set(name, (runtimeCounters.get(name) || 0) + 1);
 const operationalLog = (record) => { if (logLevel !== "silent") console.error(JSON.stringify({ time: new Date().toISOString(), ...record })); };
 let nextIngestRateSweep = 0;
+const liveSubscribers = new Map();
 mkdirSync(DATA_DIR, { recursive: true });
 const database = new RisultaDatabase(DATA_DIR);
 
@@ -215,7 +220,7 @@ const securityHeaders = {
 };
 const htmlHeaders = {
   ...securityHeaders, "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
-  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
 };
 
 function send(res, status, body = "", headers = {}) {
@@ -223,6 +228,28 @@ function send(res, status, body = "", headers = {}) {
 }
 function html(res, status, body, headers = {}) { send(res, status, body, { ...htmlHeaders, ...headers }); }
 function redirect(res, location, headers = {}) { send(res, 303, "", { ...headers, location, "cache-control": "no-store" }); }
+
+function liveOptions(url) {
+  const range = reportingRange(url);
+  return { ...range, metric: ["visitors", "visits", "pageviews"].includes(url.searchParams.get("metric")) ? url.searchParams.get("metric") : "visitors", compare: url.searchParams.get("compare") === "1" };
+}
+function liveUpdate(site, options) {
+  const store = database.siteStore(site);
+  const goals = database.listGoals(site.id);
+  const analytics = store.analytics(options.since, goals, database.listFunnels(site.id), options.until);
+  const comparison = options.compare ? store.analytics(options.since - options.days * 86400, [], [], options.since).summary : null;
+  const installUpdate = Number(analytics.summary.pageviews) ? liveInstallFragment(true) : "";
+  return `${currentVisitorsFragment(analytics.current)}${liveTrafficFragment({ site, analytics, days: options.days, metric: options.metric, comparison, dateRange: options.range, oob: true })}${dashboardReportsFragment({ site, analytics, days: options.days, dateRange: options.range, oob: true })}${installUpdate}`;
+}
+function writeLive(res, body) {
+  res.write(`data: ${body.replaceAll("\n", "")}\n\n`);
+}
+function publishLive(site) {
+  for (const subscriber of liveSubscribers.get(site.id) || []) {
+    try { writeLive(subscriber.res, liveUpdate(site, subscriber.options)); }
+    catch { subscriber.remove(); }
+  }
+}
 
 async function formBody(req, max = 16 * 1024) {
   let body = "";
@@ -280,11 +307,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/site.webmanifest") {
       send(res, 200, JSON.stringify({ name: "Risulta", short_name: "Risulta", icons: [{ src: "/favicon-light.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }], theme_color: "#171717", background_color: "#ffffff", display: "standalone" }), { "content-type": "application/manifest+json", "cache-control": "public, max-age=86400" }); return;
     }
-    if (req.method === "GET" && url.pathname === "/ui.js") {
-      send(res, 200, `document.addEventListener("DOMContentLoaded",()=>{const toast=document.createElement("div");toast.className="toast";toast.role="status";toast.ariaLive="polite";let timeout;const notify=message=>{toast.textContent=message;document.body.append(toast);clearTimeout(timeout);timeout=setTimeout(()=>toast.remove(),3000)};const role=document.querySelector("#role"),assign=document.querySelector("#viewer-websites"),sync=()=>{if(!role||!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input,select").forEach(input=>input.disabled=!viewer)};role?.addEventListener("change",sync);sync();document.querySelectorAll("[data-site-switcher] select").forEach(select=>select.addEventListener("change",()=>select.form.submit()));const multi=document.querySelector("[data-multi-select]"),selectionLabel=multi?.querySelector("[data-selection-label]"),updateSelection=()=>{if(!multi||!selectionLabel)return;const selected=[...multi.querySelectorAll("[data-site-option]:checked")];selectionLabel.textContent=selected.length===0?"Select websites":selected.length===1?selected[0].dataset.siteName:selected.length+" websites selected"};multi?.querySelectorAll("[data-site-option]").forEach(option=>option.addEventListener("change",updateSelection));updateSelection();document.querySelectorAll("[data-single-select]").forEach(control=>{const input=control.querySelector("[data-single-value]"),label=control.querySelector("[data-single-label]");control.querySelectorAll("[data-single-option]").forEach(option=>option.addEventListener("click",()=>{input.value=option.dataset.value;label.textContent=option.textContent;input.dispatchEvent(new Event("change",{bubbles:true}));control.open=false}))});const name=document.querySelector("#display-name"),preview=document.querySelector("[data-avatar-preview]");name?.addEventListener("input",()=>{if(preview)preview.src="/avatar.svg?name="+encodeURIComponent(name.value||"Risulta")});document.querySelectorAll("[data-copy-code]").forEach(button=>{const place=()=>{const toggle=document.querySelector(".snippet-toggle"),snippet=document.querySelector(toggle?.checked?"#minimal-snippet":"#formatted-snippet");if(snippet){button.classList.add("snippet-copy");snippet.append(button)}};place();document.querySelector(".snippet-toggle")?.addEventListener("change",place);button.addEventListener("click",async()=>{const snippet=button.parentElement;try{await navigator.clipboard.writeText(snippet.textContent.replace(button.textContent,""));notify("Code copied.")}catch{notify("Copy failed. Select the code and copy it manually.")}})});const chart=document.querySelector(".chart"),guide=chart?.querySelector(".chart-guide"),tooltip=chart?.querySelector(".chart-tooltip"),points=[...(chart?.querySelectorAll(".chart-point")||[])];const activate=point=>{points.forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&tooltip&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false;tooltip.setAttribute("x",Math.max(90,Math.min(870,Number(x))));tooltip.textContent=point.dataset.value;tooltip.hidden=false}};chart?.addEventListener("pointermove",event=>{const box=chart.getBoundingClientRect(),x=(event.clientX-box.left)/box.width*960;activate(points.reduce((nearest,point)=>Math.abs(Number(point.getAttribute("cx"))-x)<Math.abs(Number(nearest.getAttribute("cx"))-x)?point:nearest,points[0]))});chart?.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart?.addEventListener("pointerleave",()=>{points.forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true;if(tooltip)tooltip.hidden=true});});`, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
+    if (req.method === "GET" && url.pathname === "/htmx.js") {
+      send(res, 200, htmxSource, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=31536000, immutable" }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/htmx-sse.js") {
+      send(res, 200, htmxSseSource, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=31536000, immutable" }); return;
     }
     if (req.method === "GET" && url.pathname === "/ui.js") {
-      send(res, 200, `document.addEventListener("DOMContentLoaded",()=>{const role=document.querySelector("#role"),assign=document.querySelector("#viewer-websites");const sync=()=>{if(!role||!assign)return;const viewer=role.value==="viewer";assign.hidden=!viewer;assign.querySelectorAll("input,select").forEach(input=>input.disabled=!viewer)};role?.addEventListener("change",sync);sync();const name=document.querySelector("#display-name"),preview=document.querySelector("[data-avatar-preview]");name?.addEventListener("input",()=>{preview.src="/avatar.svg?name="+encodeURIComponent(name.value||"Risulta")});document.querySelectorAll("[data-copy-code]").forEach(button=>button.addEventListener("click",async()=>{const toggle=document.querySelector(".snippet-toggle"),snippet=document.querySelector(toggle?.checked?"#minimal-snippet":"#formatted-snippet"),status=document.querySelector("#copy-status");if(!snippet||!status)return;try{await navigator.clipboard.writeText(snippet.textContent);status.textContent="Code copied."}catch{status.textContent="Copy failed. Select the code and copy it manually."}}));const chart=document.querySelector(".chart"),guide=chart?.querySelector(".chart-guide"),tooltip=chart?.querySelector(".chart-tooltip"),points=[...(chart?.querySelectorAll(".chart-point")||[])];const activate=point=>{points.forEach(item=>item.classList.toggle("is-active",item===point));if(guide&&tooltip&&point){const x=point.getAttribute("cx");guide.setAttribute("x1",x);guide.setAttribute("x2",x);guide.hidden=false;tooltip.setAttribute("x",Math.max(90,Math.min(870,Number(x))));tooltip.textContent=point.dataset.value;tooltip.hidden=false}};chart?.addEventListener("pointermove",event=>{const box=chart.getBoundingClientRect(),x=(event.clientX-box.left)/box.width*960;activate(points.reduce((nearest,point)=>Math.abs(Number(point.getAttribute("cx"))-x)<Math.abs(Number(nearest.getAttribute("cx"))-x)?point:nearest,points[0]))});chart?.addEventListener("focusin",event=>{const point=event.target.closest(".chart-point");if(point)activate(point)});chart?.addEventListener("pointerleave",()=>{points.forEach(item=>item.classList.remove("is-active"));if(guide)guide.hidden=true;if(tooltip)tooltip.hidden=true});});`, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
+      send(res, 200, uiSource, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" }); return;
     }
     if (req.method === "GET" && url.pathname === "/healthz") {
       send(res, 200, "ok\n", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return;
@@ -321,6 +351,7 @@ const server = http.createServer(async (req, res) => {
         const now = Date.now();
         const store = database.siteStore(site);
         store.insert({ ts: Math.floor(now / 1000), name: event.name, path: cleanPath(event.path), referrer: String(event.referrer || "").slice(0, 512), visitor: visitorHash(store, req, now), attribution: acquisitionAttribution(event), value: event.value });
+        publishLive(site);
         send(res, 202, "", { "access-control-allow-origin": "*", "cache-control": "no-store" });
       } catch {
         incrementCounter("events_rejected_total");
@@ -368,6 +399,21 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, `${body}\n`, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${site.domain}-${report.dimension}.csv"`, "cache-control": "no-store" }); return;
     }
     if (!user) { redirect(res, "/login"); return; }
+    const liveMatch = url.pathname.match(/^\/sites\/(\d+)\/live$/);
+    if (req.method === "GET" && liveMatch) {
+      const site = database.getSiteForUser(Number(liveMatch[1]), user);
+      if (!site) { send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }); return; }
+      const options = liveOptions(url);
+      res.writeHead(200, { ...securityHeaders, "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" });
+      res.flushHeaders();
+      const subscribers = liveSubscribers.get(site.id) || new Set();
+      const subscriber = { res, options, remove: () => { subscribers.delete(subscriber); if (!subscribers.size) liveSubscribers.delete(site.id); } };
+      subscribers.add(subscriber);
+      liveSubscribers.set(site.id, subscribers);
+      writeLive(res, liveUpdate(site, options));
+      req.once("close", subscriber.remove);
+      return;
+    }
     const reportsMatch = url.pathname.match(/^\/sites\/(\d+)\/reports$/);
     if (req.method === "GET" && reportsMatch) {
       const site = database.getSiteForUser(Number(reportsMatch[1]), user);
@@ -456,11 +502,15 @@ const server = http.createServer(async (req, res) => {
       const password = String(form.get("password") || "");
       const role = form.get("role") === "admin" ? "admin" : "viewer";
       const siteIds = form.getAll("site").map(Number).filter(Number.isInteger);
+      const values = { email, role, siteIds };
       let error = "";
       if (!email.includes("@")) error = "Enter a valid email address.";
       else if (password.length < 12) error = "The password must have at least 12 characters.";
       if (!error) { try { database.createUser(email, hashPassword(password), role, siteIds); } catch { error = "A user with that email already exists."; } }
-      if (error) html(res, 400, usersPage({ user, csrf: user.csrf, users: database.listUsers(), sites: database.listSitesForUser(user), error }));
+      const workspace = { csrf: user.csrf, users: database.listUsers(), sites: database.listSitesForUser(user) };
+      if (error && req.headers["hx-request"] === "true") send(res, 400, usersWorkspaceFragment({ ...workspace, error, values }), htmlHeaders);
+      else if (error) html(res, 400, usersPage({ user, ...workspace, error, values }));
+      else if (req.headers["hx-request"] === "true") send(res, 200, usersWorkspaceFragment({ ...workspace, success: "User created." }), htmlHeaders);
       else redirect(res, "/admin/users");
       return;
     }

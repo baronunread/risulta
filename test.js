@@ -35,6 +35,8 @@ const betaStore = privacyDatabase.siteStore(privacyBeta);
 assert.notDeepEqual(alphaStore.salt(privacyDay), alphaStore.salt("2026-09-01"), "site salts rotate at the UTC day boundary");
 assert.notDeepEqual(alphaStore.salt(privacyDay), betaStore.salt(privacyDay), "site salts isolate visitor identities");
 assert.equal(alphaStore.db.prepare("PRAGMA table_info(events)").all().some((column) => /ip|agent/i.test(column.name)), false, "analytics storage has no raw IP or User-Agent fields");
+alphaStore.insert({ ts: 1, name: "pageview", path: "/", referrer: "", visitor: "seed-compatible" });
+assert.equal(alphaStore.db.prepare("SELECT value FROM events WHERE visitor = ?").get("seed-compatible").value, null, "events without an optional value can be seeded");
 privacyDatabase.close();
 
 const version = await new Promise((resolve, reject) => {
@@ -172,7 +174,25 @@ async function customEvent(site, domain, name, path, value) {
     body: JSON.stringify({ name, domain, path, value }),
   });
 }
+const liveResponse = await request(`/sites/${alpha.id}/live?period=30`, { headers: { cookie: adminCookie } });
+assert.equal(liveResponse.status, 200);
+assert.match(liveResponse.headers.get("content-type"), /text\/event-stream/);
+const liveReader = liveResponse.body.getReader();
+const initialLiveUpdate = await liveReader.read();
+const initialLiveHtml = new TextDecoder().decode(initialLiveUpdate.value);
+assert.match(initialLiveHtml, /traffic-summary/);
+assert.doesNotMatch(initialLiveHtml, /dashboard-install/);
 assert.equal((await event(alpha, alpha.domain, "/alpha-only")).status, 202);
+const pushedLiveUpdate = await Promise.race([
+  liveReader.read(),
+  new Promise((_, reject) => setTimeout(() => reject(new Error("live update was not pushed")), 2000)),
+]);
+const pushedLiveHtml = new TextDecoder().decode(pushedLiveUpdate.value);
+assert.match(pushedLiveHtml, /Total pageviews<\/span><strong>1/);
+assert.match(pushedLiveHtml, /Top pages/);
+assert.match(pushedLiveHtml, /hx-swap-oob="outerHTML"/);
+assert.match(pushedLiveHtml, /dashboard-install/);
+await liveReader.cancel();
 assert.equal((await event(alpha, alpha.domain, "/docs", "https://search.example")).status, 202);
 assert.equal((await event(beta, beta.domain, "/beta-only")).status, 202);
 assert.equal((await event(alpha, alpha.domain, "/pricing?utm_source=newsletter&utm_medium=email&utm_campaign=launch&utm_content=hero&utm_term=analytics", "", { "user-agent": "campaign-test" })).status, 202);
@@ -195,16 +215,30 @@ assert.match(sitesOverview, /Last 7 days/);
 assert.match(sitesOverview, /site-overview/);
 assert.match(sitesOverview, /<svg/);
 assert.doesNotMatch(sitesOverview, /blobatar\.dev/);
+assert.doesNotMatch(sitesOverview, /<section class="panel" aria-label="Websites">/);
 
 const alphaDashboard = await (await request(`/sites/${alpha.id}?period=30`, { headers: { cookie: adminCookie } })).text();
 assert.match(alphaDashboard, /alpha-only/);
 assert.doesNotMatch(alphaDashboard, /beta-only/);
 assert.match(alphaDashboard, /Last 30 days/);
 assert.match(alphaDashboard, /Unique visitor-days/);
+assert.match(alphaDashboard, /Top mediums/);
+assert.match(alphaDashboard, /email/);
+assert.match(alphaDashboard, /dimension=medium&medium=email/);
 assert.match(alphaDashboard, /Top campaigns/);
+assert.match(alphaDashboard, /id="dashboard-reports"/);
 assert.match(alphaDashboard, /Skip to content/);
 assert.doesNotMatch(alphaDashboard, /Install the tracker/);
 assert.match(alphaDashboard, /Website settings/);
+assert.match(alphaDashboard, /src="\/htmx\.js"/);
+assert.match(alphaDashboard, /hx-sse:connect/);
+const dashboardResponse = await request(`/sites/${alpha.id}`, { headers: { cookie: adminCookie } });
+assert.match(dashboardResponse.headers.get("content-security-policy"), /connect-src 'self'/);
+assert.equal((await request("/htmx.js")).status, 200);
+assert.equal((await request("/htmx-sse.js")).status, 200);
+assert.match(await (await request("/ui.js")).text(), /execCommand\("copy"\)/);
+const trackerSettings = await (await request(`/sites/${alpha.id}/settings`, { headers: { cookie: adminCookie } })).text();
+assert.match(trackerSettings, /id="minimal-snippet"[^>]* hidden/);
 const stats = await request(`/api/sites/${alpha.id}/stats?period=30&dimension=campaign&campaign=launch`, { headers: { cookie: adminCookie } });
 assert.equal(stats.status, 200);
 const statsBody = await stats.json();
@@ -228,7 +262,8 @@ assert.match(alphaPageviews, /Hide comparison/);
 const today = new Date().toISOString().slice(0, 10);
 const alphaCustomRange = await (await request(`/sites/${alpha.id}?from=${today}&to=${today}&metric=visits`, { headers: { cookie: adminCookie } })).text();
 assert.match(alphaCustomRange, new RegExp(`${today} to ${today}`));
-assert.match(alphaCustomRange, /Apply range/);
+assert.match(alphaCustomRange, />Apply</);
+assert.doesNotMatch(alphaCustomRange, /NaN/);
 const alphaToday = await (await request(`/sites/${alpha.id}?period=1`, { headers: { cookie: adminCookie } })).text();
 assert.match(alphaToday, /Today/);
 assert.match(alphaToday, /Unique visitors today/);
@@ -243,7 +278,7 @@ assert.match(alphaSettingsHtml, /Tracker code/);
 assert.match(alphaSettingsHtml, /favicon-light\.svg/);
 assert.match(alphaSettingsHtml, /favicon-dark\.svg/);
 assert.match(alphaSettingsHtml, /ui\.js\?v=/);
-assert.match(alphaSettingsHtml, />GitHub<\/a>/);
+assert.match(alphaSettingsHtml, /View source on GitHub/);
 assert.match(alphaSettingsHtml, new RegExp(version));
 assert.match(alphaSettingsHtml, /Risulta analytics/);
 assert.match(alphaSettingsHtml, /Use minimal one-line snippet/);
@@ -283,11 +318,31 @@ assert.match(usersHtml, /Create user/);
 assert.match(usersHtml, /Existing users/);
 assert.match(usersHtml, /user-record/);
 assert.match(usersHtml, /1 account/);
-assert.match(usersHtml, /data-multi-select/);
-assert.match(usersHtml, /data-site-option/);
-assert.match(usersHtml, /data-single-select/);
-assert.match(usersHtml, /data-single-option/);
+assert.match(usersHtml, /hx-target="#users-workspace"/);
 const usersCsrf = csrfFrom(usersHtml);
+const htmxUser = await request("/admin/users", {
+  method: "POST",
+  headers: { cookie: adminCookie, origin: base, "content-type": "application/x-www-form-urlencoded", "hx-request": "true" },
+  body: form({ csrf: usersCsrf, email: "fragment@example.com", password: "fragment password 123", role: "viewer", site: String(alpha.id) }),
+});
+assert.equal(htmxUser.status, 200);
+const htmxUsersHtml = await htmxUser.text();
+assert.match(htmxUsersHtml, /id="users-workspace"/);
+assert.match(htmxUsersHtml, /id="existing-users"/);
+assert.match(htmxUsersHtml, /fragment@example\.com/);
+assert.match(htmxUsersHtml, /User created\./);
+assert.doesNotMatch(htmxUsersHtml, /<!doctype html>/);
+assert.match(htmxUsersHtml, /name="email"[^>]*value=""/);
+const duplicateHtmxUser = await request("/admin/users", {
+  method: "POST",
+  headers: { cookie: adminCookie, origin: base, "content-type": "application/x-www-form-urlencoded", "hx-request": "true" },
+  body: form({ csrf: usersCsrf, email: "fragment@example.com", password: "fragment password 123", role: "viewer", site: String(alpha.id) }),
+});
+assert.equal(duplicateHtmxUser.status, 400);
+const duplicateHtmxUsersHtml = await duplicateHtmxUser.text();
+assert.match(duplicateHtmxUsersHtml, /id="users-workspace"/);
+assert.match(duplicateHtmxUsersHtml, /A user with that email already exists\./);
+assert.doesNotMatch(duplicateHtmxUsersHtml, /<!doctype html>/);
 const viewerEmail = "viewer@example.com";
 const viewerPassword = "viewer password 123";
 const createViewer = await request("/admin/users", {
@@ -300,6 +355,7 @@ assert.equal(createViewer.status, 303);
 const viewerCookie = await login(viewerEmail, viewerPassword);
 assert.equal((await request(`/sites/${alpha.id}`, { headers: { cookie: viewerCookie } })).status, 200);
 assert.equal((await request(`/sites/${beta.id}`, { headers: { cookie: viewerCookie } })).status, 403);
+assert.equal((await request(`/sites/${beta.id}/live`, { headers: { cookie: viewerCookie } })).status, 403);
 assert.equal((await request(`/api/sites/${beta.id}/stats`, { headers: { cookie: viewerCookie } })).status, 403);
 assert.equal((await request("/admin/users", { headers: { cookie: viewerCookie } })).status, 403);
 const badCsrf = await request("/logout", {
