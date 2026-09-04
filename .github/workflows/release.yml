@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.1
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun test.js
@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.1
       - run: bun install --frozen-lockfile
       - name: Build ${{ matrix.artifact }}
         run: |
