@@ -54,7 +54,12 @@ Two bugs found and fixed during probing:
 
 - Password login: no `crypto.subtle`, no scrypt in the sprout prelude
   (`randomUUID`/`getRandomValues` only). Probe routes are open and labeled.
-- Daily salted visitor SHA-256: same blocker. Probe uses opaque bounded
+  The `subtle` half is tracked as
+  [sproutboat-cli#26](https://github.com/baronunread/sproutboat-cli/issues/26)
+  (digest + HMAC + constant-time compare, both transports); scrypt password
+  compatibility is explicitly out of scope there and still needs its own path.
+- Daily salted visitor SHA-256: same `subtle` blocker (CLI #26), plus
+  trustworthy client metadata (platform #128). Probe uses opaque bounded
   visitor strings; counts are functional, not privacy-preserving.
 - Service-bound notification sprout: standalone builder rejects `services`
   bindings (no edge). Correct per plan: direct module adapter in standalone.
