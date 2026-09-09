@@ -10,7 +10,7 @@ Keep the current Risulta application intact. A Sproutboat-native port is a runti
 
 - [RISULTA-AUDIT.md](RISULTA-AUDIT.md): current implementation, porting obstacles and alternatives.
 - [PLAN.md](PLAN.md): complete application architecture, capability mapping, milestones and verification gates.
-- [APP-IDEAS.md](APP-IDEAS.md): other useful fullstack products that fit Sproutboat.
+- [../APP-IDEAS.md](../APP-IDEAS.md): other useful fullstack products that fit Sproutboat (not Risulta-specific).
 
 ## Immediate platform work worth doing first
 
