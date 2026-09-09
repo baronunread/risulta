@@ -1,10 +1,11 @@
 # Probe results: single standalone Risulta sprout
 
 2026-09-09, branch `sprout/standalone-single`, sproutboat 0.8.0 (0.9.0
-available), Porffor alpha-4 toolchain. Milestone 1 slice: site registration,
-tracker ingestion, goals, attribution, polling dashboard, bounded reports
-(JSON + CSV), embedded static assets. No auth, no salted visitor hashes
-(both blocked, see below).
+available), Porffor alpha-4 toolchain. Scope is the standalone product in
+`README.md`: site registration, tracker ingestion, goals, attribution,
+polling dashboard, bounded reports (JSON + CSV), embedded static assets.
+Login, salted visitor hashes and scheduled jobs are out of scope by design,
+not deferred blockers.
 
 ## Build matrix
 
@@ -50,21 +51,19 @@ Two bugs found and fixed during probing:
    assets directory is the URL root). Fix: serve `/dashboard.js` and
    `/style.css`, fall unknown GETs through to `env.ASSETS.fetch`.
 
-## Blocked (expected, per `docs/sprout-plan/PLAN.md` Milestone 0 gate)
+## Out of scope (by design, not deferred)
 
-- Password login: no `crypto.subtle`, no scrypt in the sprout prelude
-  (`randomUUID`/`getRandomValues` only). Probe routes are open and labeled.
-  The `subtle` half is tracked as
-  [sproutboat-cli#26](https://github.com/baronunread/sproutboat-cli/issues/26)
-  (digest + HMAC + constant-time compare, both transports); scrypt password
-  compatibility is explicitly out of scope there and still needs its own path.
-- Daily salted visitor SHA-256: same `subtle` blocker (CLI #26), plus
-  trustworthy client metadata (platform #128). Probe uses opaque bounded
-  visitor strings; counts are functional, not privacy-preserving.
-- Service-bound notification sprout: standalone builder rejects `services`
-  bindings (no edge). Correct per plan: direct module adapter in standalone.
-- KV cache: deliberately not added. The plan admits KV only for an observed
-  repeated lookup/summary; no such hotspot has been measured yet.
+- Login and multi-user access. No password auth exists, and the sprout
+  runtime has no scrypt/`crypto.subtle`. Deployment assumption is
+  localhost or a controlled reverse proxy; network access is admin access.
+- Salted daily visitor SHA-256. Blocked on `crypto.subtle` (tracked as
+  [sproutboat-cli#26](https://github.com/baronunread/sproutboat-cli/issues/26))
+  plus trustworthy client metadata (platform #128). The probe uses opaque
+  bounded visitor strings; counts are functional, not privacy-preserving.
+- Scheduled summaries, alerts and queued exports. No cron, queues or
+  background jobs exist standalone; CSV is generated synchronously.
+- KV cache: deliberately not added. A cache is admitted only for a measured
+  repeated lookup/summary hotspot; none has been observed.
 
 ## Notes
 

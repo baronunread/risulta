@@ -1,26 +1,24 @@
-// Risulta Sprout (single standalone sprout, Milestone 1 slice).
+// Risulta Sprout (single standalone binary, no platform).
 //
 // One app sprout, one D1 database, static assets embedded in the binary, no
 // service bindings (standalone builds reject them: there is no edge). The
-// existing Bun Risulta app is untouched; this is an experimental sibling that
+// existing Bun Risulta app is untouched; this is a smaller sibling that
 // reuses its domain rules where the sprout runtime allows.
 //
-// Deliberate probe limits, not product claims:
-// - No authentication. The admin/viewer login needs scrypt password
-//   verification and SHA-256 session digests; the sprout prelude exposes
-//   crypto.randomUUID/getRandomValues only, no crypto.subtle digest/HMAC.
-//   Every write route here is open and labeled as such.
+// Deliberate scope limits, not deferred work:
+// - No accounts. The sprout runtime has no scrypt/crypto.subtle for password
+//   auth. Run on localhost or behind a proxy you control; network access is
+//   admin access.
 // - No salted daily visitor hashes. `visitor` is an opaque client-supplied
 //   string bounded to 64 chars. Real Risulta derives a daily site-local
-//   SHA-256 from IP + User-Agent and stores neither input; that primitive
-//   is blocked until validated crypto exists. Do not treat probe counts
-//   as privacy-preserving.
+//   SHA-256 from IP + User-Agent and stores neither input. Do not treat
+//   these counts as privacy-preserving.
 // - Single logical D1 instead of one SQLite file per site. Every site-owned
 //   row carries site_id and every query scopes on it.
 // - Polling dashboard (5-second interval, pauses in hidden tabs, backs off
 //   on errors), no SSE (streaming responses are unsupported).
-// - Synchronous bounded CSV export. Queue-based reports, cron summaries and
-//   alerting are Milestone 2 and need durable scheduling first.
+// - Synchronous bounded CSV export. There are no cron jobs, queues or
+//   background workers standalone; reports generate on request.
 
 function json(data, status) {
   return new Response(JSON.stringify(data), {
@@ -228,7 +226,7 @@ function pageShell(title, body) {
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
     "<link rel=\"stylesheet\" href=\"/style.css\">" +
     "<title>" + escapeHtml(title) + "</title></head><body>" + body +
-    "<footer><p>Risulta Sprout probe. No login yet and opaque visitor strings. Do not use with real traffic.</p></footer></body></html>"
+    "<footer><p>Risulta Sprout: single binary, no accounts. Run on localhost or behind a proxy you control.</p></footer></body></html>"
   );
 }
 
@@ -241,7 +239,7 @@ function homePage(sites, origin) {
     .join("");
   return pageShell(
     "Risulta Sprout",
-    "<header><h1>Risulta Sprout</h1><p>Standalone probe. No login yet: auth needs scrypt/SHA-256 the sprout runtime does not expose. " +
+    "<header><h1>Risulta Sprout</h1><p>Single binary, no accounts: run on localhost or behind a proxy you control. " +
       "Visitor counts use an opaque bounded string, not salted daily hashes. Origin for snippets: " + escapeHtml(origin) + "</p></header><main>" +
       "<h2>Add a website</h2>" +
       "<form class=\"inline\" method=\"post\" action=\"/api/sites\"><input name=\"name\" placeholder=\"Example shop\" required> " +
@@ -439,7 +437,7 @@ export default {
           "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY label ORDER BY visitors DESC, pageviews DESC LIMIT 8",
       ).bind(site.id, range.since, range.until).all().results;
       const goals = siteGoals(env.DB, site.id, range.since, range.until, Number(summary.visitors));
-      return json({ site, range: range.label, summary, byDay, paths, sources, goals, note: "probe build: no auth, opaque visitor strings, single D1" });
+      return json({ site, range: range.label, summary, byDay, paths, sources, goals, note: "standalone: no accounts, opaque visitor strings, single D1" });
     }
 
     // Bounded report with exact-match filters, sortable and paginated, as
