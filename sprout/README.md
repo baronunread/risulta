@@ -73,8 +73,10 @@ on; know your own setup.
 - `sproutboat.jsonc`: project `risulta-sprout`, one D1 database (`DB`),
   embedded `public/` assets, `vars` and four secrets. No service bindings
   (standalone binaries have no edge).
-- `src/index.js`: the whole app. Fetch handler, D1 repository with
-  per-row `site_id` scoping, no `node:` imports.
+- `src/index.js`: request router only. Domain rules live in `domain.js`,
+  storage in `store.js`, auth in `auth.js`, pages in `views.js`, charts
+  in `chart.js`, crypto in `sha256.js`. No `node:` imports anywhere
+  in sprout modules.
 - `src/sha256.js`: vendored pure-JS SHA-256 (no runtime crypto exists).
   Vectors in `tests/sha256-test.mjs` (`bun sprout/tests/sha256-test.mjs`).
 - `public/`: dashboard CSS and dependency-free polling JS (static files,
