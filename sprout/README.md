@@ -4,7 +4,8 @@ One binary, one data directory, no platform. Sign in, add a website, paste
 its tracker snippet, and get pageviews, conversions, attribution and bounded
 CSV reports behind a polling dashboard that looks like Risulta: same design
 tokens, topbar, metric panels, SVG charts and report cards (server-rendered;
-live numbers refresh every 5 seconds, no htmx, no framework). It runs from
+htmx swaps a live fragment every 5 seconds, no framework, no-JS fallback
+shows the same numbers). It runs from
 `sproutboat build --standalone` output and keeps state in `SB_DATA_DIR`:
 
 ```sh
@@ -79,8 +80,10 @@ on; know your own setup.
   in sprout modules.
 - `src/sha256.js`: vendored pure-JS SHA-256 (no runtime crypto exists).
   Vectors in `tests/sha256-test.mjs` (`bun sprout/tests/sha256-test.mjs`).
-- `public/`: dashboard CSS and dependency-free polling JS (static files,
-  not compiled through Porffor).
+- `public/`: Risulta stylesheet, htmx 4 (BSD-0-Clause, vendored from the
+  repo's `node_modules` for dashboard polling), and a small glue script
+  (tracker copy button, poll status). Static files, not compiled through
+  Porffor.
 - `seed.sh`, `verify.sh`: fixture seeding and a 48-assertion boundary
   check against a running binary (both trust modes covered).
 

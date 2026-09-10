@@ -45,6 +45,7 @@ Covered by `sprout/verify.sh`:
 | Password change revokes other sessions, old password dies, restore works | PASS |
 | Logout kills the session; static assets stay public | PASS |
 | Visual parity with the Bun app (login, sites, dashboard, users pages) | PASS, screenshot-compared in browser dark mode |
+| htmx 4 polling (fragment swap, live update without reload) | PASS, proven in browser (3→4 pageviews on event) |
 | Restart persistence | PASS (previous commit; schema additive since) |
 
 ## Runtime findings (upstream-worthy)

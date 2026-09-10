@@ -34,7 +34,7 @@ export function pageShell(title, user, body, site, sites) {
     '<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">' +
     '<link rel="stylesheet" href="/style.css">' +
     "<title>" + escapeHtml(title) + " - Risulta</title>" +
-    '<script src="/dashboard.js" defer></script></head><body><a class="skip" href="#main">Skip to content</a>' +
+    '<script src="/htmx.min.js"></script><script src="/dashboard.js" defer></script></head><body><a class="skip" href="#main">Skip to content</a>' +
     (user ? topbar(user, site || null, sites || []) : "") + body +
     (user ? '<footer class="footer"><div class="shell"><span><strong>Risulta Sprout</strong> standalone analytics</span></div></footer>' : "") +
     "</body></html>";
@@ -91,6 +91,39 @@ export function newSitePage(user, error) {
   );
 }
 
+export function liveFragment(site, analytics, range, days, metric) {
+  const metrics = analytics.summary;
+  const viewsPerVisit = Number(metrics.visits) ? Number(metrics.pageviews) / Number(metrics.visits) : 0;
+  const visitorLabel = days === 1 ? "Unique visitors today" : "Unique visitor-days";
+  const metricLabel = metric === "pageviews" ? "Pageviews" : metric === "visits" ? "Visits" : visitorLabel;
+  const hasData = Number(metrics.pageviews) > 0;
+  const series = days === 1 ? hourSeries(analytics.byHour) : dateSeries(days, analytics.byDay);
+  const metricTabs = [["visitors", visitorLabel], ["visits", "Visits"], ["pageviews", "Pageviews"]].map((tab) =>
+    '<a href="/sites/' + site.id + "?" + liveQuery(range, days) + "&metric=" + tab[0] + '"' + (metric === tab[0] ? ' aria-current="page"' : "") + ">" + escapeHtml(tab[1]) + "</a>").join("");
+  const pageQuery = liveQuery(range, days);
+  const reportLinks = '<a class="footer-link" href="/api/sites/' + site.id + "/report?" + pageQuery + '&dimension=path">JSON</a> · <a class="footer-link" href="/api/sites/' + site.id + "/report?" + pageQuery + '&dimension=path&format=csv">CSV</a>';
+  return '<section class="panel" aria-label="Traffic summary"><div class="metrics">' +
+    '<div class="metric"><span>' + escapeHtml(visitorLabel) + '</span><strong data-metric="visitors">' + fmtInt(metrics.visitors) + "</strong></div>" +
+    '<div class="metric"><span>Total visits</span><strong data-metric="visits">' + fmtInt(metrics.visits) + "</strong></div>" +
+    '<div class="metric"><span>Total pageviews</span><strong data-metric="pageviews">' + fmtInt(metrics.pageviews) + "</strong></div>" +
+    '<div class="metric"><span>Views per visit</span><strong data-metric="views-per-visit">' + viewsPerVisit.toFixed(2) + "</strong></div></div>" +
+    (hasData
+      ? '<div class="chart-wrap"><nav class="periods" aria-label="Chart metric">' + metricTabs + "</nav>" + chart(series, metric === "visitors" ? "visitors" : metric, metricLabel) + "</div>"
+      : '<div class="empty"><h2>Waiting for the first visitor</h2><p>Install the tracker below. New visits will appear here live.</p></div>') +
+    "</section>" +
+    '<p class="hint metrics-note">Visitor identities reset at each UTC day. Multi-day totals are unique visitor-days, not deduplicated people. <span class="status" id="poll-status" data-state="live">Live.</span></p>' +
+    '<div id="dashboard-reports" class="reports">' + goalCard(analytics.goals) +
+    reportCard("Top pages", analytics.paths, "Pages will appear after the first view.", reportLinks) +
+    reportCard("Top sources", analytics.referrers, "Sources will appear after the first visit.", reportLinks) +
+    reportCard("Top mediums", analytics.mediums, "Mediums will appear after tagged visits.", reportLinks) +
+    reportCard("Top campaigns", analytics.campaigns, "Campaigns will appear after tagged visits.", reportLinks) +
+    "</div>";
+}
+
+function liveQuery(range, days) {
+  return range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days;
+}
+
 export function reportCard(title, rows, emptyLabel, detailLinks) {
   let max = 1;
   for (let i = 0; i < rows.length; i++) max = Math.max(max, Number(rows[i].visitors));
@@ -117,17 +150,9 @@ export function goalCard(goals) {
 }
 
 export function sitePage(user, site, sites, analytics, range, days, metric, origin) {
-  const metrics = analytics.summary;
-  const viewsPerVisit = Number(metrics.visits) ? Number(metrics.pageviews) / Number(metrics.visits) : 0;
-  const visitorLabel = days === 1 ? "Unique visitors today" : "Unique visitor-days";
-  const metricLabel = metric === "pageviews" ? "Pageviews" : metric === "visits" ? "Visits" : visitorLabel;
   const title = range.from ? range.from + " to " + range.to : days === 1 ? "Today" : "Last " + days + " days";
-  const hasData = Number(metrics.pageviews) > 0;
-  const series = days === 1 ? hourSeries(analytics.byHour) : dateSeries(days, analytics.byDay);
-  const statsBase = "/api/sites/" + site.id + "/stats?" + (range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days);
-  const pageQuery = range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days;
-  const metricTabs = [["visitors", visitorLabel], ["visits", "Visits"], ["pageviews", "Pageviews"]].map((tab) =>
-    '<a href="/sites/' + site.id + "?" + pageQuery + "&metric=" + tab[0] + '"' + (metric === tab[0] ? ' aria-current="page"' : "") + ">" + escapeHtml(tab[1]) + "</a>").join("");
+  const hasData = Number(analytics.summary.pageviews) > 0;
+  const statsBase = "/api/sites/" + site.id + "/partials/live?" + (range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days) + "&metric=" + metric;
   const periodTabs = [1, 7, 30].map((period) =>
     '<a href="/sites/' + site.id + "?period=" + period + "&metric=" + metric + '"' + (!range.from && period === days ? ' aria-current="page"' : "") + ">" +
     (period === 1 ? "Today" : period + "d") + "</a>").join("");
@@ -144,7 +169,6 @@ export function sitePage(user, site, sites, analytics, range, days, metric, orig
       '<div class="field"><label for="goal-path">Path (optional)</label><input id="goal-path" name="path" maxlength="2048" placeholder="/pricing"></div>' +
       '<div class="actions"><button class="button" type="submit">Add goal</button></div></form></section>'
     : "";
-  const reportLinks = '<a class="footer-link" href="/api/sites/' + site.id + "/report?" + pageQuery + '&dimension=path">JSON</a> · <a class="footer-link" href="/api/sites/' + site.id + "/report?" + pageQuery + '&dimension=path&format=csv">CSV</a>';
   return pageShell(
     site.name + " analytics",
     user,
@@ -156,23 +180,9 @@ export function sitePage(user, site, sites, analytics, range, days, metric, orig
       '<label class="compact-field" for="range-from"><span>From</span><input id="range-from" name="from" type="date" required value="' + escapeHtml(range.from) + '"></label>' +
       '<label class="compact-field" for="range-to"><span>To</span><input id="range-to" name="to" type="date" required value="' + escapeHtml(range.to) + '"></label>' +
       '<button class="button secondary" type="submit">Apply</button></form></details></div></div>' +
-      '<div id="live-stats" data-stats-url="' + statsBase + '" data-range-query="' + pageQuery + '" data-site-id="' + site.id + '">' +
-      '<section class="panel" aria-label="Traffic summary"><div class="metrics">' +
-      '<div class="metric"><span>' + escapeHtml(visitorLabel) + '</span><strong data-metric="visitors">' + fmtInt(metrics.visitors) + "</strong></div>" +
-      '<div class="metric"><span>Total visits</span><strong data-metric="visits">' + fmtInt(metrics.visits) + "</strong></div>" +
-      '<div class="metric"><span>Total pageviews</span><strong data-metric="pageviews">' + fmtInt(metrics.pageviews) + "</strong></div>" +
-      '<div class="metric"><span>Views per visit</span><strong data-metric="views-per-visit">' + viewsPerVisit.toFixed(2) + "</strong></div></div>" +
-      (hasData
-        ? '<div class="chart-wrap"><nav class="periods" aria-label="Chart metric">' + metricTabs + "</nav>" + chart(series, metric === "visitors" ? "visitors" : metric, metricLabel) + "</div>"
-        : '<div class="empty"><h2>Waiting for the first visitor</h2><p>Install the tracker below. New visits will appear here live.</p></div>') +
-      "</section>" +
-      '<p class="hint metrics-note">Visitor identities reset at each UTC day. Multi-day totals are unique visitor-days, not deduplicated people. <span class="status" id="poll-status" data-state="live">Live.</span></p>' +
-      '<div id="dashboard-reports" class="reports">' + goalCard(analytics.goals) +
-      reportCard("Top pages", analytics.paths, "Pages will appear after the first view.", reportLinks) +
-      reportCard("Top sources", analytics.referrers, "Sources will appear after the first visit.", reportLinks) +
-      reportCard("Top mediums", analytics.mediums, "Mediums will appear after tagged visits.", reportLinks) +
-      reportCard("Top campaigns", analytics.campaigns, "Campaigns will appear after tagged visits.", reportLinks) +
-      "</div></div>" + (hasData ? "" : install) + goalForm + "</main>",
+      '<div id="live-stats" data-stats-url="' + statsBase + '" hx-get="' + statsBase + '" hx-trigger="every 5s" hx-target="#live-stats" hx-swap="innerHTML">' +
+      liveFragment(site, analytics, range, days, metric) +
+      "</div>" + (hasData ? "" : install) + goalForm + "</main>",
     site,
     sites,
   );

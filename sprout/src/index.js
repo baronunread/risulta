@@ -45,6 +45,7 @@ import { escapeHtml } from "./util.js";
 import {
   accountPage,
   homePage,
+  liveFragment,
   loginPage,
   newSitePage,
   pageShell,
@@ -407,6 +408,23 @@ export default {
         if (wantsJson) return json({ ok: true, name, eventName, path: goalPath }, 201);
         return redirect("/sites/" + site.id);
       }
+    }
+
+    // Live fragment for htmx polling: the same server-rendered markup as
+    // the dashboard's live region, swapped in every few seconds.
+    const liveMatch = /^\/sites\/(\d+)\/partials\/live$/.exec(path);
+    if (liveMatch && method === "GET") {
+      const site = getSiteForUser(env.DB, Number(liveMatch[1]), session);
+      if (!site) return json({ error: "unknown site" }, 404);
+      const now = Math.floor(Date.now() / 1000);
+      const range = parseRange(url.searchParams, now);
+      if (range.error) return json({ error: range.error }, 400);
+      const days = rangeDays(range);
+      const metricParam = url.searchParams.get("metric") || "visitors";
+      const metric = metricParam === "visits" || metricParam === "pageviews" ? metricParam : "visitors";
+      const analytics = siteAnalytics(env.DB, site, range.since, range.until);
+      return new Response(liveFragment(site, analytics, range, days, metric),
+        { headers: { "content-type": "text/html;charset=utf-8" } });
     }
 
     // Stats: D1-backed summary with 30-minute visit boundary, configured

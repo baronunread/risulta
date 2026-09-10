@@ -113,6 +113,13 @@ expect_json "goal value sum" "/api/sites/$SHOP_ID/stats?period=1" 'json.load(sys
 expect_json "explicit range works" "/api/sites/$SHOP_ID/stats?from=2026-01-01&to=2026-12-31" 'json.load(sys.stdin)["summary"]["pageviews"]' 3 "$JAR_A"
 expect_code "reversed range" GET "/api/sites/$SHOP_ID/stats?from=2026-12-31&to=2026-01-01" "" 400 "application/json" "$JAR_A"
 expect_json "report total" "/api/sites/$SHOP_ID/report?dimension=path" 'json.load(sys.stdin)["total"]' 3 "$JAR_A"
+FRAG=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/partials/live?period=1")
+case "$FRAG" in
+  *'class="metrics"'*'Top pages'*) ok "live fragment (authed)" ;;
+  *) bad "live fragment (authed)" ;;
+esac
+expect_code "live fragment anonymous" GET "/sites/$SHOP_ID/partials/live?period=1" "" 302
+expect_code "live fragment unknown site" GET /sites/999999/partials/live?period=1 "" 404 "application/json" "$JAR_A"
 CSV=$(curl -s -m 10 -b "$JAR_A" "$BASE/api/sites/$SHOP_ID/report?dimension=path&format=csv")
 case "$CSV" in
   "label,pageviews,visitors,value"*) ok "csv header" ;;
