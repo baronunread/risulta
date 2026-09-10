@@ -8,6 +8,12 @@
     "TRACKER_VERSION": "0.1.0-probe"
   },
   "d1_databases": ["DB"],
+  "secrets": [
+    "RISULTA_ADMIN_EMAIL",
+    "RISULTA_ADMIN_DISPLAY_NAME",
+    "RISULTA_ADMIN_PASSWORD",
+    "RISULTA_TRUST_PROXY"
+  ],
   "assets": {
     "directory": "public",
     "binding": "ASSETS",

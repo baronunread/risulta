@@ -1,72 +1,77 @@
 # Probe results: single standalone Risulta sprout
 
-2026-09-09, branch `sprout/standalone-single`, sproutboat 0.8.0 (0.9.0
+2026-09-10, branch `sprout/standalone-single`, sproutboat 0.8.0 (0.9.0
 available), Porffor alpha-4 toolchain. Scope is the standalone product in
-`README.md`: site registration, tracker ingestion, goals, attribution,
-polling dashboard, bounded reports (JSON + CSV), embedded static assets.
-Login, salted visitor hashes and scheduled jobs are out of scope by design,
-not deferred blockers.
+`README.md`: password login with admin/viewer roles, tracker ingestion with
+daily salted visitor hashes, goals, attribution, polling dashboard, bounded
+reports (JSON + CSV), embedded static assets. No scheduling exists
+standalone (no cron/queues/alarms); summaries and exports run on request.
 
 ## Build matrix
 
 | Check | Result |
 | --- | --- |
+| `bun sprout/tests/sha256-test.mjs` | PASS: 4 NIST vectors + utf8 smoke (one remembered vector was 3 chars short; fixed against WebCrypto) |
 | `sproutboat check sprout` | PASS: `check passed — risulta-sprout (src/index.js, native-fetch)` |
-| `sproutboat build sprout --standalone` (linux-x86_64) | PASS: `built sprout/dist/risulta-sprout (3.0 MB)`, assets baked in |
-| `sproutboat build sprout --standalone --target host` (darwin-arm64) | PASS: `built sprout/dist/risulta-sprout (2.3 MB)`, serves on `$PORT` |
+| `sproutboat build sprout --standalone` (linux-x86_64) | PASS: `built sprout/dist/risulta-sprout (3.2 MB)`, assets baked in |
+| `sproutboat build sprout --standalone --target host` (darwin-arm64) | PASS: `built sprout/dist/risulta-sprout (2.5 MB)`, serves on `$PORT` |
 | `bun run lint` | PASS (only the two pre-existing `lib/views.js` warnings) |
-| `bun run test` (existing Bun app) | PASS: `risulta multi-site self-check OK`, untouched |
-| `sh sprout/verify.sh` (25 assertions, fresh state) | PASS: `pass=25 fail=0` |
+| `bun run test` (existing Bun app) | Untouched (still passing from the previous commit; no app code changed since) |
+| `sh sprout/verify.sh` (48 assertions, fresh state) | PASS: `pass=48 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
 
 ## Runtime matrix (host binary)
 
-Covered by `sprout/verify.sh` plus manual probes:
+Covered by `sprout/verify.sh`:
 
 | Probe | Result |
 | --- | --- |
-| `GET /healthz`, favicon 204 | 200 `ok` |
-| `POST /api/sites` valid (JSON 201, form 303) | PASS |
-| Duplicate domain 409, invalid domain 400 | PASS |
-| `GET /js/<key>.js` | 200, tracker body matches `lib/tracker.js`, MIT header kept |
-| Unknown site key (`/js/`, `/api/event/`, stats) | 404 |
-| `POST /api/event/<key>` valid pageview + conversion | 202 |
-| Wrong-domain event 403 before any write | PASS |
-| Bad event name / out-of-range value / non-JSON body | 400 |
-| Two-site isolation | PASS |
+| Bootstrap admin from secrets; anonymous HTML redirects to login, API 401s | PASS |
+| Wrong password 401, rate limit 429 after 5 failures | PASS |
+| Admin login, session role, CSRF-gated writes (403 without token) | PASS |
+| Login cost ~0.5s per attempt (20k-iteration KDF in the Porffor build) | Measured, accepted |
+| `POST /api/sites`, duplicate 409, invalid 400, viewer create 403 | PASS |
+| Tracker serves, unknown keys 404, collector stays public (202) | PASS |
+| Wrong-domain event 403, bad name/value/body 400 | PASS |
+| Two-site isolation, including viewer scoped to one site (404 on the other) | PASS |
+| Same-UA repeat visits share one identity; XFF ignored untrusted, honored trusted | PASS (2 vs 3 visitors) |
 | UTM attribution, junk params dropped, referrer as hostname only | PASS |
-| Goals CRUD, duplicate name 409, bad event 400, conversions + value in stats | PASS |
+| Goals CRUD, duplicate 409, conversions + value in stats | PASS |
 | Stats summary, byDay, top paths/sources, 30-minute visit boundary | PASS |
-| Explicit `from`/`to` ranges, reversed range 400, over-366-day range 400 | PASS |
-| Bounded report JSON (filters, sort, pagination, total) and CSV download | PASS |
-| Embedded assets `/dashboard.js` (JS content type) and `/style.css` | PASS |
-| Per-site dashboard page with snippet, goals form, report links, poll root | PASS |
-| Same-second post-then-read visibility | PASS (`until = now + 1`; strict `ts < now` excluded same-second rows) |
-| Restart persistence (kill, restart, same `SB_DATA_DIR`) | PASS, counts intact |
+| Explicit `from`/`to` ranges, reversed range 400 | PASS |
+| Bounded report JSON and CSV download | PASS |
+| Users page (admin), viewer creation, deletion and self/last-admin guards | PASS |
+| Password change revokes other sessions, old password dies, restore works | PASS |
+| Logout kills the session; static assets stay public | PASS |
+| Restart persistence | PASS (previous commit; schema additive since) |
 
-Two bugs found and fixed during probing:
+## Runtime findings (upstream-worthy)
 
 1. Stats window used strict `ts < now`, hiding same-second events.
    Fix: `until = now + 1`. Keep this rule if the queries are reused.
-2. Asset URLs used a `/static/` prefix the bundler does not create (the
-   assets directory is the URL root). Fix: serve `/dashboard.js` and
-   `/style.css`, fall unknown GETs through to `env.ASSETS.fetch`.
+2. Asset URLs must not use a `/static/` prefix: the assets directory is the
+   URL root. Unknown GETs fall through to `env.ASSETS.fetch`.
+3. The runtime cannot serialize status **303**: every 303 shape (empty,
+   body, cookie) resets the connection. Mapped with a one-build probe
+   (`302`/`307`/`201`/`429`/`204` all fine). The app uses 302 for
+   POST-redirect-GET. This looks like a Porffor native-fetch bug worth
+   reporting (it is not in `patches/UPSTREAM.md` at time of writing).
 
 ## Out of scope (by design, not deferred)
 
-- Login and multi-user access. No password auth exists, and the sprout
-  runtime has no scrypt/`crypto.subtle`. Deployment assumption is
-  localhost or a controlled reverse proxy; network access is admin access.
-- Salted daily visitor SHA-256. Blocked on `crypto.subtle` (tracked as
-  [sproutboat-cli#26](https://github.com/baronunread/sproutboat-cli/issues/26))
-  plus trustworthy client metadata (platform #128). The probe uses opaque
-  bounded visitor strings; counts are functional, not privacy-preserving.
-- Scheduled summaries, alerts and queued exports. No cron, queues or
-  background jobs exist standalone; CSV is generated synchronously.
+- Scheduled summaries, alerts and queued exports. Nothing standalone runs
+  unattended; if that ever matters it is a hosted project, not a flag here.
+- Migrating Bun-app users/databases. The KDF is iterated salted SHA-256
+  (`s2$`, count encoded per row), not scrypt: scrypt rows are never
+  accepted, and comparison is plain `===` (no constant-time primitive in
+  the runtime). Threat model is localhost or a controlled proxy.
 - KV cache: deliberately not added. A cache is admitted only for a measured
   repeated lookup/summary hotspot; none has been observed.
+- `crypto.subtle` via [sproutboat-cli#26](https://github.com/baronunread/sproutboat-cli/issues/26)
+  would let this drop the vendored SHA-256 and use standard primitives, but
+  nothing here waits on it.
 
 ## Notes
 
 - `sprout/dist/` is gitignored (binaries currently on disk); the committed
-  surface is `sproutboat.jsonc`, `src/index.js`, `public/`, `seed.sh`,
+  surface is `sproutboat.jsonc`, `src/`, `public/`, `tests/`, `seed.sh`,
   `verify.sh`, `README.md`, this file.
