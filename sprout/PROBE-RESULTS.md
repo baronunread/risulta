@@ -101,6 +101,11 @@ which is the p50; the p99 adds GC pauses and checkpoint stalls. Bun
 wins by overlapping 25 concurrent fsyncs and calling SQLite natively.
 Nothing left to cache app-side; closing it needs batch commits (a
 durability tradeoff) or runtime-side prepare caching and concurrency.
+Filed upstream as
+[sproutboat-cli#29](https://github.com/baronunread/sproutboat-cli/issues/29)
+(per-op cost) and
+[#30](https://github.com/baronunread/sproutboat-cli/issues/30)
+(execution model).
 
 ## Out of scope (by design, not deferred)
 
@@ -109,7 +114,9 @@ durability tradeoff) or runtime-side prepare caching and concurrency.
 - Migrating Bun-app users/databases. The KDF is iterated salted SHA-256
   (`s2$`, count encoded per row), not scrypt: scrypt rows are never
   accepted, and comparison is plain `===` (no constant-time primitive in
-  the runtime). Threat model is localhost or a controlled proxy.
+  the runtime). Threat model is localhost or a controlled proxy. The
+  scrypt gap is tracked as
+  [sproutboat-cli#31](https://github.com/baronunread/sproutboat-cli/issues/31).
 - KV cache: deliberately not added. A cache is admitted only for a measured
   repeated lookup/summary hotspot; none has been observed.
 - `crypto.subtle` via [sproutboat-cli#26](https://github.com/baronunread/sproutboat-cli/issues/26)
