@@ -96,6 +96,15 @@ BASE=http://127.0.0.1:8099 ADMIN_EMAIL=... ADMIN_PASSWORD=... EXPECT_TRUST=0 sh 
 `GET /healthz` answers `ok`. The site page at `/sites/<id>` shows the
 tracker snippet, live stats, goals and report links.
 
+## Performance
+
+Same-machine loopback ingest (concurrency 25, 5 s): 2.6 MB binary (24x
+smaller than the Bun build), 2.7 MB idle RSS, 0.03 s cold start, tracker
+byte-identical in spirit (760 B raw). Sustained ingest is ~1,265 RPS at
+p50 ~19 ms, about 8x slower than Bun: the runtime serves serially and
+each event pays one JS hash plus one D1 round-trip. Full table, method
+and caveats in `PROBE-RESULTS.md`; reproduce with `bun sprout/bench.mjs`.
+
 ## Operate it
 
 The data directory holds `store.sqlite` and `d1/DB.sqlite` (plus WAL

@@ -62,6 +62,33 @@ Covered by `sprout/verify.sh`:
    and [#28](https://github.com/baronunread/sproutboat-cli/issues/28) with
    a one-build repro snippet each.
 
+## Performance (same machine, same workload, 2026-09-10)
+
+Loopback ingest, concurrency 25, 5 seconds, one site, identical event
+bodies. Bun ran with `RISULTA_INGEST_RATE_LIMIT=1000000` (its default
+240/min 429s the benchmark itself); the sprout has no ingest limiter yet.
+
+| | Bun `./risulta` (main code) | Sprout standalone (this branch) |
+| --- | --- | --- |
+| Binary | 62.5 MB | 2.6 MB (24x smaller) |
+| Idle RSS | 21.8 MB | 2.7 MB (8x smaller) |
+| Cold start to ready | 0.15 s | 0.03 s (5x; +~0.5 s once when admin bootstrap hashes) |
+| Ingest | 10,012 RPS | 1,265 RPS |
+| Latency p50/p95/p99 | 1.98 / 4.73 / 6.99 ms | 18.6 / 33.9 / 42.8 ms |
+| RSS after load | 89.9 MB | ~137 MB, flat (no per-request growth) |
+| Tracker raw / gzip | 752 / 479 B | 760 / 487 B (8 B is the longer public key) |
+
+Three app-level caches took the sprout from 273 to 1,265 RPS: daily-salt
+cache, once-per-process schema/bootstrap, immutable site-key cache. The
+remaining gap is structural, not algorithmic: the Porffor server handles
+requests serially (~0.8 ms/event floor: one JS SHA-256 plus one D1
+round-trip), while Bun parallelizes I/O. At 1,265 RPS the sprout still
+clears ~100M events/day on loopback, far past small-product traffic.
+
+Honest caveats: ingest is ~8x slower than Bun; loaded RSS is higher
+(retained GC heap after the KDF bootstrap, stable under load); Bun ships
+per-IP ingest rate limiting the sprout has not ported.
+
 ## Out of scope (by design, not deferred)
 
 - Scheduled summaries, alerts and queued exports. Nothing standalone runs

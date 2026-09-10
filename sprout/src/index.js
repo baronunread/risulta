@@ -36,6 +36,31 @@ const SESSION_SECONDS = 7 * 24 * 60 * 60;
 // The count is encoded in each row, so it can rise later compatibly.
 const KDF_ITERATIONS = 20000;
 const failures = new Map();
+// Daily salts cached per process like the Bun app's SiteStore: the day
+// changes rarely, so the hot path skips three salt queries per event.
+const saltCache = new Map();
+// Public keys are immutable and sites are only added through this handler,
+// so a miss-fill cache is exactly coherent and the collector skips its
+// lookup after the first event per key.
+const siteByKey = new Map();
+
+function siteForKey(db, publicKey) {
+  let site = siteByKey.get(publicKey);
+  if (site === undefined) {
+    site = db.prepare("SELECT id, domain FROM sites WHERE public_key = ?").bind(publicKey).first() || null;
+    siteByKey.set(publicKey, site);
+  }
+  return site;
+}
+// Schema and bootstrap run once per process (like the Bun app migrating at
+// startup), not per request. The trust flag is process env, also read once.
+let schemaReady = false;
+let trustProxyCached = null;
+
+function trustProxyEnabled() {
+  if (trustProxyCached === null) trustProxyCached = optionalSecret("RISULTA_TRUST_PROXY") === "1";
+  return trustProxyCached;
+}
 
 function json(data, status) {
   return new Response(JSON.stringify(data), {
@@ -305,7 +330,7 @@ function referrerHost(value) {
 // proxy must overwrite the header, otherwise any visitor can spoof it.
 // Direct exposure yields "" and weaker uniqueness. Never stored.
 function clientIp(request) {
-  if (optionalSecret("RISULTA_TRUST_PROXY") !== "1") return "";
+  if (!trustProxyEnabled()) return "";
   const forwarded = request.headers.get("x-forwarded-for") || "";
   return forwarded.split(",")[0].trim().slice(0, 45);
 }
@@ -315,9 +340,14 @@ function dayString() {
 }
 
 function siteSalt(db, siteId, day) {
+  const hit = saltCache.get(siteId);
+  if (hit && hit.day === day) return hit.value;
   db.prepare("DELETE FROM site_salts WHERE day != ?").bind(day).run();
   db.prepare("INSERT OR IGNORE INTO site_salts (site_id, day, value) VALUES (?, ?, ?)").bind(siteId, day, randomHex(32)).run();
-  return db.prepare("SELECT value FROM site_salts WHERE site_id = ? AND day = ?").bind(siteId, day).first().value;
+  const value = db.prepare("SELECT value FROM site_salts WHERE site_id = ? AND day = ?").bind(siteId, day).first().value;
+  if (saltCache.size > 64) saltCache.clear();
+  saltCache.set(siteId, { day, value });
+  return value;
 }
 
 // A site-local identity that resets daily: neither input is stored.
@@ -829,7 +859,10 @@ function accountPage(user, changed) {
 
 export default {
   fetch(request) {
-    ensureSchema(env.DB);
+    if (!schemaReady) {
+      ensureSchema(env.DB);
+      schemaReady = true;
+    }
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
@@ -854,7 +887,7 @@ export default {
     // from proxy-provided IP + User-Agent; neither input is stored.
     const eventMatch = /^\/api\/event\/([A-Za-z0-9_-]+)$/.exec(path);
     if (eventMatch && method === "POST") {
-      const site = env.DB.prepare("SELECT id, domain FROM sites WHERE public_key = ?").bind(eventMatch[1]).first();
+      const site = siteForKey(env.DB, eventMatch[1]);
       if (!site) return json({ error: "unknown site" }, 404);
       const parsed = parseJson(body);
       if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
@@ -1115,6 +1148,7 @@ export default {
       const res = env.DB.prepare("INSERT INTO sites (name, domain, public_key, created_at) VALUES (?, ?, ?, ?)")
         .bind(name, domain, publicKey, Math.floor(Date.now() / 1000))
         .run();
+      siteByKey.set(publicKey, { id: Number(res.meta.last_row_id), domain });
       if (wantsJson) return json({ id: res.meta.last_row_id, name, domain, publicKey }, 201);
       return redirect("/sites/" + res.meta.last_row_id);
     }
