@@ -42,6 +42,7 @@ Covered by `sprout/verify.sh`:
 | Users page (admin), viewer creation, deletion and self/last-admin guards | PASS |
 | Password change revokes other sessions, old password dies, restore works | PASS |
 | Logout kills the session; static assets stay public | PASS |
+| Visual parity with the Bun app (login, sites, dashboard, users pages) | PASS, screenshot-compared in browser dark mode |
 | Restart persistence | PASS (previous commit; schema additive since) |
 
 ## Runtime findings (upstream-worthy)
@@ -52,9 +53,12 @@ Covered by `sprout/verify.sh`:
    URL root. Unknown GETs fall through to `env.ASSETS.fetch`.
 3. The runtime cannot serialize status **303**: every 303 shape (empty,
    body, cookie) resets the connection. Mapped with a one-build probe
-   (`302`/`307`/`201`/`429`/`204` all fine). The app uses 302 for
-   POST-redirect-GET. This looks like a Porffor native-fetch bug worth
-   reporting (it is not in `patches/UPSTREAM.md` at time of writing).
+   (`302`/`307`/`201`/`429`/`204` all fine). Worse, **302 + Set-Cookie**
+   fails the same way (302 alone and 200 + Set-Cookie both work), which
+   broke browser form login into a blank page. The app uses 302 for
+   cookie-less navigation and a 200 page with a meta refresh for login
+   and logout forms. Both look like native-fetch server bugs worth
+   reporting (neither is in `patches/UPSTREAM.md` at time of writing).
 
 ## Out of scope (by design, not deferred)
 

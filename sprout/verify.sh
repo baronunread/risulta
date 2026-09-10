@@ -106,7 +106,7 @@ expect_json "shop pageviews" "/api/sites/$SHOP_ID/stats?period=1" 'json.load(sys
 expect_json "shop visitors (XFF trust=$EXPECT_TRUST)" "/api/sites/$SHOP_ID/stats?period=1" 'json.load(sys.stdin)["summary"]["visitors"]' "$WANT_VISITORS" "$JAR_A"
 expect_json "blog isolated" "/api/sites/$BLOG_ID/stats?period=1" 'json.load(sys.stdin)["summary"]["pageviews"]' 1 "$JAR_A"
 expect_json "blog path label" "/api/sites/$BLOG_ID/stats?period=1" 'json.load(sys.stdin)["paths"][0]["label"]' "/hello" "$JAR_A"
-expect_json "attribution recorded" "/api/sites/$SHOP_ID/stats?period=1" '"newsletter" in [r["label"] for r in json.load(sys.stdin)["sources"]]' "True" "$JAR_A"
+expect_json "attribution recorded" "/api/sites/$SHOP_ID/stats?period=1" '"newsletter" in [r["label"] for r in json.load(sys.stdin)["referrers"]]' "True" "$JAR_A"
 expect_json "junk param dropped" "/api/sites/$SHOP_ID/stats?period=1" 'json.load(sys.stdin)["paths"][0]["label"]' "/" "$JAR_A"
 expect_json "goal conversion" "/api/sites/$SHOP_ID/stats?period=1" 'json.load(sys.stdin)["goals"][0]["conversions"]' 1 "$JAR_A"
 expect_json "goal value sum" "/api/sites/$SHOP_ID/stats?period=1" 'json.load(sys.stdin)["goals"][0]["value"]' 3 "$JAR_A"

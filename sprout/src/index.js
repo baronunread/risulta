@@ -3,7 +3,10 @@
 // One app sprout, one D1 database, static assets embedded in the binary, no
 // service bindings (standalone builds reject them: there is no edge). The
 // existing Bun Risulta app is untouched; this is a smaller sibling that
-// reuses its domain rules where the sprout runtime allows.
+// reuses its domain rules and visual language where the sprout runtime
+// allows. Page markup follows lib/views.js class names so the same
+// stylesheet renders both; the chart builder is ported to runtime-safe
+// constructs (no Intl, no Array.from, no padStart, no optional chaining).
 //
 // Authentication is real but standalone-scoped:
 // - Passwords use an iterated salted SHA-256 KDF ("s2$") implemented over a
@@ -18,10 +21,12 @@
 //   Bun app, except the client IP only exists when RISULTA_TRUST_PROXY=1
 //   and your own proxy overwrites X-Forwarded-For (Caddy does this with
 //   `header_up X-Forwarded-For {http.request.remote.host}`). Otherwise the
-//   hash covers the User-Agent alone and uniqueness degrades; this is
-//   reported honestly on the dashboard.
+//   hash covers the User-Agent alone and uniqueness degrades.
 // - No cron, queues or background workers exist standalone. Reports
 //   generate synchronously on request; there are no scheduled summaries.
+// - Redirects use 302: the runtime cannot serialize a 303 status (every
+//   303 shape resets the connection; probed). Form logins use a 200 page
+//   with a meta refresh because 302 + Set-Cookie fails the same way.
 
 import { sha256Hex } from "./sha256.js";
 
@@ -48,9 +53,20 @@ function parseJson(body) {
 }
 
 function redirect(to) {
-  // 302, not 303: the runtime cannot serialize a 303 status (connection
-  // reset; probed 2026-09-10: 302/307 pass, every 303 shape fails).
   return new Response("", { status: 302, headers: { location: to } });
+}
+
+// Form flows that set a cookie cannot use redirect(): 302 + Set-Cookie
+// resets the connection in this runtime, so answer 200 with a same-click
+// meta refresh instead. Browsers follow it; the link covers no-refresh.
+function refreshPage(to, cookie) {
+  const headers = { "content-type": "text/html;charset=utf-8" };
+  if (cookie) headers["set-cookie"] = cookie;
+  return new Response(
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=' + escapeHtml(to) + '">' +
+      "<title>Continue</title></head><body><main><p><a href=\"" + escapeHtml(to) + "\">Continue</a></p></main></body></html>",
+    { status: 200, headers },
+  );
 }
 
 function optionalSecret(name) {
@@ -327,11 +343,16 @@ function parseRange(searchParams, now) {
     const toDay = Math.floor(Date.UTC(Number(t[0]), Number(t[1]) - 1, Number(t[2])) / 1000);
     if (!(since <= toDay)) return { error: "from must not be after to" };
     if (toDay - since > 366 * 86400) return { error: "range exceeds 366 days" };
-    return { since, until: Math.min(toDay + 86400, now + 1), label: fromRaw + ".." + toRaw };
+    return { since, until: Math.min(toDay + 86400, now + 1), label: fromRaw + ".." + toRaw, days: 0, from: fromRaw, to: toRaw };
   }
   const period = searchParams.get("period") || "7";
   const days = period === "1" ? 1 : period === "30" ? 30 : 7;
-  return { since: now - days * 86400, until: now + 1, label: days + "d" };
+  return { since: now - days * 86400, until: now + 1, label: days + "d", days, from: "", to: "" };
+}
+
+function rangeDays(range) {
+  if (range.days) return range.days;
+  return Math.max(1, Math.round((range.until - range.since) / 86400));
 }
 
 function siteSummary(db, siteId, since, until) {
@@ -340,6 +361,19 @@ function siteSummary(db, siteId, since, until) {
       "SELECT count(*) AS pageviews, count(DISTINCT visitor) AS visitors, " +
       "coalesce(sum(CASE WHEN prev IS NULL OR ts - prev > 1800 THEN 1 ELSE 0 END), 0) AS visits FROM scoped",
   ).bind(siteId, since, until).first();
+}
+
+function siteCurrent(db, siteId) {
+  return Number(db.prepare(
+    "SELECT count(DISTINCT visitor) AS n FROM events WHERE site_id = ? AND ts >= ? AND name = 'pageview'",
+  ).bind(siteId, Math.floor(Date.now() / 1000) - 300).first().n);
+}
+
+function topList(db, siteId, since, until, select) {
+  return db.prepare(
+    "SELECT " + select + " AS label, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
+      "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY label ORDER BY visitors DESC, pageviews DESC LIMIT 8",
+  ).bind(siteId, since, until).all().results;
 }
 
 function siteGoals(db, siteId, since, until, visitors) {
@@ -362,6 +396,29 @@ function siteGoals(db, siteId, since, until, visitors) {
     });
   }
   return out;
+}
+
+function siteAnalytics(db, site, since, until) {
+  const summary = siteSummary(db, site.id, since, until);
+  const visitors = Number(summary.visitors);
+  return {
+    summary,
+    current: siteCurrent(db, site.id),
+    byDay: db.prepare(
+      "WITH scoped AS (SELECT ts, visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview') " +
+        "SELECT date(ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM scoped GROUP BY day ORDER BY day",
+    ).bind(site.id, since, until).all().results,
+    byHour: db.prepare(
+      "WITH scoped AS (SELECT ts, visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview') " +
+        "SELECT cast(strftime('%H', ts, 'unixepoch') AS INTEGER) AS hour, count(*) AS pageviews, count(DISTINCT visitor) AS visitors " +
+        "FROM scoped GROUP BY hour ORDER BY hour",
+    ).bind(site.id, since, until).all().results,
+    paths: topList(db, site.id, since, until, "path"),
+    referrers: topList(db, site.id, since, until, "coalesce(nullif(source,''),'Direct / None')"),
+    mediums: topList(db, site.id, since, until, "coalesce(nullif(medium,''),'None')"),
+    campaigns: topList(db, site.id, since, until, "coalesce(nullif(campaign,''),'None')"),
+    goals: siteGoals(db, site.id, since, until, visitors),
+  };
 }
 
 // Bounded report query mirroring the Bun app's report semantics: exact-match
@@ -436,123 +493,337 @@ function escapeHtml(value) {
   return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function pageShell(title, user, body) {
-  const nav = user
-    ? "<nav><a href=\"/\">Sites</a> <a href=\"/account\">Account</a>" +
-      (user.role === "admin" ? " <a href=\"/users\">Users</a>" : "") +
-      " <span>" + escapeHtml(user.display_name || user.email) + " (" + user.role + ")</span>" +
-      " <form style=\"display:inline\" method=\"post\" action=\"/logout\"><input type=\"hidden\" name=\"csrf\" value=\"" + user.csrf + "\"> <button>Sign out</button></form></nav>"
-    : "<nav><a href=\"/login\">Sign in</a></nav>";
-  return (
-    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-    "<link rel=\"stylesheet\" href=\"/style.css\">" +
-    "<title>" + escapeHtml(title) + "</title></head><body>" + nav + body +
-    "<footer><p>Risulta Sprout: single binary, no platform. Visitor identities are daily salted hashes; raw IPs are never stored.</p></footer></body></html>"
-  );
+function fmtInt(n) {
+  const neg = Number(n) < 0;
+  let s = String(Math.floor(Math.abs(Number(n)) || 0));
+  let out = "";
+  while (s.length > 3) {
+    out = "," + s.slice(-3) + out;
+    s = s.slice(0, -3);
+  }
+  return (neg ? "-" : "") + s + out;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function dayLabel(isoDay) {
+  const parts = String(isoDay).split("-");
+  return MONTHS[Number(parts[1]) - 1] + " " + Number(parts[2]);
+}
+
+function hourLabel(hour) {
+  const h = Number(hour);
+  const pad = h < 10 ? "0" + h : "" + h;
+  return pad + ":00";
+}
+
+// Fill trailing UTC days so the chart never has gaps.
+function dateSeries(days, rows) {
+  const values = {};
+  for (let i = 0; i < rows.length; i++) values[rows[i].day] = rows[i];
+  const out = [];
+  const todayStart = Math.floor(Date.now() / 86400000) * 86400000;
+  for (let offset = days - 1; offset >= 0; offset--) {
+    const day = new Date(todayStart - offset * 86400000).toISOString().slice(0, 10);
+    out.push(values[day] || { day, pageviews: 0, visitors: 0, visits: 0 });
+  }
+  return out;
+}
+
+function hourSeries(rows) {
+  const values = {};
+  for (let i = 0; i < rows.length; i++) values[Number(rows[i].hour)] = rows[i];
+  const out = [];
+  for (let hour = 0; hour < 24; hour++) {
+    const row = values[hour] || { pageviews: 0, visitors: 0, visits: 0 };
+    out.push({ hour, pageviews: row.pageviews, visitors: row.visitors, visits: row.visits });
+  }
+  return out;
+}
+
+function chartPointLabel(point) {
+  if (point.hour === undefined) return dayLabel(point.day);
+  return hourLabel(point.hour) + " UTC";
+}
+
+function chart(series, metric, metricLabel) {
+  const width = 960;
+  const height = 248;
+  const top = 16;
+  const bottom = 30;
+  let max = 1;
+  for (let i = 0; i < series.length; i++) max = Math.max(max, Number(series[i][metric]));
+  const x = function (index) {
+    return series.length === 1 ? width / 2 : (index / (series.length - 1)) * width;
+  };
+  const y = function (value) {
+    return top + (1 - Number(value) / max) * (height - top - bottom);
+  };
+  const xs = [];
+  const ys = [];
+  for (let i = 0; i < series.length; i++) {
+    xs.push(x(i));
+    ys.push(y(series[i][metric]));
+  }
+  let line = "";
+  for (let i = 0; i < series.length; i++) {
+    if (!i) {
+      line += "M" + xs[i].toFixed(1) + "," + ys[i].toFixed(1);
+      continue;
+    }
+    const beforeX = i >= 2 ? xs[i - 2] : xs[i - 1];
+    const beforeY = i >= 2 ? ys[i - 2] : ys[i - 1];
+    const afterX = i + 1 < series.length ? xs[i + 1] : xs[i];
+    const afterY = i + 1 < series.length ? ys[i + 1] : ys[i];
+    const segmentMin = Math.min(ys[i - 1], ys[i]);
+    const segmentMax = Math.max(ys[i - 1], ys[i]);
+    const clampY = function (value) {
+      return Math.max(segmentMin, Math.min(segmentMax, value));
+    };
+    const c1x = xs[i - 1] + (xs[i] - beforeX) / 6;
+    const c1y = clampY(ys[i - 1] + (ys[i] - beforeY) / 6);
+    const c2x = xs[i] - (afterX - xs[i - 1]) / 6;
+    const c2y = clampY(ys[i] - (afterY - ys[i - 1]) / 6);
+    line += "C" + c1x.toFixed(1) + "," + c1y.toFixed(1) + " " + c2x.toFixed(1) + "," + c2y.toFixed(1) + " " + xs[i].toFixed(1) + "," + ys[i].toFixed(1);
+  }
+  const area = line + " L" + width + "," + (height - bottom) + " L0," + (height - bottom) + " Z";
+  const ticks = [];
+  for (let i = 0; i < series.length; i++) {
+    if (series.length <= 7 || i % Math.ceil(series.length / 6) === 0 || i === series.length - 1) ticks.push(i);
+  }
+  let circles = "";
+  for (let i = 0; i < series.length; i++) {
+    const label = chartPointLabel(series[i]) + ": " + fmtInt(series[i][metric]) + " " + metricLabel.toLowerCase();
+    circles += '<circle class="chart-point" cx="' + xs[i] + '" cy="' + ys[i] + '" r="5" tabindex="0" data-value="' + escapeHtml(label) + '"><title>' + escapeHtml(label) + "</title></circle>";
+  }
+  let tickLabels = "";
+  for (let t = 0; t < ticks.length; t++) {
+    const i = ticks[t];
+    const anchor = i === 0 ? "start" : i === series.length - 1 ? "end" : "middle";
+    const text = chartPointLabel(series[i]).replace(" UTC", "");
+    tickLabels += '<text x="' + xs[i] + '" y="' + (height - 7) + '" text-anchor="' + anchor + '">' + escapeHtml(text) + "</text>";
+  }
+  return '<svg class="chart" viewBox="0 0 ' + width + " " + height + '" role="img" aria-labelledby="chart-title chart-desc">' +
+    '<title id="chart-title">' + escapeHtml(metricLabel) + " over the selected period</title>" +
+    '<desc id="chart-desc">A line chart with a peak of ' + fmtInt(max) + " " + escapeHtml(metricLabel.toLowerCase()) + " in one interval.</desc>" +
+    '<defs><linearGradient id="area" x1="0" x2="0" y1="0" y2="1"><stop stop-color="currentColor" stop-opacity=".16"/>' +
+    '<stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>' +
+    '<g class="grid" aria-hidden="true"><path d="M0 ' + top + "H" + width + "M0 " + (height - bottom + top) / 2 + "H" + width + "M0 " + (height - bottom) + 'H' + width + '"/></g>' +
+    '<polygon points="' + area + '" fill="url(#area)" aria-hidden="true"/>' +
+    '<path d="' + line + '" fill="none" stroke="currentColor" stroke-width="2" vector-effect="non-scaling-stroke" aria-hidden="true"/>' +
+    circles + tickLabels + "</svg>";
+}
+
+const MARK = '<span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>';
+
+function topbar(user, site, sites) {
+  const switcher = site && sites.length > 1
+    ? '<div class="site-context"><details class="site-switcher"><summary class="site-switcher-trigger"><span>' + escapeHtml(site.name) +
+      '</span><span class="select-chevron" aria-hidden="true"></span></summary><div class="site-switcher-menu">' +
+      sites.map((s) => '<a href="/sites/' + s.id + '"' + (s.id === site.id ? ' aria-current="page"' : "") + "><span>" + (s.id === site.id ? "✓" : "") + "</span>" + escapeHtml(s.name) + "</a>").join("") +
+      "</div></details></div>"
+    : "";
+  return '<header class="topbar"><div class="shell topbar-inner"><a class="brand" href="/">' + MARK + "<span>Risulta</span></a>" + switcher +
+    '<nav class="nav" aria-label="Account"><details class="account-menu"><summary><span class="account-trigger-email">' + escapeHtml(user.email) + "</span></summary>" +
+    '<div class="account-panel"><span class="account-email">' + escapeHtml(user.email) + '</span><a href="/">Websites</a><a href="/account">Account settings</a>' +
+    (user.role === "admin" ? '<a href="/users">Users</a>' : "") +
+    '<form method="post" action="/logout"><input type="hidden" name="csrf" value="' + user.csrf + '"><button class="link-button" type="submit">Log out</button></form>' +
+    "</div></details></nav></div></header>";
+}
+
+function pageShell(title, user, body, site, sites) {
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<meta name="color-scheme" content="light dark"><meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">' +
+    '<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">' +
+    '<link rel="stylesheet" href="/style.css">' +
+    "<title>" + escapeHtml(title) + " - Risulta</title>" +
+    '<script src="/dashboard.js" defer></script></head><body><a class="skip" href="#main">Skip to content</a>' +
+    (user ? topbar(user, site || null, sites || []) : "") + body +
+    (user ? '<footer class="footer"><div class="shell"><span><strong>Risulta Sprout</strong> standalone analytics</span></div></footer>' : "") +
+    "</body></html>";
 }
 
 function loginPage(error) {
   return pageShell(
-    "Sign in - Risulta Sprout",
+    "Sign in",
     null,
-    "<main><h1>Sign in</h1>" +
-      (error ? "<p role=\"alert\">" + escapeHtml(error) + "</p>" : "") +
-      "<form method=\"post\" action=\"/login\"><label>Email <input name=\"email\" type=\"email\" required autocomplete=\"username\"></label> " +
-      "<label>Password <input name=\"password\" type=\"password\" required autocomplete=\"current-password\"></label> " +
-      "<button>Sign in</button></form></main>",
+    '<main class="auth" id="main"><div class="auth-box"><div class="auth-brand">' + MARK + "<span>Risulta</span></div>" +
+      '<section class="card" aria-labelledby="login-title"><h1 id="login-title">Sign in to Risulta</h1>' +
+      '<p class="intro">Use one account to view all of your websites.</p>' +
+      (error ? '<p class="error" id="login-error">' + escapeHtml(error) + "</p>" : "") +
+      '<form class="form" method="post" action="/login">' +
+      '<div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required></div>' +
+      '<div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>' +
+      '<button class="button" type="submit">Sign in</button></form></section></div></main>',
   );
 }
 
-function homePage(user, sites, origin) {
-  const rows = sites
-    .map((s) => "<li><a href=\"/sites/" + s.id + "\"><strong>" + escapeHtml(s.name) + "</strong></a> (" + escapeHtml(s.domain) + ")</li>")
-    .join("");
-  const addForm = user.role === "admin"
-    ? "<h2>Add a website</h2>" +
-      "<form class=\"inline\" method=\"post\" action=\"/api/sites\"><input type=\"hidden\" name=\"csrf\" value=\"" + user.csrf + "\">" +
-      "<input name=\"name\" placeholder=\"Example shop\" required> " +
-      "<input name=\"domain\" placeholder=\"example.com\" required> <button>Add</button></form>"
-    : "";
+function homePage(user, sites) {
+  const cards = sites.length
+    ? '<ol class="site-list">' + sites.map((s) =>
+      '<li><a class="site-link" href="/sites/' + s.id + '"><span><strong>' + escapeHtml(s.name) + '</strong><span class="site-domain">' + escapeHtml(s.domain) +
+      '</span></span><span class="arrow" aria-hidden="true">→</span>' +
+      '<span class="site-overview" aria-label="Last 7 days"><span><strong>' + fmtInt(s.overview.visitors) + "</strong>visitors</span>" +
+      "<span><strong>" + fmtInt(s.overview.pageviews) + "</strong>views</span></span></a></li>").join("") + "</ol>"
+    : '<div class="empty-card"><h2>No websites yet</h2><p>Add your first website to start collecting private analytics.</p></div>';
   return pageShell(
-    "Risulta Sprout",
+    "Websites",
     user,
-    "<header><h1>Risulta Sprout</h1><p>Origin for snippets: " + escapeHtml(origin) + "</p></header><main>" +
-      addForm + "<h2>Websites</h2><ul>" + (rows || "<li>none yet</li>") + "</ul></main>",
+    '<main class="shell" id="main"><div class="titlebar"><div><p class="eyebrow">Workspace</p><h1>Your websites</h1></div>' +
+      (user.role === "admin"
+        ? '<div class="actions"><a class="button" href="/sites/new">Add website</a></div>'
+        : "") + "</div>" +
+      '<section aria-label="Websites">' + cards + "</section></main>",
+    null,
+    sites,
   );
 }
 
-function sitePage(user, site, goals, origin) {
-  const goalRows = goals
-    .map((g) => "<li>" + escapeHtml(g.name) + " (" + escapeHtml(g.event_name) + (g.path ? ", " + escapeHtml(g.path) : "") + ")</li>")
-    .join("");
+function newSitePage(user, error) {
+  return pageShell(
+    "Add website",
+    user,
+    '<main class="shell" id="main"><div class="titlebar"><div><p class="eyebrow">Website administration</p><h1>Add a website</h1></div></div>' +
+      '<section class="card"><form class="form" method="post" action="/api/sites"><input type="hidden" name="csrf" value="' + user.csrf + '">' +
+      (error ? '<p class="error">' + escapeHtml(error) + "</p>" : "") +
+      '<div class="field"><label for="name">Name</label><input id="name" name="name" required maxlength="100"><p class="hint">A friendly name, such as Marketing site.</p></div>' +
+      '<div class="field"><label for="domain">Domain</label><input id="domain" name="domain" required maxlength="253" inputmode="url" placeholder="example.com">' +
+      "<p class=\"hint\">Hostname only. Risulta rejects events claiming another domain.</p></div>" +
+      '<div class="actions"><button class="button" type="submit">Add website</button><a class="button secondary" href="/">Cancel</a></div>' +
+      "</form></section></main>",
+  );
+}
+
+function reportCard(title, rows, emptyLabel, detailLinks) {
+  let max = 1;
+  for (let i = 0; i < rows.length; i++) max = Math.max(max, Number(rows[i].visitors));
+  const items = rows.length
+    ? "<ol>" + rows.map((row) => {
+      const width = Math.max(2, (Number(row.visitors) / max) * 100).toFixed(1);
+      return '<li><div class="row-label"><span class="truncate" title="' + escapeHtml(row.label) + '">' + escapeHtml(row.label) +
+        '</span><span class="value">' + fmtInt(row.visitors) + '</span></div><div class="meter" aria-hidden="true"><span style="width:' + width + '%"></span></div></li>';
+    }).join("") + "</ol>"
+    : '<p class="empty-small">' + escapeHtml(emptyLabel) + "</p>";
+  const id = title.toLowerCase().replace(/ /g, "-");
+  return '<section class="report" aria-labelledby="' + id + '"><div class="report-head"><h2 id="' + id + '">' + escapeHtml(title) + "</h2><span>" + detailLinks + "</span></div>" + items + "</section>";
+}
+
+function goalCard(goals) {
+  if (!goals.length) return "";
+  const items = goals.map((goal) => {
+    let hint = fmtInt(goal.unique_conversions) + " unique, " + (Number(goal.conversion_rate) * 100).toFixed(1) + "% conversion rate";
+    if (Number(goal.value)) hint += ", " + fmtInt(goal.value) + " value";
+    return '<li><div class="row-label"><span class="truncate">' + escapeHtml(goal.name) + '</span><span class="value">' + fmtInt(goal.conversions) +
+      '</span></div><p class="hint">' + escapeHtml(hint) + "</p></li>";
+  }).join("");
+  return '<section class="report" aria-labelledby="goals-title"><div class="report-head"><h2 id="goals-title">Goals</h2><span>Conversions</span></div><ol>' + items + "</ol></section>";
+}
+
+function sitePage(user, site, sites, analytics, range, days, metric, origin) {
+  const metrics = analytics.summary;
+  const viewsPerVisit = Number(metrics.visits) ? Number(metrics.pageviews) / Number(metrics.visits) : 0;
+  const visitorLabel = days === 1 ? "Unique visitors today" : "Unique visitor-days";
+  const metricLabel = metric === "pageviews" ? "Pageviews" : metric === "visits" ? "Visits" : visitorLabel;
+  const title = range.from ? range.from + " to " + range.to : days === 1 ? "Today" : "Last " + days + " days";
+  const hasData = Number(metrics.pageviews) > 0;
+  const series = days === 1 ? hourSeries(analytics.byHour) : dateSeries(days, analytics.byDay);
+  const statsBase = "/api/sites/" + site.id + "/stats?" + (range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days);
+  const pageQuery = range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days;
+  const metricTabs = [["visitors", visitorLabel], ["visits", "Visits"], ["pageviews", "Pageviews"]].map((tab) =>
+    '<a href="/sites/' + site.id + "?" + pageQuery + "&metric=" + tab[0] + '"' + (metric === tab[0] ? ' aria-current="page"' : "") + ">" + escapeHtml(tab[1]) + "</a>").join("");
+  const periodTabs = [1, 7, 30].map((period) =>
+    '<a href="/sites/' + site.id + "?period=" + period + "&metric=" + metric + '"' + (!range.from && period === days ? ' aria-current="page"' : "") + ">" +
+    (period === 1 ? "Today" : period + "d") + "</a>").join("");
+  const snippet = '<script defer src="' + origin + "/js/" + site.public_key + '.js"></script>';
+  const install = '<section class="card install" aria-labelledby="install-title"><h2 id="install-title">Install the tracker</h2><p>Paste this into the <code>&lt;head&gt;</code> of ' +
+    escapeHtml(site.domain) + '.</p><div class="snippet" role="region" tabindex="0" aria-label="Tracker installation code"><code>' + escapeHtml(snippet) +
+    '</code></div><button class="button secondary" type="button" data-copy-code>Copy code</button><p class="hint" id="copy-status" role="status" aria-live="polite"></p></section>';
+  const goalItems = analytics.goalsList.map((g) => "<li>" + escapeHtml(g.name) + " (" + escapeHtml(g.event_name) + (g.path ? ", " + escapeHtml(g.path) : "") + ")</li>").join("");
   const goalForm = user.role === "admin"
-    ? "<form class=\"inline\" method=\"post\" action=\"/api/sites/" + site.id + "/goals\">" +
-      "<input type=\"hidden\" name=\"csrf\" value=\"" + user.csrf + "\">" +
-      "<input name=\"name\" placeholder=\"Signup\" required> " +
-      "<input name=\"event_name\" placeholder=\"signup\" required> " +
-      "<input name=\"path\" placeholder=\"/pricing (optional)\"> <button>Add goal</button></form>"
+    ? '<section class="card" aria-labelledby="goals-admin"><h2 id="goals-admin">Conversion goals</h2><ul>' + (goalItems || "<li>none yet</li>") + "</ul>" +
+      '<form class="form" method="post" action="/api/sites/' + site.id + '/goals"><input type="hidden" name="csrf" value="' + user.csrf + '">' +
+      '<div class="field"><label for="goal-name">Name</label><input id="goal-name" name="name" required maxlength="80" placeholder="Signup"></div>' +
+      '<div class="field"><label for="goal-event">Event</label><input id="goal-event" name="event_name" required maxlength="64" placeholder="signup"></div>' +
+      '<div class="field"><label for="goal-path">Path (optional)</label><input id="goal-path" name="path" maxlength="2048" placeholder="/pricing"></div>' +
+      '<div class="actions"><button class="button" type="submit">Add goal</button></div></form></section>'
     : "";
-  const snippet = '<script src="' + origin + "/js/" + site.public_key + '.js"></script>';
+  const reportLinks = '<a class="footer-link" href="/api/sites/' + site.id + "/report?" + pageQuery + '&dimension=path">JSON</a> · <a class="footer-link" href="/api/sites/' + site.id + "/report?" + pageQuery + '&dimension=path&format=csv">CSV</a>';
   return pageShell(
-    site.name + " - Risulta Sprout",
+    site.name + " analytics",
     user,
-    "<header><h1>" + escapeHtml(site.name) + "</h1><p>" + escapeHtml(site.domain) + "</p></header><main>" +
-      "<h2>Tracker snippet</h2><code class=\"snippet\">" + escapeHtml(snippet) + "</code>" +
-      "<h2>Live traffic</h2><p class=\"status\" id=\"poll-status\" data-state=\"live\">Starting.</p>" +
-      "<p><a data-period href=\"/api/sites/" + site.id + "/stats?period=1\">1 day</a> " +
-      "<a data-period href=\"/api/sites/" + site.id + "/stats?period=7\">7 days</a> " +
-      "<a data-period href=\"/api/sites/" + site.id + "/stats?period=30\">30 days</a></p>" +
-      "<div id=\"live-stats\" data-stats-url=\"/api/sites/" + site.id + "/stats?period=7\"><p>Loading.</p></div>" +
-      "<h2>Goals</h2><ul>" + (goalRows || "<li>none yet</li>") + "</ul>" + goalForm +
-      "<h2>Reports</h2><ul>" +
-      "<li><a href=\"/api/sites/" + site.id + "/report?dimension=path\">Pages (JSON)</a> / " +
-      "<a href=\"/api/sites/" + site.id + "/report?dimension=path&format=csv\">CSV</a></li>" +
-      "<li><a href=\"/api/sites/" + site.id + "/report?dimension=source\">Sources (JSON)</a> / " +
-      "<a href=\"/api/sites/" + site.id + "/report?dimension=source&format=csv\">CSV</a></li>" +
-      "<li><a href=\"/api/sites/" + site.id + "/report?dimension=event\">Events (JSON)</a> / " +
-      "<a href=\"/api/sites/" + site.id + "/report?dimension=event&format=csv\">CSV</a></li>" +
-      "</ul></main>" +
-      "<script src=\"/dashboard.js\"></script>",
+    '<main class="shell" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + "</p><h1>" + escapeHtml(title) + "</h1></div>" +
+      '<div class="dashboard-controls"><div id="live-current" aria-live="polite"><span class="current"><span class="site-dot" aria-hidden="true"></span><strong data-current>' +
+      fmtInt(analytics.current) + '</strong> current</span></div><nav class="periods" aria-label="Date range">' + periodTabs + "</nav>" +
+      '<details class="range-picker"><summary class="button secondary">Custom range</summary>' +
+      '<form class="range-form" method="get" action="/sites/' + site.id + '"><input type="hidden" name="metric" value="' + escapeHtml(metric) + '">' +
+      '<label class="compact-field" for="range-from"><span>From</span><input id="range-from" name="from" type="date" required value="' + escapeHtml(range.from) + '"></label>' +
+      '<label class="compact-field" for="range-to"><span>To</span><input id="range-to" name="to" type="date" required value="' + escapeHtml(range.to) + '"></label>' +
+      '<button class="button secondary" type="submit">Apply</button></form></details></div></div>' +
+      '<div id="live-stats" data-stats-url="' + statsBase + '" data-range-query="' + pageQuery + '" data-site-id="' + site.id + '">' +
+      '<section class="panel" aria-label="Traffic summary"><div class="metrics">' +
+      '<div class="metric"><span>' + escapeHtml(visitorLabel) + '</span><strong data-metric="visitors">' + fmtInt(metrics.visitors) + "</strong></div>" +
+      '<div class="metric"><span>Total visits</span><strong data-metric="visits">' + fmtInt(metrics.visits) + "</strong></div>" +
+      '<div class="metric"><span>Total pageviews</span><strong data-metric="pageviews">' + fmtInt(metrics.pageviews) + "</strong></div>" +
+      '<div class="metric"><span>Views per visit</span><strong data-metric="views-per-visit">' + viewsPerVisit.toFixed(2) + "</strong></div></div>" +
+      (hasData
+        ? '<div class="chart-wrap"><nav class="periods" aria-label="Chart metric">' + metricTabs + "</nav>" + chart(series, metric === "visitors" ? "visitors" : metric, metricLabel) + "</div>"
+        : '<div class="empty"><h2>Waiting for the first visitor</h2><p>Install the tracker below. New visits will appear here live.</p></div>') +
+      "</section>" +
+      '<p class="hint metrics-note">Visitor identities reset at each UTC day. Multi-day totals are unique visitor-days, not deduplicated people. <span class="status" id="poll-status" data-state="live">Live.</span></p>' +
+      '<div id="dashboard-reports" class="reports">' + goalCard(analytics.goals) +
+      reportCard("Top pages", analytics.paths, "Pages will appear after the first view.", reportLinks) +
+      reportCard("Top sources", analytics.referrers, "Sources will appear after the first visit.", reportLinks) +
+      reportCard("Top mediums", analytics.mediums, "Mediums will appear after tagged visits.", reportLinks) +
+      reportCard("Top campaigns", analytics.campaigns, "Campaigns will appear after tagged visits.", reportLinks) +
+      "</div></div>" + (hasData ? "" : install) + goalForm + "</main>",
+    site,
+    sites,
   );
 }
 
 function usersPage(admin, users, sites) {
-  const rows = users
-    .map((u) => "<li>" + escapeHtml(u.email) + " (" + u.role + (u.sites ? ", " + escapeHtml(u.sites) : "") + ") " +
-      (u.id !== admin.user_id
-        ? "<form style=\"display:inline\" method=\"post\" action=\"/api/users/" + u.id + "/delete\">" +
-          "<input type=\"hidden\" name=\"csrf\" value=\"" + admin.csrf + "\"> <button>Delete</button></form>"
-        : "(you)") + "</li>")
-    .join("");
-  const siteChecks = sites
-    .map((s) => "<label><input type=\"checkbox\" name=\"site\" value=\"" + s.id + "\"> " + escapeHtml(s.name) + "</label>")
-    .join(" ");
+  const records = users.map((u) =>
+    '<li class="user-record"><div class="user-identity"><strong>' + escapeHtml(u.display_name || u.email) + "</strong><span>" + escapeHtml(u.email) + "</span></div>" +
+    '<div class="user-access"><span class="badge">' + escapeHtml(u.role) + "</span><span>" + escapeHtml(u.role === "admin" ? "All websites" : u.sites || "No websites assigned") + "</span>" +
+    (u.id !== admin.user_id
+      ? '<form class="inline" method="post" action="/api/users/' + u.id + '/delete"><input type="hidden" name="csrf" value="' + admin.csrf + '"><button class="link-button" type="submit">Delete</button></form>'
+      : "<span>(you)</span>") + "</div></li>").join("");
+  const checks = sites.length
+    ? sites.map((s) => '<label class="check"><input type="checkbox" name="site" value="' + s.id + '"><span>' + escapeHtml(s.name) + ' <span class="hint">' + escapeHtml(s.domain) + "</span></span></label>").join("")
+    : '<p class="hint">Add a website before assigning a viewer.</p>';
   return pageShell(
-    "Users - Risulta Sprout",
+    "Users",
     admin,
-    "<main><h1>Users</h1><ul>" + (rows || "<li>none</li>") + "</ul>" +
-      "<h2>Add user</h2><form method=\"post\" action=\"/api/users\">" +
-      "<input type=\"hidden\" name=\"csrf\" value=\"" + admin.csrf + "\">" +
-      "<label>Email <input name=\"email\" type=\"email\" required></label> " +
-      "<label>Name <input name=\"display_name\"></label> " +
-      "<label>Password (12+ chars) <input name=\"password\" type=\"password\" required></label> " +
-      "<label>Role <select name=\"role\"><option value=\"viewer\">viewer</option><option value=\"admin\">admin</option></select></label>" +
-      "<fieldset><legend>Viewer sites</legend>" + (siteChecks || "no sites yet") + "</fieldset> " +
-      "<button>Add</button></form></main>",
+    '<main class="shell" id="main"><div class="titlebar"><div><p class="eyebrow">Administration</p><h1>Users</h1></div></div>' +
+      '<div class="users-workspace"><section class="card"><h2>Create user</h2><form class="form" method="post" action="/api/users">' +
+      '<input type="hidden" name="csrf" value="' + admin.csrf + '">' +
+      '<div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="off" required></div>' +
+      '<div class="field"><label for="password">Temporary password</label><input id="password" name="password" type="password" autocomplete="new-password" minlength="12" required><p class="hint">Use at least 12 characters.</p></div>' +
+      '<div class="field"><label for="role">Access level</label><select id="role" name="role"><option value="viewer">Viewer</option><option value="admin">Administrator</option></select></div>' +
+      '<fieldset class="checks"><legend class="legend">Viewer websites</legend>' + checks + "</fieldset>" +
+      '<button class="button" type="submit">Create user</button></form></section>' +
+      '<section class="card users-panel" aria-labelledby="existing-users-title"><div class="users-head"><div><h2 id="existing-users-title">Existing users</h2><p>' +
+      users.length + " account" + (users.length === 1 ? "" : "s") + "</p></div></div>" +
+      '<ol class="user-list">' + records + "</ol></section></div></main>",
+    null,
+    [],
   );
 }
 
 function accountPage(user, changed) {
   return pageShell(
-    "Account - Risulta Sprout",
+    "Account settings",
     user,
-    "<main><h1>Account</h1><p>" + escapeHtml(user.email) + " (" + user.role + ")</p>" +
-      (changed ? "<p role=\"status\">Password changed. Other sessions were signed out.</p>" : "") +
-      "<h2>Change password</h2><form method=\"post\" action=\"/api/account/password\">" +
-      "<input type=\"hidden\" name=\"csrf\" value=\"" + user.csrf + "\">" +
-      "<label>Current password <input name=\"current\" type=\"password\" required autocomplete=\"current-password\"></label> " +
-      "<label>New password (12+ chars) <input name=\"password\" type=\"password\" required autocomplete=\"new-password\"></label> " +
-      "<button>Change</button></form></main>",
+    '<main class="shell" id="main"><div class="titlebar"><div><p class="eyebrow">Account</p><h1>Account settings</h1></div></div>' +
+      '<section class="card settings-section" aria-labelledby="password-title"><h2 id="password-title">Change password</h2>' +
+      '<p class="hint">Changing your password signs out your other active sessions.</p>' +
+      (changed ? '<p class="success" role="status">Password changed. Other sessions were signed out.</p>' : "") +
+      '<form class="form" method="post" action="/api/account/password"><input type="hidden" name="csrf" value="' + user.csrf + '">' +
+      '<div class="field"><label for="current-password">Current password</label><input id="current-password" name="current" type="password" autocomplete="current-password" required></div>' +
+      '<div class="field"><label for="new-password">New password</label><input id="new-password" name="password" type="password" autocomplete="new-password" minlength="12" required><p class="hint">Use at least 12 characters.</p></div>' +
+      '<button class="button" type="submit">Change password</button></form></section></main>',
+    null,
+    [],
   );
 }
 
@@ -585,10 +856,9 @@ export default {
     if (eventMatch && method === "POST") {
       const site = env.DB.prepare("SELECT id, domain FROM sites WHERE public_key = ?").bind(eventMatch[1]).first();
       if (!site) return json({ error: "unknown site" }, 404);
-      let input = {};
       const parsed = parseJson(body);
       if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
-      input = parsed.value;
+      const input = parsed.value;
       const name = String(input.name || "");
       if (!validEventName(name)) return json({ error: "event name is invalid" }, 400);
       const value = validValue(input.value === undefined ? null : input.value);
@@ -645,7 +915,7 @@ export default {
         const session = createSession(env.DB, user.id);
         const cookie = setSessionCookie(session.token, secure);
         if (wantsJson) return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json", "set-cookie": cookie } });
-        return new Response("", { status: 303, headers: { location: "/", "set-cookie": cookie } });
+        return refreshPage("/", cookie);
       }
     }
 
@@ -664,7 +934,7 @@ export default {
       destroySession(env.DB, request);
       const expired = expiredSessionCookie(secure);
       if (wantsJson) return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": expired } });
-      return new Response("", { status: 303, headers: { location: "/login", "set-cookie": expired } });
+      return refreshPage("/login", expired);
     }
 
     if (path === "/api/session" && method === "GET") {
@@ -673,7 +943,19 @@ export default {
 
     if (path === "/" && method === "GET") {
       const sites = listSitesForUser(env.DB, session);
-      return new Response(homePage(session, sites, url.origin), { headers: { "content-type": "text/html;charset=utf-8" } });
+      const now = Math.floor(Date.now() / 1000);
+      const overviews = [];
+      for (let i = 0; i < sites.length; i++) {
+        const summary = siteSummary(env.DB, sites[i].id, now - 7 * 86400, now + 1);
+        overviews.push({ id: sites[i].id, name: sites[i].name, domain: sites[i].domain, overview: { visitors: Number(summary.visitors), pageviews: Number(summary.pageviews) } });
+      }
+      return new Response(homePage(session, overviews), { headers: { "content-type": "text/html;charset=utf-8" } });
+    }
+
+    if (path === "/sites/new" && method === "GET") {
+      if (!isAdmin) return redirect("/");
+      const error = url.searchParams.get("error") || "";
+      return new Response(newSitePage(session, error), { headers: { "content-type": "text/html;charset=utf-8" } });
     }
 
     if (path === "/account" && method === "GET") {
@@ -704,13 +986,13 @@ export default {
     }
 
     if (path === "/users" && method === "GET") {
-      if (!isAdmin) return apiRoute ? json({ error: "forbidden" }, 403) : redirect("/");
+      if (!isAdmin) return redirect("/");
       const users = env.DB.prepare(
         "SELECT users.id, users.email, users.display_name, users.role, users.created_at, group_concat(sites.name, ', ') AS sites " +
           "FROM users LEFT JOIN site_users ON site_users.user_id = users.id LEFT JOIN sites ON sites.id = site_users.site_id " +
           "GROUP BY users.id ORDER BY users.created_at, users.id",
       ).all().results;
-      const sites = env.DB.prepare("SELECT id, name FROM sites ORDER BY name COLLATE NOCASE").all().results;
+      const sites = env.DB.prepare("SELECT id, name, domain FROM sites ORDER BY name COLLATE NOCASE").all().results;
       return new Response(usersPage(session, users, sites), { headers: { "content-type": "text/html;charset=utf-8" } });
     }
 
@@ -738,15 +1020,23 @@ export default {
         displayName = String(form.get("display_name") || "").trim().slice(0, 80);
         password = String(form.get("password") || "");
         role = form.get("role") === "admin" ? "admin" : "viewer";
-        siteIds = form.getAll("site").map(Number);
+        const checked = form.getAll("site");
+        for (let i = 0; i < checked.length; i++) siteIds.push(Number(checked[i]));
       }
-      if (!email) return json({ error: "email is required" }, 400);
-      if (password.length < 12) return json({ error: "password needs 12+ characters" }, 400);
+      if (!email) {
+        if (wantsJson) return json({ error: "email is required" }, 400);
+        return redirect("/users");
+      }
+      if (password.length < 12) {
+        if (wantsJson) return json({ error: "password needs 12+ characters" }, 400);
+        return redirect("/users");
+      }
       let userId = 0;
       try {
         userId = createUser(env.DB, email, password, role, siteIds, displayName);
       } catch {
-        return json({ error: "email already registered" }, 409);
+        if (wantsJson) return json({ error: "email already registered" }, 409);
+        return redirect("/users");
       }
       if (wantsJson) return json({ ok: true, id: userId, email, role }, 201);
       return redirect("/users");
@@ -771,9 +1061,25 @@ export default {
     const sitePageMatch = /^\/sites\/(\d+)$/.exec(path);
     if (sitePageMatch && method === "GET") {
       const site = getSiteForUser(env.DB, Number(sitePageMatch[1]), session);
-      if (!site) return new Response(pageShell("Not found", session, "<main><h1>Unknown site</h1></main>"), { status: 404, headers: { "content-type": "text/html;charset=utf-8" } });
-      const goals = env.DB.prepare("SELECT id, name, event_name, path FROM goals WHERE site_id = ? ORDER BY id").bind(site.id).all().results;
-      return new Response(sitePage(session, site, goals, url.origin), { headers: { "content-type": "text/html;charset=utf-8" } });
+      if (!site) {
+        return new Response(pageShell("Not found", session, '<main class="shell" id="main"><h1>Unknown site</h1></main>', null, []),
+          { status: 404, headers: { "content-type": "text/html;charset=utf-8" } });
+      }
+      const now = Math.floor(Date.now() / 1000);
+      const range = parseRange(url.searchParams, now);
+      if (range.error) {
+        return new Response(pageShell("Not found", session, '<main class="shell" id="main"><h1>' + escapeHtml(range.error) + "</h1></main>", null, []),
+          { status: 400, headers: { "content-type": "text/html;charset=utf-8" } });
+      }
+      const days = rangeDays(range);
+      const metricParam = url.searchParams.get("metric") || "visitors";
+      const metric = metricParam === "visits" || metricParam === "pageviews" ? metricParam : "visitors";
+      const analytics = siteAnalytics(env.DB, site, range.since, range.until);
+      const goalsList = env.DB.prepare("SELECT id, name, event_name, path FROM goals WHERE site_id = ? ORDER BY id").bind(site.id).all().results;
+      analytics.goalsList = goalsList;
+      const sites = listSitesForUser(env.DB, session);
+      return new Response(sitePage(session, site, sites, analytics, range, days, metric, url.origin),
+        { headers: { "content-type": "text/html;charset=utf-8" } });
     }
 
     if (path === "/api/sites" && method === "GET") {
@@ -796,16 +1102,21 @@ export default {
         name = String(form.get("name") || "").trim().slice(0, 80);
         domain = cleanDomain(form.get("domain"));
       }
-      if (!name) return json({ error: "name is required" }, 400);
-      if (!validDomain(domain)) return json({ error: "domain is invalid" }, 400);
+      if (!name || !validDomain(domain)) {
+        if (wantsJson) return json({ error: !name ? "name is required" : "domain is invalid" }, 400);
+        return redirect("/sites/new?error=" + (!name ? "name-required" : "domain-invalid"));
+      }
       const exists = env.DB.prepare("SELECT id FROM sites WHERE domain = ?").bind(domain).first();
-      if (exists) return json({ error: "domain already registered" }, 409);
+      if (exists) {
+        if (wantsJson) return json({ error: "domain already registered" }, 409);
+        return redirect("/sites/new?error=domain-registered");
+      }
       const publicKey = randomHex(16);
       const res = env.DB.prepare("INSERT INTO sites (name, domain, public_key, created_at) VALUES (?, ?, ?, ?)")
         .bind(name, domain, publicKey, Math.floor(Date.now() / 1000))
         .run();
       if (wantsJson) return json({ id: res.meta.last_row_id, name, domain, publicKey }, 201);
-      return redirect("/");
+      return redirect("/sites/" + res.meta.last_row_id);
     }
 
     // Goals per site (writes are admin-only; reads follow site access).
@@ -861,21 +1172,8 @@ export default {
       const now = Math.floor(Date.now() / 1000);
       const range = parseRange(url.searchParams, now);
       if (range.error) return json({ error: range.error }, 400);
-      const summary = siteSummary(env.DB, site.id, range.since, range.until);
-      const byDay = env.DB.prepare(
-        "WITH scoped AS (SELECT ts, visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview') " +
-          "SELECT date(ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM scoped GROUP BY day ORDER BY day",
-      ).bind(site.id, range.since, range.until).all().results;
-      const paths = env.DB.prepare(
-        "SELECT path AS label, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
-          "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY path ORDER BY visitors DESC, pageviews DESC LIMIT 8",
-      ).bind(site.id, range.since, range.until).all().results;
-      const sources = env.DB.prepare(
-        "SELECT coalesce(nullif(source,''),'Direct / None') AS label, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
-          "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY label ORDER BY visitors DESC, pageviews DESC LIMIT 8",
-      ).bind(site.id, range.since, range.until).all().results;
-      const goals = siteGoals(env.DB, site.id, range.since, range.until, Number(summary.visitors));
-      return json({ site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, summary, byDay, paths, sources, goals });
+      const analytics = siteAnalytics(env.DB, site, range.since, range.until);
+      return json({ site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, ...analytics });
     }
 
     // Bounded report with exact-match filters, sortable and paginated, as

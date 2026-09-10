@@ -2,8 +2,10 @@
 
 One binary, one data directory, no platform. Sign in, add a website, paste
 its tracker snippet, and get pageviews, conversions, attribution and bounded
-CSV reports behind a polling dashboard. It runs from `sproutboat build
---standalone` output and keeps state in `SB_DATA_DIR`:
+CSV reports behind a polling dashboard that looks like Risulta: same design
+tokens, topbar, metric panels, SVG charts and report cards (server-rendered;
+live numbers refresh every 5 seconds, no htmx, no framework). It runs from
+`sproutboat build --standalone` output and keeps state in `SB_DATA_DIR`:
 
 ```sh
 sproutboat build sprout --standalone            # linux-x86_64 -> sprout/dist/risulta-sprout
