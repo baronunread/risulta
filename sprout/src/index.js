@@ -25,8 +25,9 @@
 // - No cron, queues or background workers exist standalone. Reports
 //   generate synchronously on request; there are no scheduled summaries.
 // - Redirects use 302: the runtime cannot serialize a 303 status (every
-//   303 shape resets the connection; probed). Form logins use a 200 page
-//   with a meta refresh because 302 + Set-Cookie fails the same way.
+//   303 shape resets the connection; probed, filed as sproutboat-cli#27).
+//   302 + Set-Cookie was broken the same way on 0.8 and fixed in 0.9
+//   (was sproutboat-cli#28), so form login/logout use plain redirects.
 
 import { sha256Hex } from "./sha256.js";
 
@@ -77,21 +78,10 @@ function parseJson(body) {
   }
 }
 
-function redirect(to) {
-  return new Response("", { status: 302, headers: { location: to } });
-}
-
-// Form flows that set a cookie cannot use redirect(): 302 + Set-Cookie
-// resets the connection in this runtime, so answer 200 with a same-click
-// meta refresh instead. Browsers follow it; the link covers no-refresh.
-function refreshPage(to, cookie) {
-  const headers = { "content-type": "text/html;charset=utf-8" };
+function redirect(to, cookie) {
+  const headers = { location: to };
   if (cookie) headers["set-cookie"] = cookie;
-  return new Response(
-    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=' + escapeHtml(to) + '">' +
-      "<title>Continue</title></head><body><main><p><a href=\"" + escapeHtml(to) + "\">Continue</a></p></main></body></html>",
-    { status: 200, headers },
-  );
+  return new Response("", { status: 302, headers });
 }
 
 function optionalSecret(name) {
@@ -948,7 +938,7 @@ export default {
         const session = createSession(env.DB, user.id);
         const cookie = setSessionCookie(session.token, secure);
         if (wantsJson) return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json", "set-cookie": cookie } });
-        return refreshPage("/", cookie);
+        return redirect("/", cookie);
       }
     }
 
@@ -967,7 +957,7 @@ export default {
       destroySession(env.DB, request);
       const expired = expiredSessionCookie(secure);
       if (wantsJson) return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": expired } });
-      return refreshPage("/login", expired);
+      return redirect("/login", expired);
     }
 
     if (path === "/api/session" && method === "GET") {

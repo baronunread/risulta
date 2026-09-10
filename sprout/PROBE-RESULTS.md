@@ -1,11 +1,12 @@
 # Probe results: single standalone Risulta sprout
 
-2026-09-10, branch `sprout/standalone-single`, sproutboat 0.8.0 (0.9.0
-available), Porffor alpha-4 toolchain. Scope is the standalone product in
-`README.md`: password login with admin/viewer roles, tracker ingestion with
-daily salted visitor hashes, goals, attribution, polling dashboard, bounded
-reports (JSON + CSV), embedded static assets. No scheduling exists
-standalone (no cron/queues/alarms); summaries and exports run on request.
+2026-09-10, branch `sprout/standalone-single`, sproutboat **0.9.0**
+(retested after the 0.8.0 -> 0.9.0 bump; toolchain unchanged where noted).
+Scope is the standalone product in `README.md`: password login with
+admin/viewer roles, tracker ingestion with daily salted visitor hashes,
+goals, attribution, polling dashboard, bounded reports (JSON + CSV),
+embedded static assets. No scheduling exists standalone (no
+cron/queues/alarms); summaries and exports run on request.
 
 ## Build matrix
 
@@ -14,7 +15,8 @@ standalone (no cron/queues/alarms); summaries and exports run on request.
 | `bun sprout/tests/sha256-test.mjs` | PASS: 4 NIST vectors + utf8 smoke (one remembered vector was 3 chars short; fixed against WebCrypto) |
 | `sproutboat check sprout` | PASS: `check passed — risulta-sprout (src/index.js, native-fetch)` |
 | `sproutboat build sprout --standalone` (linux-x86_64) | PASS: `built sprout/dist/risulta-sprout (3.2 MB)`, assets baked in |
-| `sproutboat build sprout --standalone --target host` (darwin-arm64) | PASS: `built sprout/dist/risulta-sprout (2.5 MB)`, serves on `$PORT` |
+| `sproutboat build sprout --standalone --target host` (darwin-arm64) | PASS: `built sprout/dist/risulta-sprout (2.6 MB)`, serves on `$PORT` |
+| Boot with no secrets set | PASS on 0.9 (despite the changelog's missing-secret boot refusal; optional reads still work) |
 | `bun run lint` | PASS (only the two pre-existing `lib/views.js` warnings) |
 | `bun run test` (existing Bun app) | Untouched (still passing from the previous commit; no app code changed since) |
 | `sh sprout/verify.sh` (48 assertions, fresh state) | PASS: `pass=48 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
@@ -54,12 +56,15 @@ Covered by `sprout/verify.sh`:
 3. The runtime cannot serialize status **303**: every 303 shape (empty,
    body, cookie) resets the connection. Mapped with a one-build probe
    (`302`/`307`/`201`/`429`/`204` all fine). Worse, **302 + Set-Cookie**
-   fails the same way (302 alone and 200 + Set-Cookie both work), which
-   broke browser form login into a blank page. The app uses 302 for
-   cookie-less navigation and a 200 page with a meta refresh for login
-   and logout forms. Filed upstream as
+   failed the same way on 0.8 (302 alone and 200 + Set-Cookie both
+   worked), which broke browser form login into a blank page; **0.9
+   fixed it** (verified headers on the wire plus real browser login),
+   so the app is back to plain 302 redirects and the meta-refresh
+   workaround is gone. Filed upstream as
    [sproutboat-cli#27](https://github.com/baronunread/sproutboat-cli/issues/27)
-   and [#28](https://github.com/baronunread/sproutboat-cli/issues/28) with
+   (still reproduces on 0.9, commented)
+   and [#28](https://github.com/baronunread/sproutboat-cli/issues/28)
+   (fixed by 0.9, closed) with
    a one-build repro snippet each.
 
 ## Performance (same machine, same workload, 2026-09-10)
@@ -73,8 +78,8 @@ bodies. Bun ran with `RISULTA_INGEST_RATE_LIMIT=1000000` (its default
 | Binary | 62.5 MB | 2.6 MB (24x smaller) |
 | Idle RSS | 21.8 MB | 2.7 MB (8x smaller) |
 | Cold start to ready | 0.15 s | 0.03 s (5x; +~0.5 s once when admin bootstrap hashes) |
-| Ingest | 10,012 RPS | 1,265 RPS |
-| Latency p50/p95/p99 | 1.98 / 4.73 / 6.99 ms | 18.6 / 33.9 / 42.8 ms |
+| Ingest | 10,012 RPS | 1,278 RPS (0.9.0; 1,265 on 0.8.0, unchanged shape) |
+| Latency p50/p95/p99 | 1.98 / 4.73 / 6.99 ms | 18.0 / 33.6 / 57.2 ms |
 | RSS after load | 89.9 MB | ~137 MB, flat (no per-request growth) |
 | Tracker raw / gzip | 752 / 479 B | 760 / 487 B (8 B is the longer public key) |
 
