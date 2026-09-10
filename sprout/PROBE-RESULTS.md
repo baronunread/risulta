@@ -89,6 +89,19 @@ Honest caveats: ingest is ~8x slower than Bun; loaded RSS is higher
 (retained GC heap after the KDF bootstrap, stable under load); Bun ships
 per-IP ingest rate limiting the sprout has not ported.
 
+Decomposition of the ingest gap (serial probes, no queueing): the HTTP
+layer itself does ~9.5k serial RPS (0.11 ms), one collector POST costs
+~2.7 ms, one 6-select stats GET ~3.9 ms. Raw SQLite on the same file
+does sub-millisecond autocommit writes, so the cost is ~0.6 ms per
+D1 boundary crossing (JSON-marshalled op out, reply parsed back, no
+prepared-statement caching) plus low-single-digit-ms serial write
+commits (WAL fsync on macOS). Under 25-way concurrency those serial
+costs queue up (Little's law: 1,265 RPS x ~20 ms ~= 25 in flight),
+which is the p50; the p99 adds GC pauses and checkpoint stalls. Bun
+wins by overlapping 25 concurrent fsyncs and calling SQLite natively.
+Nothing left to cache app-side; closing it needs batch commits (a
+durability tradeoff) or runtime-side prepare caching and concurrency.
+
 ## Out of scope (by design, not deferred)
 
 - Scheduled summaries, alerts and queued exports. Nothing standalone runs
