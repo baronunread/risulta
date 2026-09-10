@@ -57,8 +57,10 @@ Covered by `sprout/verify.sh`:
    fails the same way (302 alone and 200 + Set-Cookie both work), which
    broke browser form login into a blank page. The app uses 302 for
    cookie-less navigation and a 200 page with a meta refresh for login
-   and logout forms. Both look like native-fetch server bugs worth
-   reporting (neither is in `patches/UPSTREAM.md` at time of writing).
+   and logout forms. Filed upstream as
+   [sproutboat-cli#27](https://github.com/baronunread/sproutboat-cli/issues/27)
+   and [#28](https://github.com/baronunread/sproutboat-cli/issues/28) with
+   a one-build repro snippet each.
 
 ## Out of scope (by design, not deferred)
 
