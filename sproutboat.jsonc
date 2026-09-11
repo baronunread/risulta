@@ -4,8 +4,7 @@
   "main": "src/index.js",
   "compatibility_date": "2026-09-07",
   "vars": {
-    "SITE_NAME": "Risulta Sprout",
-    "TRACKER_VERSION": "0.1.0-probe"
+    "SITE_NAME": "Risulta Sprout"
   },
   "d1_databases": ["DB"],
   "ratelimiters": [{ "binding": "INGEST", "limit": 240, "period": 60 }],
