@@ -22,7 +22,7 @@ cron/queues/alarms); summaries and exports run on request.
 | Boot with no secrets set | PASS (optional reads still work; only declared secrets gate boot) |
 | `bun run lint` | PASS (clean) |
 | `bun run test` | PASS (`tests/daystring-test.mjs`, 2011 cases) |
-| `sh verify.sh` (82 assertions, fresh state) | PASS: `pass=82 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
+| `sh verify.sh` (85 assertions, fresh state) | PASS: `pass=85 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
 
 ## Runtime matrix (host binary)
 
@@ -97,6 +97,16 @@ Covered by `verify.sh`:
    declared` for a duplicate `const` (a hard SyntaxError everywhere
    else) and still wrote dist output. Noted on #168; a build should fail
    loudly here instead of shipping a silently reinterpreted bundle.
+8. Non-English text: request bodies arrive Latin-1 decoded (each UTF-8
+   byte becomes one unit, which round-trips storage byte-identically)
+   and Latin-1-range strings emit as raw bytes under charset=utf-8, so
+   every output path encodes ASCII-safely (HTML numeric entities, a
+   hand-rolled `\uXXXX` JSON serializer, manual UTF-8 for CSV) and
+   hashing inputs use true UTF-8 byte views. Proven byte-level against
+   SQLite and the wire, including `verify.sh` unicode assertions. Filed
+   as [sproutboat#172](https://github.com/baronunread/sproutboat/issues/172).
+   `String.prototype.normalize` is also missing (blobatar runs with
+   `normalize: false`; combining-mark names render differently).
 
 ## Performance (same machine, same workload, 2026-09-11)
 

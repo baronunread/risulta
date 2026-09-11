@@ -18,12 +18,16 @@ SB_DATA_DIR=/var/lib/risulta-sprout PORT=8099 ./dist/risulta-sprout
 
 The first administrator comes from secrets (environment for a standalone
 binary). They are read only while the user table is empty; remove the
-password from the environment afterwards.
+password from the environment afterwards. `RISULTA_BASE_URL` is the
+public URL used in tracker snippets (required behind a proxy, otherwise
+the snippet points at loopback); `RISULTA_LOG_LEVEL=silent` disables
+request logs.
 
 ```sh
 RISULTA_ADMIN_EMAIL=you@example.com \
 RISULTA_ADMIN_DISPLAY_NAME='Your name' \
 RISULTA_ADMIN_PASSWORD='use-a-long-unique-password' \
+RISULTA_BASE_URL=http://127.0.0.1:8099 \
 SB_DATA_DIR=/var/lib/risulta-sprout PORT=8099 ./dist/risulta-sprout
 ```
 
@@ -149,6 +153,50 @@ write commit. Full table, method and caveats in `PROBE-RESULTS.md`;
 reproduce with `bun bench.mjs` (it rotates test-net source IPs so
 the per-IP throttle does not cap the measurement).
 
+## Deploy on a Debian/Ubuntu VPS
+
+For a guided installation or update, run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/baronunread/risulta/main/deploy/install.sh | sudo sh
+```
+
+The installer downloads and verifies the latest release, creates the
+`risulta-sprout` systemd service, and can configure Caddy for HTTPS. It
+replaces only the binary on update and keeps the data directory; a cold
+safety copy lands under `/var/backups/risulta-sprout`.
+
+To install manually, build on Linux for the target server, then copy the
+binary and the provided deployment files:
+
+```sh
+sproutboat build --standalone
+sudo install -m 0755 dist/risulta-sprout /usr/local/bin/risulta-sprout
+sudo useradd --system --home /var/lib/risulta-sprout --shell /usr/sbin/nologin risulta-sprout
+sudo install -d -m 0750 -o risulta-sprout -g risulta-sprout /var/lib/risulta-sprout /etc/risulta-sprout
+sudo install -m 0644 deploy/risulta-sprout.service /etc/systemd/system/risulta-sprout.service
+sudo install -m 0600 deploy/risulta-sprout.env.example /etc/risulta-sprout/risulta-sprout.env
+```
+
+Edit `/etc/risulta-sprout/risulta-sprout.env` with the public analytics URL
+(`RISULTA_BASE_URL`, used in tracker snippets) and initial admin
+credentials. Replace `analytics.example.com` in `deploy/Caddyfile`,
+install Caddy, and then:
+
+```sh
+sudo install -m 0644 deploy/Caddyfile /etc/caddy/Caddyfile
+sudo systemctl daemon-reload
+sudo systemctl enable --now risulta-sprout caddy
+curl https://analytics.example.com/healthz
+```
+
+When the first administrator exists, remove `RISULTA_ADMIN_PASSWORD` and
+`RISULTA_ADMIN_EMAIL` from the env file, then restart. Caddy terminates
+HTTPS and compresses the tracker. `SB_TRUSTED_PROXIES` holds the IP
+ranges of proxies that connect directly to Risulta, so it can safely use
+their forwarding headers for visitor counts; the Caddyfile overwrites
+`X-Forwarded-For` so visitors cannot spoof it.
+
 ## Operate it
 
 The data directory holds `store.sqlite` and `d1/DB.sqlite` (plus WAL
@@ -169,25 +217,17 @@ cp -r /var/lib/risulta-sprout "/var/backups/risulta-sprout-$(date +%F)"
 systemctl stop risulta-sprout
 cp /var/backups/risulta-sprout-<date>/<snapshot-file> /var/lib/risulta-sprout/d1/DB.sqlite
 systemctl start risulta-sprout
-
-# upgrade: replace the binary, keep the data directory
-install -m 0755 dist/risulta-sprout /usr/local/bin/risulta-sprout
-systemctl restart risulta-sprout
 ```
 
 Schema changes are additive (`CREATE TABLE IF NOT EXISTS`), so a new
 binary starts against an old data directory. Keep a backup before
 upgrading anyway.
 
-Serve it behind Caddy or equivalent for TLS. The standalone server binds
-loopback (`http://127.0.0.1:$PORT` in the startup log); confirm that line
-on first run and terminate TLS at the proxy. On Linux, scale past one
-core by running several copies on the same `$PORT` and `SB_DATA_DIR`
+The standalone server binds loopback (`http://127.0.0.1:$PORT` in the
+startup log); terminate TLS at the proxy. On Linux, scale past one core
+by running several copies on the same `$PORT` and `SB_DATA_DIR`
 (`SO_REUSEPORT` load-balances; WAL plus the runtime write timeout keep
 the shared databases safe), fronted by the same proxy.
-Serve it behind Caddy or equivalent for TLS. The standalone server binds
-loopback (`http://127.0.0.1:$PORT` in the startup log); confirm that line
-on first run and terminate TLS at the proxy.
 
 ## Verification
 

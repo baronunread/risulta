@@ -49,6 +49,7 @@ import {
   clientIp,
 } from "./store.js";
 import { incrementCounter, logRequest, metricsText, safeRoute } from "./metrics.js";
+import { asciiJson } from "./util.js";
 import { escapeHtml } from "./util.js";
 import {
   accountPage,
@@ -70,7 +71,9 @@ function json(data, status, headers) {
   if (headers) {
     for (const name in headers) responseHeaders[name] = headers[name];
   }
-  return new Response(JSON.stringify(data), {
+  // ASCII-only serialization: the runtime emits Latin-1-range strings as
+  // raw bytes, which would corrupt non-English text on the wire.
+  return new Response(asciiJson(data), {
     status: status || 200,
     headers: responseHeaders,
   });
@@ -161,6 +164,20 @@ function reportInput(q) {
     offset: q.get("offset"),
     sort: String(q.get("sort") || "visitors"),
   };
+}
+
+// Public origin for tracker snippets. An explicit RISULTA_BASE_URL wins
+// (required behind a TLS-terminating proxy, where the request origin is
+// loopback); otherwise the request origin, which is correct for direct
+// loopback use.
+function publicOrigin(request, url) {
+  try {
+    const configured = env["RISULTA_BASE_URL"];
+    if (configured) return String(configured).replace(/\/$/, "");
+  } catch {
+    /* fall through to the request origin */
+  }
+  return url.origin;
 }
 
 async function routeInner(request) {
@@ -289,7 +306,7 @@ async function routeInner(request) {
         }
         const session = await createSession(env.DB, user.id);
         const cookie = setSessionCookie(session.token, secure);
-        if (wantsJson) return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json", "set-cookie": cookie } });
+        if (wantsJson) return json({ ok: true }, 200, { "set-cookie": cookie });
         return redirect("/", cookie);
       }
     }
@@ -308,7 +325,7 @@ async function routeInner(request) {
       if (!csrfValid(session, csrfValue(request, body))) return wantsJson ? json({ error: "csrf mismatch" }, 403) : redirect("/login");
       await destroySession(env.DB, request);
       const expired = expiredSessionCookie(secure);
-      if (wantsJson) return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": expired } });
+      if (wantsJson) return json({ ok: true }, 200, { "set-cookie": expired });
       return redirect("/login", expired);
     }
 
@@ -417,7 +434,7 @@ async function routeInner(request) {
       removeUser(env.DB, session.user_id);
       await destroySession(env.DB, request);
       const expired = expiredSessionCookie(secure);
-      if (wantsJson) return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": expired } });
+      if (wantsJson) return json({ ok: true }, 200, { "set-cookie": expired });
       return redirect("/login", expired);
     }
 
@@ -518,7 +535,7 @@ async function routeInner(request) {
         comparison = siteSummary(env.DB, site.id, range.since - days * 86400, range.since);
       }
       const sites = listSitesForUser(env.DB, session);
-      return new Response(sitePage(session, site, sites, analytics, range, days, metric, url.origin, comparison),
+      return new Response(sitePage(session, site, sites, analytics, range, days, metric, publicOrigin(request, url), comparison),
         { headers: { "content-type": "text/html;charset=utf-8" } });
     }
 
@@ -683,7 +700,7 @@ async function routeInner(request) {
       const goals = env.DB.prepare("SELECT id, name, event_name, path FROM goals WHERE site_id = ? ORDER BY id").bind(site.id).all().results;
       const funnels = listFunnels(env.DB, site.id);
       const error = url.searchParams.get("error") || "";
-      return new Response(settingsPage(session, site, sites, goals, funnels, error, url.origin),
+      return new Response(settingsPage(session, site, sites, goals, funnels, error, publicOrigin(request, url)),
         { headers: { "content-type": "text/html;charset=utf-8" } });
     }
 

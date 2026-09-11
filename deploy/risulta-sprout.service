@@ -1,0 +1,24 @@
+[Unit]
+Description=Risulta web analytics
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=risulta-sprout
+Group=risulta-sprout
+EnvironmentFile=/etc/risulta-sprout/risulta-sprout.env
+ExecStart=/usr/local/bin/risulta-sprout
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+StateDirectory=risulta-sprout
+WorkingDirectory=/var/lib/risulta-sprout
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/risulta-sprout
+
+[Install]
+WantedBy=multi-user.target

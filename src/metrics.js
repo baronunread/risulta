@@ -2,6 +2,8 @@
 // Same counter names as the Bun app so dashboards transfer. No node:
 // imports; module-level state is per-process. Multi-process deployments
 // (SO_REUSEPORT) carry per-process counters; scrape every copy.
+import { asciiJson } from "./util.js";
+
 const counters = new Map([
   ["events_accepted_total", 0],
   ["events_rejected_total", 0],
@@ -45,7 +47,7 @@ export function logLevel() {
 export function logRequest(method, route, status, durationMs) {
   if (logLevel() === "silent") return;
   try {
-    console.error(JSON.stringify({
+    console.error(asciiJson({
       time_ms: Date.now(),
       type: "request",
       method,
