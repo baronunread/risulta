@@ -22,7 +22,7 @@ cron/queues/alarms); summaries and exports run on request.
 | Boot with no secrets set | PASS (optional reads still work; only declared secrets gate boot) |
 | `bun run lint` | PASS (clean) |
 | `bun run test` | PASS (`tests/daystring-test.mjs`, 2011 cases) |
-| `sh verify.sh` (85 assertions, fresh state) | PASS: `pass=85 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
+| `sh verify.sh` (86 assertions, fresh state) | PASS: `pass=86 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
 
 ## Runtime matrix (host binary)
 
@@ -61,6 +61,7 @@ Covered by `verify.sh`:
 | Logout kills the session; static assets stay public | PASS |
 | Visual parity with the Bun app (login, sites, dashboard, users pages) | PASS, screenshot-compared in browser dark mode |
 | htmx 4 polling (fragment swap, live update without reload) | PASS, proven in browser (3→4 pageviews on event) |
+| Live poll URL wired to the fragment route (not `/api/`) | PASS, fetched from the rendered page |
 | Restart persistence | PASS (previous commit; schema additive since) |
 
 ## Runtime findings (upstream-worthy)

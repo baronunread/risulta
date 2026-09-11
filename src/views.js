@@ -177,7 +177,7 @@ export function sitePage(user, site, sites, analytics, range, days, metric, orig
   const title = range.from ? range.from + " to " + range.to : days === 1 ? "Today" : "Last " + days + " days";
   const hasData = Number(analytics.summary.pageviews) > 0;
   const compareSuffix = comparison ? "&compare=1" : "";
-  const statsBase = "/api/sites/" + site.id + "/partials/live?" + (range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days) + "&metric=" + metric + compareSuffix;
+  const statsBase = "/sites/" + site.id + "/partials/live?" + (range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days) + "&metric=" + metric + compareSuffix;
   const periodTabs = [1, 7, 30].map((period) =>
     '<a href="/sites/' + site.id + "?period=" + period + "&metric=" + metric + compareSuffix + '"' + (!range.from && period === days ? ' aria-current="page"' : "") + ">" +
     (period === 1 ? "Today" : period + "d") + "</a>").join("");

@@ -15,12 +15,16 @@ const saltCache = new Map();
 const siteByKey = new Map();
 export { siteByKey };
 
+// Public keys are immutable and sites are only added through this handler,
+// so a miss-fill cache is exactly coherent for hits. Misses are NEVER
+// cached: a cached null would stick a transient lookup failure (or a key
+// checked before its site exists) permanently. Unknown keys cost one
+// indexed SELECT per request instead.
 export function siteForKey(db, publicKey) {
-  let site = siteByKey.get(publicKey);
-  if (site === undefined) {
-    site = db.prepare("SELECT id, domain FROM sites WHERE public_key = ?").bind(publicKey).first() || null;
-    siteByKey.set(publicKey, site);
-  }
+  const hit = siteByKey.get(publicKey);
+  if (hit !== undefined) return hit;
+  const site = db.prepare("SELECT id, domain FROM sites WHERE public_key = ?").bind(publicKey).first() || null;
+  if (site) siteByKey.set(publicKey, site);
   return site;
 }
 

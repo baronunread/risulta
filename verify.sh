@@ -165,6 +165,15 @@ case "$FRAG" in
   *'class="metrics"'*'Top pages'*) ok "live fragment (authed)" ;;
   *) bad "live fragment (authed)" ;;
 esac
+# The dashboard's poller must point at the fragment route above, not the
+# /api/ namespace (a past bug served the numbers on reload, then swapped
+# in a JSON 404 on the first poll).
+POLL_URL=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID" | python3 -c 'import sys,re; m=re.search(r"data-stats-url=\"([^\"]+)\"", sys.stdin.read()); print(m.group(1) if m else "")')
+POLL_FRAG=$(curl -s -m 10 -b "$JAR_A" "$BASE$POLL_URL")
+case "$POLL_FRAG" in
+  *'class="metrics"'*) ok "live poll wiring" ;;
+  *) bad "live poll wiring ($POLL_URL)" ;;
+esac
 expect_code "live fragment anonymous" GET "/sites/$SHOP_ID/partials/live?period=1" "" 303
 expect_code "live fragment unknown site" GET /sites/999999/partials/live?period=1 "" 404 "application/json" "$JAR_A"
 CSV=$(curl -s -m 10 -b "$JAR_A" "$BASE/api/sites/$SHOP_ID/report?dimension=path&format=csv")
