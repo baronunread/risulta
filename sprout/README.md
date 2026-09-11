@@ -41,17 +41,23 @@ In:
   standalone `s2$` rows migrate the same way.
 - Daily salted visitor hashes (runtime-resolved client IP + User-Agent,
   neither stored), per-day breakdowns, 30-minute visit boundary, top
-  pages/sources, conversion goals with rates, explicit UTC date ranges
-  (at most 366 days).
+  pages/sources, conversion goals with rates, funnels over ordered goal
+  sequences (bounded to the 50,000 most recent events in range, so counts
+  on huge ranges are approximate), previous-period comparison, explicit
+  UTC date ranges (at most 366 days).
 - Per-IP ingest limiting (240 events per 60 s window via the INGEST
   rate-limit binding), bounded JSON/CSV reports (100 rows max,
-  exact-match filters), generated synchronously on request.
+  exact-match filters) plus full HTML report pages with filters and
+  pagination, generated synchronously on request.
+- Website settings pages (tracker snippet, goal and funnel management),
+  account profiles and self-deletion with last-admin guard, origin-checked
+  login, favicon and webmanifest assets.
 - Loopback `/metrics` in Prometheus exposition (same counter names as the
   Bun app) and one JSON request record per response on stderr (neither
   carries bodies, headers, IPs, user agents, or tokens; set
   `RISULTA_LOG_LEVEL=silent` to disable).
 - Online backup: `POST /api/backup` (admin) writes an integrity-checked
-  snapshot to `backups/` with no downtime.
+  snapshot to `backups/` with a row-count manifest, no downtime.
 - Multiple sites under one binary, per-site tracker snippets (MIT),
   embedded static assets, SQLite state in one directory.
 
@@ -103,8 +109,10 @@ your own setup.
   (tracker copy button, poll status). Static files, not compiled through
   Porffor.
 - `seed.sh`, `verify.sh`: fixture seeding and a boundary check against a
-  running binary (both trust modes covered, plus metrics, backup, ingest
-  throttle, and scrypt migration). Run both
+  running binary (both trust modes covered, plus metrics, backup with
+  manifest, ingest throttle, scrypt migration, comparison, HTML reports,
+  settings, funnels, account profile and deletion, origin checks, and
+  static assets). Run both
   from the repo root; the scrypt check needs `SB_DATA_DIR` pointing at
   the server's data directory and is skipped otherwise.
 

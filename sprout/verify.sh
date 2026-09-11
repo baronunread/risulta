@@ -15,7 +15,8 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-change-me-verify-0001}"
 EXPECT_TRUST="${EXPECT_TRUST:-0}"
 JAR_A=$(mktemp /tmp/sprout-verify-a.XXXXXX)
 JAR_V=$(mktemp /tmp/sprout-verify-v.XXXXXX)
-trap 'rm -f "$JAR_A" "$JAR_V"' EXIT
+JAR_T=$(mktemp /tmp/sprout-verify-t.XXXXXX)
+trap 'rm -f "$JAR_A" "$JAR_V" "$JAR_T"' EXIT
 PASS=0
 FAIL=0
 
@@ -66,6 +67,8 @@ i=0; while [ $i -lt 5 ]; do
   i=$((i + 1))
 done
 expect_code "rate limit 429" POST /login "{\"email\":\"$FAKE\",\"password\":\"x\"}" 429
+ORIGIN_CODE=$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "$BASE/login" -H 'content-type: application/json' -H 'Origin: https://evil.example.com' -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}")
+if [ "$ORIGIN_CODE" = 403 ]; then ok "cross-origin login 403"; else bad "cross-origin login 403 ($ORIGIN_CODE)"; fi
 
 # Admin login (timed: measures the standalone KDF cost).
 START=$(python3 -c 'import time; print(int(time.time() * 1000))')
@@ -116,6 +119,32 @@ expect_json "attribution recorded" "/api/sites/$SHOP_ID/stats?period=1" '"newsle
 expect_json "junk param dropped" "/api/sites/$SHOP_ID/stats?period=1" 'json.load(sys.stdin)["paths"][0]["label"]' "/" "$JAR_A"
 expect_json "goal conversion" "/api/sites/$SHOP_ID/stats?period=1" 'json.load(sys.stdin)["goals"][0]["conversions"]' 1 "$JAR_A"
 expect_json "goal value sum" "/api/sites/$SHOP_ID/stats?period=1" 'json.load(sys.stdin)["goals"][0]["value"]' 3 "$JAR_A"
+curl -s -m 10 -X POST "$BASE/api/sites/$SHOP_ID/goals" -H 'content-type: application/json' -H "x-csrf-token: $CSRF_A" -b "$JAR_A" -d '{"name":"Checkout view","eventName":"pageview","path":"/checkout"}' > /dev/null
+GOAL_IDS=$(curl -s -m 10 -b "$JAR_A" "$BASE/api/sites/$SHOP_ID/goals" | python3 -c 'import sys,json; print(" ".join(str(g["id"]) for g in json.load(sys.stdin)[:2]))')
+G1=$(echo "$GOAL_IDS" | python3 -c 'import sys; print(sys.stdin.read().split()[0])')
+G2=$(echo "$GOAL_IDS" | python3 -c 'import sys; print(sys.stdin.read().split()[1])')
+curl -s -m 10 -X POST "$BASE/api/sites/$SHOP_ID/funnels" -H 'content-type: application/json' -H "x-csrf-token: $CSRF_A" -b "$JAR_A" -d "{\"name\":\"Purchase\",\"goalIds\":[$G1,$G2]}" > /dev/null
+expect_code "funnel needs name" POST "/api/sites/$SHOP_ID/funnels" "{\"name\":\"\",\"goalIds\":[$G1,$G2]}" 400 "application/json" "$JAR_A" "$CSRF_A"
+expect_code "funnel needs two goals" POST "/api/sites/$SHOP_ID/funnels" "{\"name\":\"Short\",\"goalIds\":[$G1]}" 400 "application/json" "$JAR_A" "$CSRF_A"
+expect_code "funnel rejects foreign goal" POST "/api/sites/$SHOP_ID/funnels" "{\"name\":\"Nope\",\"goalIds\":[$G1,999999]}" 400 "application/json" "$JAR_A" "$CSRF_A"
+expect_json "funnel step conversions" "/api/sites/$SHOP_ID/stats?period=1" 'json.load(sys.stdin)["funnels"][0]["steps"][0]["conversions"]' 1 "$JAR_A"
+CMP=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID?compare=1")
+case "$CMP" in
+  *"Previous period"*) ok "comparison mode" ;;
+  *) bad "comparison mode" ;;
+esac
+REP_PAGE=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/reports?dimension=path")
+case "$REP_PAGE" in
+  *"Full report"*data-table*) ok "html report page" ;;
+  *) bad "html report page" ;;
+esac
+expect_code "anonymous reports redirects" GET "/sites/$SHOP_ID/reports" "" 303
+expect_code "report unknown site" GET /sites/999999/reports "" 404 "application/json" "$JAR_A"
+SET_PAGE=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/settings")
+case "$SET_PAGE" in
+  *"Website settings"*Funnels*) ok "settings page" ;;
+  *) bad "settings page" ;;
+esac
 expect_json "explicit range works" "/api/sites/$SHOP_ID/stats?from=2026-01-01&to=2026-12-31" 'json.load(sys.stdin)["summary"]["pageviews"]' 3 "$JAR_A"
 expect_code "reversed range" GET "/api/sites/$SHOP_ID/stats?from=2026-12-31&to=2026-01-01" "" 400 "application/json" "$JAR_A"
 expect_json "report total" "/api/sites/$SHOP_ID/report?dimension=path" 'json.load(sys.stdin)["total"]' 3 "$JAR_A"
@@ -160,6 +189,20 @@ expect_code "viewer blocked from blog" GET "/api/sites/$BLOG_ID/stats?period=1" 
 expect_code "viewer cannot create sites" POST /api/sites '{"name":"X","domain":"x-$STAMP.example.com"}' 403 "application/json" "$JAR_V" "$CSRF_V"
 expect_code "viewer cannot create users" POST /api/users '{"email":"z@example.com","password":"viewer-password-0001"}' 403 "application/json" "$JAR_V" "$CSRF_V"
 
+# Profile edit and self-deletion on a throwaway account (admin untouched).
+TEMP2="profile-$STAMP@example.com"
+curl -s -m 10 -X POST "$BASE/api/users" -H 'content-type: application/json' -H "x-csrf-token: $CSRF_A" -b "$JAR_A" \
+  -d "{\"email\":\"$TEMP2\",\"password\":\"temp2-password-0001\",\"role\":\"viewer\",\"siteIds\":[]}" > /dev/null
+curl -s -m 10 -X POST "$BASE/login" -H 'content-type: application/json' -c "$JAR_T" -b "$JAR_T" -d "{\"email\":\"$TEMP2\",\"password\":\"temp2-password-0001\"}" > /dev/null
+CSRF_T=$(curl -s -m 10 -b "$JAR_T" "$BASE/api/session" | python3 -c 'import sys,json; print(json.load(sys.stdin)["csrf"])')
+expect_code "profile update" POST /api/account/profile "{\"displayName\":\"Renamed\",\"email\":\"$TEMP2\"}" 200 "application/json" "$JAR_T" "$CSRF_T"
+expect_json "profile reflected" /api/session 'json.load(sys.stdin)["displayName"]' "Renamed" "$JAR_T"
+expect_code "profile duplicate email" POST /api/account/profile "{\"displayName\":\"Renamed\",\"email\":\"$ADMIN_EMAIL\"}" 409 "application/json" "$JAR_T" "$CSRF_T"
+expect_code "delete needs confirmation" POST /api/account/delete '{"confirmation":"nope"}' 400 "application/json" "$JAR_T" "$CSRF_T"
+expect_code "delete own account" POST /api/account/delete '{"confirmation":"DELETE"}' 200 "application/json" "$JAR_T" "$CSRF_T"
+expect_code "deleted profile cannot login" POST /login "{\"email\":\"$TEMP2\",\"password\":\"temp2-password-0001\"}" 401
+rm -f "$JAR_T"
+
 # User deletion (and its guards).
 TEMP="temp-$STAMP@example.com"
 TEMP_ID=$(curl -s -m 10 -X POST "$BASE/api/users" -H 'content-type: application/json' -H "x-csrf-token: $CSRF_A" -b "$JAR_A" \
@@ -189,8 +232,8 @@ CSRF_A=$(curl -s -m 10 -b "$JAR_A" "$BASE/api/session" | python3 -c 'import sys,
 
 # Online backup (admin only): integrity-checked snapshot, no downtime.
 BACKUP_RESP=$(curl -s -m 10 -X POST "$BASE/api/backup" -H 'content-type: application/json' -H "x-csrf-token: $CSRF_A" -b "$JAR_A" -d '{}')
-echo "$BACKUP_RESP" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("ok") is True and d.get("bytes", 0) > 0 and d.get("path"), "bad backup response"' \
-  && ok "online backup" || bad "online backup ($BACKUP_RESP)"
+echo "$BACKUP_RESP" | python3 -c 'import sys,json; d=json.load(sys.stdin); m=d.get("manifest", {}); t=m.get("tables", {}); assert d.get("ok") is True and d.get("bytes", 0) > 0 and d.get("path") and t.get("sites", 0) >= 2 and t.get("events", 0) >= 5, "bad backup response"' \
+  && ok "online backup with manifest" || bad "online backup ($BACKUP_RESP)"
 expect_code "backup needs csrf" POST /api/backup '{}' 403 "application/json" "$JAR_A"
 expect_code "viewer cannot backup" POST /api/backup '{}' 403 "application/json" "$JAR_V" "$CSRF_V"
 
@@ -238,6 +281,10 @@ case "$STATIC_JS" in
 esac
 STATIC_CSS=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$BASE/style.css")
 if [ "$STATIC_CSS" = 200 ]; then ok "static style.css"; else bad "static style.css ($STATIC_CSS)"; fi
+STATIC_ICON=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$BASE/favicon-light.svg")
+if [ "$STATIC_ICON" = 200 ]; then ok "static favicon"; else bad "static favicon ($STATIC_ICON)"; fi
+STATIC_MANIFEST=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$BASE/site.webmanifest")
+if [ "$STATIC_MANIFEST" = 200 ]; then ok "static webmanifest"; else bad "static webmanifest ($STATIC_MANIFEST)"; fi
 
 echo "---"
 echo "pass=$PASS fail=$FAIL"

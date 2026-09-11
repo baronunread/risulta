@@ -53,6 +53,8 @@ async function ensureSchema(db) {
     "CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, domain TEXT NOT NULL UNIQUE, public_key TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);" +
       "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, ts INTEGER NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL, referrer TEXT NOT NULL DEFAULT '', visitor TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', medium TEXT NOT NULL DEFAULT '', campaign TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', term TEXT NOT NULL DEFAULT '', value REAL);" +
       "CREATE TABLE IF NOT EXISTS goals (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, name TEXT NOT NULL, event_name TEXT NOT NULL, path TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, UNIQUE (site_id, name));" +
+      "CREATE TABLE IF NOT EXISTS funnels (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL);" +
+      "CREATE TABLE IF NOT EXISTS funnel_steps (funnel_id INTEGER NOT NULL REFERENCES funnels(id) ON DELETE CASCADE, position INTEGER NOT NULL, goal_id INTEGER NOT NULL REFERENCES goals(id), PRIMARY KEY (funnel_id, position));" +
       "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL COLLATE NOCASE UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('admin','viewer')), display_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);" +
       "CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, csrf TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);" +
       "CREATE TABLE IF NOT EXISTS site_users (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('viewer')), PRIMARY KEY (user_id, site_id));" +
@@ -83,6 +85,33 @@ export function listSitesForUser(db, user) {
   return db.prepare(
     "SELECT sites.* FROM sites JOIN site_users ON site_users.site_id = sites.id WHERE site_users.user_id = ? ORDER BY sites.name COLLATE NOCASE",
   ).bind(user.user_id).all().results;
+}
+
+export function updateProfile(db, userId, displayName, email) {
+  db.prepare("UPDATE users SET display_name = ?, email = ? WHERE id = ?").bind(displayName, email, userId).run();
+}
+
+export function adminCount(db) {
+  return Number(db.prepare("SELECT count(*) AS n FROM users WHERE role = 'admin'").first().n);
+}
+
+// Full account removal with explicit child cleanup (deterministic whether
+// or not the connection enforces foreign keys).
+export function removeUser(db, userId) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
+    db.prepare("DELETE FROM site_users WHERE user_id = ?").bind(userId).run();
+    db.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
+    db.exec("COMMIT");
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* already rolled back */
+    }
+    throw error;
+  }
 }
 
 export function getSiteForUser(db, siteId, user) {
@@ -184,9 +213,88 @@ export function siteGoals(db, siteId, since, until, visitors) {
   return out;
 }
 
+export function listFunnels(db, siteId) {
+  const funnels = db.prepare("SELECT id, name FROM funnels WHERE site_id = ? ORDER BY id").bind(siteId).all().results;
+  const out = [];
+  for (let i = 0; i < funnels.length; i++) {
+    const steps = db.prepare(
+      "SELECT goals.id, goals.name, goals.event_name, goals.path FROM funnel_steps " +
+        "JOIN goals ON goals.id = funnel_steps.goal_id WHERE funnel_steps.funnel_id = ? ORDER BY funnel_steps.position",
+    ).bind(funnels[i].id).all().results;
+    out.push({ id: funnels[i].id, name: funnels[i].name, steps });
+  }
+  return out;
+}
+
+export function createFunnel(db, siteId, name, goalIds) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = db.prepare("INSERT INTO funnels (site_id, name, created_at) VALUES (?, ?, ?)")
+      .bind(siteId, name, Math.floor(Date.now() / 1000))
+      .run();
+    const funnelId = Number(result.meta.last_row_id);
+    const assign = db.prepare("INSERT INTO funnel_steps (funnel_id, position, goal_id) VALUES (?, ?, ?)");
+    for (let i = 0; i < goalIds.length; i++) assign.bind(funnelId, i, goalIds[i]).run();
+    db.exec("COMMIT");
+    return funnelId;
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* already rolled back */
+    }
+    throw error;
+  }
+}
+
+// Funnel conversions, computed in JS over one ordered event scan like the
+// Bun app. Bounded: at most FUNNEL_EVENT_LIMIT rows are scanned, and the
+// result says when the cap bit so funnels on huge ranges read as the
+// approximation they are.
+export const FUNNEL_EVENT_LIMIT = 50000;
+
+export function siteFunnels(db, siteId, since, until) {
+  const funnels = listFunnels(db, siteId);
+  if (!funnels.length) return { funnels: [], truncated: false };
+  const events = db.prepare(
+    "SELECT visitor, ts, name, path FROM events WHERE site_id = ? AND ts >= ? AND ts < ? ORDER BY visitor, ts LIMIT ?",
+  ).bind(siteId, since, until, FUNNEL_EVENT_LIMIT).all().results;
+  const truncated = events.length >= FUNNEL_EVENT_LIMIT;
+  const out = [];
+  for (let i = 0; i < funnels.length; i++) {
+    const funnel = funnels[i];
+    // Plain objects stand in for Sets (visitor identity per step); the
+    // runtime subset is safer without Set.
+    const completed = [];
+    for (let s = 0; s < funnel.steps.length; s++) completed.push({});
+    const positions = {};
+    for (let e = 0; e < events.length; e++) {
+      const event = events[e];
+      const position = positions[event.visitor] || 0;
+      const step = funnel.steps[position];
+      if (!step || event.name !== step.event_name || (step.path && event.path !== step.path)) continue;
+      completed[position][event.visitor] = 1;
+      positions[event.visitor] = position + 1;
+    }
+    const counts = [];
+    for (let s = 0; s < completed.length; s++) counts.push(Object.keys(completed[s]).length);
+    out.push({
+      id: funnel.id,
+      name: funnel.name,
+      steps: funnel.steps.map((step, index) => ({
+        name: step.name,
+        conversions: counts[index],
+        drop_off: index ? counts[index - 1] - counts[index] : 0,
+      })),
+    });
+  }
+  return { funnels: out, truncated };
+}
+
 export function siteAnalytics(db, site, since, until) {
   const summary = siteSummary(db, site.id, since, until);
   const visitors = Number(summary.visitors);
+  const funnelResult = siteFunnels(db, site.id, since, until);
   return {
     summary,
     current: siteCurrent(db, site.id),
@@ -204,6 +312,8 @@ export function siteAnalytics(db, site, since, until) {
     mediums: topList(db, site.id, since, until, "coalesce(nullif(medium,''),'None')"),
     campaigns: topList(db, site.id, since, until, "coalesce(nullif(campaign,''),'None')"),
     goals: siteGoals(db, site.id, since, until, visitors),
+    funnels: funnelResult.funnels,
+    funnelsTruncated: funnelResult.truncated,
   };
 }
 

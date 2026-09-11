@@ -31,15 +31,20 @@ import {
   validValue,
 } from "./domain.js";
 import {
+  adminCount,
+  createFunnel,
   ensureReady,
   getSiteForUser,
+  listFunnels,
   listSitesForUser,
+  removeUser,
   reportCsv,
   siteAnalytics,
   siteByKey,
   siteForKey,
   siteReport,
   siteSummary,
+  updateProfile,
   visitorId,
   clientIp,
 } from "./store.js";
@@ -52,6 +57,8 @@ import {
   loginPage,
   newSitePage,
   pageShell,
+  reportsPage,
+  settingsPage,
   sitePage,
   trackerFor,
   usersPage,
@@ -73,6 +80,22 @@ function parseJson(body) {
     return { ok: true, value: JSON.parse(body || "{}") };
   } catch {
     return { ok: false, value: {} };
+  }
+}
+
+// Same-origin check for unauthenticated form/JSON writes (login). Compares
+// hosts only, not schemes: TLS terminates at the proxy, so the browser's
+// https origin never equals the binary's http origin. Missing Origin (curl,
+// non-browser clients) passes like the Bun app.
+function sameOriginHost(request) {
+  const origin = request.headers.get("origin") || "";
+  if (!origin) return true;
+  try {
+    const originHost = new URL(origin).host.toLowerCase();
+    const host = String(request.headers.get("host") || "").split(",")[0].trim().toLowerCase();
+    return originHost !== "" && originHost === host;
+  } catch {
+    return false;
   }
 }
 
@@ -115,6 +138,30 @@ function ingestThrottle(request) {
   return { allowed: true, retryAfter: 0 };
 }
 
+// Shared report input parsing for the JSON/CSV API and the HTML page:
+// dimension plus exact-match filters, limit, offset and sort. Bounds are
+// enforced inside siteReport.
+function reportInput(q) {
+  const filters = {};
+  const pathFilter = String(q.get("path") || "").slice(0, 2048);
+  const sourceFilter = String(q.get("source") || "").slice(0, 128);
+  const mediumFilter = String(q.get("medium") || "").slice(0, 128);
+  const campaignFilter = String(q.get("campaign") || "").slice(0, 128);
+  const eventFilter = String(q.get("event") || "").slice(0, 64);
+  if (pathFilter !== "") filters.path = pathFilter;
+  if (sourceFilter !== "") filters.source = sourceFilter;
+  if (mediumFilter !== "") filters.medium = mediumFilter;
+  if (campaignFilter !== "") filters.campaign = campaignFilter;
+  if (eventFilter !== "") filters.event = eventFilter;
+  return {
+    dimension: String(q.get("dimension") || "path"),
+    filters,
+    limit: q.get("limit"),
+    offset: q.get("offset"),
+    sort: String(q.get("sort") || "visitors"),
+  };
+}
+
 async function routeInner(request) {
     await ensureReady(env.DB);
     const url = new URL(request.url);
@@ -136,6 +183,9 @@ async function routeInner(request) {
       });
     }
     if (method === "GET" && (path === "/style.css" || path === "/dashboard.js")) return env.ASSETS.fetch(request);
+    if (method === "GET" && (path === "/favicon-light.svg" || path === "/favicon-dark.svg" || path === "/site.webmanifest")) {
+      return env.ASSETS.fetch(request);
+    }
 
     // Tracker asset: public, cookieless, same behavior as the Bun app.
     const jsMatch = /^\/js\/([A-Za-z0-9_-]+)\.js$/.exec(path);
@@ -192,6 +242,10 @@ async function routeInner(request) {
         return new Response(loginPage(""), { headers: { "content-type": "text/html;charset=utf-8" } });
       }
       if (method === "POST") {
+        if (!sameOriginHost(request)) {
+          if (wantsJson) return json({ error: "forbidden" }, 403);
+          return new Response("Forbidden", { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } });
+        }
         let email = "";
         let password = "";
         if (wantsJson) {
@@ -275,7 +329,9 @@ async function routeInner(request) {
 
     if (path === "/account" && method === "GET") {
       const changed = (url.searchParams.get("changed") || "") === "1";
-      return new Response(accountPage(session, changed), { headers: { "content-type": "text/html;charset=utf-8" } });
+      const profile = url.searchParams.get("profile") || "";
+      return new Response(accountPage(session, { changed, profile }),
+        { headers: { "content-type": "text/html;charset=utf-8" } });
     }
 
     if (path === "/api/account/password" && method === "POST") {
@@ -298,6 +354,65 @@ async function routeInner(request) {
       changePassword(env.DB, session, await hashPassword(next));
       if (wantsJson) return json({ ok: true });
       return redirect("/account?changed=1");
+    }
+
+    if (path === "/api/account/profile" && method === "POST") {
+      let displayName = "";
+      let email = "";
+      if (wantsJson) {
+        const parsed = parseJson(body);
+        if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+        displayName = String(parsed.value.displayName || parsed.value.display_name || "").trim().slice(0, 80);
+        email = normalizeEmail(parsed.value.email);
+      } else {
+        const form = new URLSearchParams(body);
+        displayName = String(form.get("displayName") || form.get("display_name") || "").trim().slice(0, 80);
+        email = normalizeEmail(form.get("email"));
+      }
+      if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
+      if (!displayName) {
+        if (wantsJson) return json({ error: "display name is required" }, 400);
+        return redirect("/account?profile=name-required");
+      }
+      if (!email.includes("@")) {
+        if (wantsJson) return json({ error: "email is invalid" }, 400);
+        return redirect("/account?profile=email-invalid");
+      }
+      try {
+        updateProfile(env.DB, session.user_id, displayName, email);
+      } catch {
+        if (wantsJson) return json({ error: "email already registered" }, 409);
+        return redirect("/account?profile=email-registered");
+      }
+      if (wantsJson) return json({ ok: true });
+      return redirect("/account?profile=1");
+    }
+
+    if (path === "/api/account/delete" && method === "POST") {
+      let confirmation = "";
+      if (wantsJson) {
+        const parsed = parseJson(body);
+        if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+        confirmation = String(parsed.value.confirmation || "");
+      } else {
+        confirmation = String(new URLSearchParams(body).get("confirmation") || "");
+      }
+      if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
+      if (confirmation !== "DELETE") {
+        if (wantsJson) return json({ error: "type DELETE to confirm account deletion" }, 400);
+        return redirect("/account");
+      }
+      const target = env.DB.prepare("SELECT role FROM users WHERE id = ?").bind(session.user_id).first();
+      if (!target) return json({ error: "unknown user" }, 404);
+      if (target.role === "admin" && adminCount(env.DB) < 2) {
+        if (wantsJson) return json({ error: "cannot delete the last administrator" }, 400);
+        return redirect("/account");
+      }
+      removeUser(env.DB, session.user_id);
+      await destroySession(env.DB, request);
+      const expired = expiredSessionCookie(secure);
+      if (wantsJson) return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": expired } });
+      return redirect("/login", expired);
     }
 
     if (path === "/users" && method === "GET") {
@@ -365,10 +480,10 @@ async function routeInner(request) {
       if (targetId === session.user_id) return json({ error: "cannot delete yourself" }, 400);
       const target = env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(targetId).first();
       if (!target) return json({ error: "unknown user" }, 404);
-      if (target.role === "admin" && Number(env.DB.prepare("SELECT count(*) AS n FROM users WHERE role = 'admin'").first().n) < 2) {
+      if (target.role === "admin" && adminCount(env.DB) < 2) {
         return json({ error: "cannot delete the last administrator" }, 400);
       }
-      env.DB.prepare("DELETE FROM users WHERE id = ?").bind(targetId).run();
+      removeUser(env.DB, targetId);
       if (wantsJson) return json({ ok: true });
       return redirect("/users");
     }
@@ -390,10 +505,14 @@ async function routeInner(request) {
       const metricParam = url.searchParams.get("metric") || "visitors";
       const metric = metricParam === "visits" || metricParam === "pageviews" ? metricParam : "visitors";
       const analytics = siteAnalytics(env.DB, site, range.since, range.until);
-      const goalsList = env.DB.prepare("SELECT id, name, event_name, path FROM goals WHERE site_id = ? ORDER BY id").bind(site.id).all().results;
-      analytics.goalsList = goalsList;
+      // Previous-period comparison: the summary for the immediately
+      // preceding window of the same length, like the Bun app.
+      let comparison = null;
+      if (url.searchParams.get("compare") === "1") {
+        comparison = siteSummary(env.DB, site.id, range.since - days * 86400, range.since);
+      }
       const sites = listSitesForUser(env.DB, session);
-      return new Response(sitePage(session, site, sites, analytics, range, days, metric, url.origin),
+      return new Response(sitePage(session, site, sites, analytics, range, days, metric, url.origin, comparison),
         { headers: { "content-type": "text/html;charset=utf-8" } });
     }
 
@@ -462,19 +581,104 @@ async function routeInner(request) {
           eventName = String(form.get("event_name") || "").trim().slice(0, 64);
           goalPath = String(form.get("path") || "").trim().slice(0, 2048);
         }
-        if (!name) return json({ error: "name is required" }, 400);
-        if (!validEventName(eventName)) return json({ error: "event name is invalid" }, 400);
-        if (goalPath !== "" && goalPath.charAt(0) !== "/") return json({ error: "path must start with /" }, 400);
+        if (!name) {
+          if (wantsJson) return json({ error: "name is required" }, 400);
+          return redirect("/sites/" + site.id + "/settings?error=goal-name-required");
+        }
+        if (!validEventName(eventName)) {
+          if (wantsJson) return json({ error: "event name is invalid" }, 400);
+          return redirect("/sites/" + site.id + "/settings?error=goal-event-invalid");
+        }
+        if (goalPath !== "" && goalPath.charAt(0) !== "/") {
+          if (wantsJson) return json({ error: "path must start with /" }, 400);
+          return redirect("/sites/" + site.id + "/settings?error=goal-path-invalid");
+        }
         try {
           env.DB.prepare("INSERT INTO goals (site_id, name, event_name, path, created_at) VALUES (?, ?, ?, ?, ?)")
             .bind(site.id, name, eventName, goalPath, Math.floor(Date.now() / 1000))
             .run();
         } catch {
-          return json({ error: "goal name already exists for this site" }, 409);
+          if (wantsJson) return json({ error: "goal name already exists for this site" }, 409);
+          return redirect("/sites/" + site.id + "/settings?error=goal-name-registered");
         }
         if (wantsJson) return json({ ok: true, name, eventName, path: goalPath }, 201);
-        return redirect("/sites/" + site.id);
+        return redirect("/sites/" + site.id + "/settings");
       }
+    }
+
+    // Funnels per site: ordered goal sequences with per-step conversions.
+    // Writes are admin-only; reads follow site access (via analytics).
+    const funnelsMatch = /^\/api\/sites\/(\d+)\/funnels$/.exec(path);
+    if (funnelsMatch) {
+      const site = getSiteForUser(env.DB, Number(funnelsMatch[1]), session);
+      if (!site) return json({ error: "unknown site" }, 404);
+      if (method === "GET") {
+        return json(listFunnels(env.DB, site.id));
+      }
+      if (method === "POST") {
+        if (!isAdmin) return json({ error: "forbidden" }, 403);
+        if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
+        let name = "";
+        let goalIds = [];
+        if (wantsJson) {
+          const parsed = parseJson(body);
+          if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+          const input = parsed.value;
+          name = String(input.name || "").trim().slice(0, 100);
+          const rawIds = input.goalIds || input.goal_ids || [];
+          for (let i = 0; i < rawIds.length; i++) goalIds.push(Number(rawIds[i]));
+        } else {
+          const form = new URLSearchParams(body);
+          name = String(form.get("name") || "").trim().slice(0, 100);
+          const checked = form.getAll("goal");
+          for (let i = 0; i < checked.length; i++) goalIds.push(Number(checked[i]));
+        }
+        const settingsUrl = "/sites/" + site.id + "/settings";
+        if (!name) {
+          if (wantsJson) return json({ error: "name is required" }, 400);
+          return redirect(settingsUrl + "?error=funnel-name-required");
+        }
+        const siteGoals = env.DB.prepare("SELECT id FROM goals WHERE site_id = ?").bind(site.id).all().results;
+        const validIds = {};
+        for (let i = 0; i < siteGoals.length; i++) validIds[siteGoals[i].id] = 1;
+        const seen = {};
+        let stepsOk = goalIds.length >= 2;
+        for (let i = 0; i < goalIds.length; i++) {
+          if (!validIds[goalIds[i]] || seen[goalIds[i]]) {
+            stepsOk = false;
+            break;
+          }
+          seen[goalIds[i]] = 1;
+        }
+        if (!stepsOk) {
+          if (wantsJson) return json({ error: "select at least two distinct goals of this site" }, 400);
+          return redirect(settingsUrl + "?error=funnel-steps-invalid");
+        }
+        try {
+          createFunnel(env.DB, site.id, name, goalIds);
+        } catch {
+          if (wantsJson) return json({ error: "unable to save this funnel" }, 409);
+          return redirect(settingsUrl + "?error=funnel-save-failed");
+        }
+        if (wantsJson) return json({ ok: true, name }, 201);
+        return redirect(settingsUrl);
+      }
+    }
+
+    // Website settings: tracker snippet, goal list, funnel management.
+    const settingsMatch = /^\/sites\/(\d+)\/settings$/.exec(path);
+    if (settingsMatch && method === "GET") {
+      const site = getSiteForUser(env.DB, Number(settingsMatch[1]), session);
+      if (!site) {
+        return new Response(pageShell("Not found", session, '<main class="shell" id="main"><h1>Unknown site</h1></main>', null, []),
+          { status: 404, headers: { "content-type": "text/html;charset=utf-8" } });
+      }
+      const sites = listSitesForUser(env.DB, session);
+      const goals = env.DB.prepare("SELECT id, name, event_name, path FROM goals WHERE site_id = ? ORDER BY id").bind(site.id).all().results;
+      const funnels = listFunnels(env.DB, site.id);
+      const error = url.searchParams.get("error") || "";
+      return new Response(settingsPage(session, site, sites, goals, funnels, error, url.origin),
+        { headers: { "content-type": "text/html;charset=utf-8" } });
     }
 
     // Live fragment for htmx polling: the same server-rendered markup as
@@ -490,7 +694,11 @@ async function routeInner(request) {
       const metricParam = url.searchParams.get("metric") || "visitors";
       const metric = metricParam === "visits" || metricParam === "pageviews" ? metricParam : "visitors";
       const analytics = siteAnalytics(env.DB, site, range.since, range.until);
-      return new Response(liveFragment(site, analytics, range, days, metric),
+      let comparison = null;
+      if (url.searchParams.get("compare") === "1") {
+        comparison = siteSummary(env.DB, site.id, range.since - days * 86400, range.since);
+      }
+      return new Response(liveFragment(site, analytics, range, days, metric, comparison),
         { headers: { "content-type": "text/html;charset=utf-8" } });
     }
 
@@ -518,24 +726,12 @@ async function routeInner(request) {
       const now = Math.floor(Date.now() / 1000);
       const range = parseRange(url.searchParams, now);
       if (range.error) return json({ error: range.error }, 400);
-      const q = url.searchParams;
-      const filters = {};
-      const pathFilter = String(q.get("path") || "").slice(0, 2048);
-      const sourceFilter = String(q.get("source") || "").slice(0, 128);
-      const mediumFilter = String(q.get("medium") || "").slice(0, 128);
-      const campaignFilter = String(q.get("campaign") || "").slice(0, 128);
-      const eventFilter = String(q.get("event") || "").slice(0, 64);
-      if (pathFilter !== "") filters.path = pathFilter;
-      if (sourceFilter !== "") filters.source = sourceFilter;
-      if (mediumFilter !== "") filters.medium = mediumFilter;
-      if (campaignFilter !== "") filters.campaign = campaignFilter;
-      if (eventFilter !== "") filters.event = eventFilter;
+      const input = reportInput(url.searchParams);
       const report = siteReport(
         env.DB, site.id, range.since, range.until,
-        String(q.get("dimension") || "path"), filters,
-        q.get("limit"), q.get("offset"), String(q.get("sort") || "visitors"),
+        input.dimension, input.filters, input.limit, input.offset, input.sort,
       );
-      if (String(q.get("format") || "") === "csv") {
+      if (String(url.searchParams.get("format") || "") === "csv") {
         return new Response(reportCsv(report), {
           headers: {
             "content-type": "text/csv;charset=utf-8",
@@ -546,16 +742,53 @@ async function routeInner(request) {
       return json({ site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, ...report });
     }
 
+    // Full HTML report: dimension tabs, exact-match filters, sortable table,
+    // pagination, CSV download. Same bounded query as the JSON report.
+    const htmlReportMatch = /^\/sites\/(\d+)\/reports$/.exec(path);
+    if (htmlReportMatch && method === "GET") {
+      const site = getSiteForUser(env.DB, Number(htmlReportMatch[1]), session);
+      if (!site) {
+        return new Response(pageShell("Not found", session, '<main class="shell" id="main"><h1>Unknown site</h1></main>', null, []),
+          { status: 404, headers: { "content-type": "text/html;charset=utf-8" } });
+      }
+      const now = Math.floor(Date.now() / 1000);
+      const range = parseRange(url.searchParams, now);
+      if (range.error) {
+        return new Response(pageShell("Not found", session, '<main class="shell" id="main"><h1>' + escapeHtml(range.error) + "</h1></main>", null, []),
+          { status: 400, headers: { "content-type": "text/html;charset=utf-8" } });
+      }
+      const days = rangeDays(range);
+      const input = reportInput(url.searchParams);
+      const report = siteReport(
+        env.DB, site.id, range.since, range.until,
+        input.dimension, input.filters, input.limit, input.offset, input.sort,
+      );
+      const sites = listSitesForUser(env.DB, session);
+      return new Response(reportsPage(session, site, sites, report, range, days),
+        { headers: { "content-type": "text/html;charset=utf-8" } });
+    }
+
     // Online backup of the D1 database: an integrity-checked single-file
     // snapshot in backups/, no downtime, no WAL sidecars. Admin only.
-    // Copy the file off the box; restore by putting it back at
-    // d1/DB.sqlite on a stopped binary.
+    // The response carries a manifest (row counts per table) so a copied
+    // snapshot can be audited before a restore. Copy the file off the box;
+    // restore by putting it back at d1/DB.sqlite on a stopped binary.
     if (path === "/api/backup" && method === "POST") {
       if (!isAdmin) return json({ error: "forbidden" }, 403);
       if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
       try {
         const snapshot = env.DB.backup();
-        return json({ ok: true, path: snapshot.path, bytes: snapshot.bytes });
+        const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users"];
+        const counts = {};
+        for (let i = 0; i < tables.length; i++) {
+          counts[tables[i]] = Number(env.DB.prepare("SELECT count(*) AS n FROM " + tables[i]).first().n);
+        }
+        return json({
+          ok: true,
+          path: snapshot.path,
+          bytes: snapshot.bytes,
+          manifest: { app: "risulta-sprout", created_at: Math.floor(Date.now() / 1000), tables: counts },
+        });
       } catch {
         incrementCounter("database_errors_total");
         return json({ error: "backup failed" }, 500);

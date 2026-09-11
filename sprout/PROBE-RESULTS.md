@@ -5,9 +5,10 @@
 crypto/ratelimit/cf surface, 0.10.3 adds the rate-limiter `resetAt`).
 Scope is the standalone product in `README.md`: password login with
 admin/viewer roles, tracker ingestion with daily salted visitor hashes,
-goals, attribution, polling dashboard, bounded reports (JSON + CSV),
-per-IP ingest limiting, `/metrics`, request logs, online backup,
-embedded static assets. No scheduling exists standalone (no
+goals, funnels, attribution, comparison mode, polling dashboard, bounded
+reports (JSON + CSV + HTML pages), settings pages, account profiles,
+per-IP ingest limiting, `/metrics`, request logs, online backup with
+manifest, embedded static assets. No scheduling exists standalone (no
 cron/queues/alarms); summaries and exports run on request.
 
 ## Build matrix
@@ -21,7 +22,7 @@ cron/queues/alarms); summaries and exports run on request.
 | Boot with no secrets set | PASS (optional reads still work; only declared secrets gate boot) |
 | `bun run lint` | PASS (only the two pre-existing `lib/views.js` warnings) |
 | `bun run test` (existing Bun app) | PASS, untouched |
-| `sh sprout/verify.sh` (62 assertions, fresh state) | PASS: `pass=62 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
+| `sh sprout/verify.sh` (80 assertions, fresh state) | PASS: `pass=80 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
 
 ## Runtime matrix (host binary)
 
@@ -40,13 +41,20 @@ Covered by `sprout/verify.sh`:
 | Same-UA repeat visits share one identity; XFF ignored untrusted, honored trusted | PASS (2 vs 3 visitors) |
 | UTM attribution, junk params dropped, referrer as hostname only | PASS |
 | Goals CRUD, duplicate 409, conversions + value in stats | PASS |
+| Funnels CRUD, step validation, foreign-goal rejection, conversions | PASS |
+| Previous-period comparison label on `?compare=1` | PASS |
+| Full HTML report page (tabs, filters, table, pagination, CSV link) | PASS |
+| Website settings page (tracker, goals, funnel management) | PASS |
+| Account profile update, duplicate-email 409, self-deletion | PASS |
+| Cross-origin login 403 (host comparison) | PASS |
+| Favicon and webmanifest served publicly | PASS |
 | Stats summary, byDay, top paths/sources, 30-minute visit boundary | PASS |
 | Explicit `from`/`to` ranges, reversed range 400 | PASS |
 | Bounded report JSON and CSV download | PASS |
 | Users page (admin), viewer creation, deletion and self/last-admin guards | PASS |
 | Password change revokes other sessions, old password dies, restore works | PASS |
 | Bun `scrypt$` fixture logs in and is re-hashed to `h1$` | PASS (proves user migration) |
-| Online backup returns integrity-checked `{path, bytes}`; CSRF/viewer guards | PASS |
+| Online backup returns integrity-checked snapshot plus row-count manifest; CSRF/viewer guards | PASS |
 | Ingest throttle 429s after 240 events per 60 s window | PASS (throwaway site) |
 | Operational counters (`/metrics`, Prometheus exposition) | PASS (5 accepted, 4 rejected on the fixture traffic) |
 | Logout kills the session; static assets stay public | PASS |
