@@ -1,7 +1,7 @@
 #!/bin/sh
 # Seed a running Risulta Sprout with an admin login, two sites, goals and traffic.
 # The server must have been started with RISULTA_ADMIN_EMAIL/PASSWORD set.
-# Usage: BASE=http://127.0.0.1:8099 ADMIN_EMAIL=a@x.test ADMIN_PASSWORD=... sh sprout/seed.sh
+# Usage: BASE=http://127.0.0.1:8099 ADMIN_EMAIL=a@x.test ADMIN_PASSWORD=... sh seed.sh
 set -eu
 BASE="${BASE:-http://127.0.0.1:8099}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.com}"

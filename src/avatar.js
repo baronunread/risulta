@@ -4,7 +4,7 @@
 // itself (blobatar hashes internally), so this stays synchronous; the
 // Bun app pre-hashes with SHA-256, hence avatars differ across the two
 // deployments for the same name. Results are cached per process.
-import { blobatar } from "../../node_modules/blobatar/dist/blob.js";
+import { blobatar } from "../node_modules/blobatar/dist/blob.js";
 
 const cache = new Map();
 

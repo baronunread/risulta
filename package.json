@@ -1,23 +1,21 @@
 {
   "name": "risulta",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
   "scripts": {
-    "dev": "bun --watch app.js",
-    "seed": "bun seed.js",
     "lint": "oxlint .",
-    "test": "bun ./test.js",
-    "bench": "bun benchmark.js",
-    "build": "node scripts/build.mjs"
+    "test": "bun tests/daystring-test.mjs",
+    "check": "sproutboat check",
+    "build": "sproutboat build --standalone",
+    "bench": "bun bench.mjs"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.80.0",
     "oxlint": "1.80.0"
   },
   "dependencies": {
-    "blobatar": "^2.5.0",
-    "htmx.org": "4.0.0"
+    "blobatar": "^2.5.0"
   }
 }

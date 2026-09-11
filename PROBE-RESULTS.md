@@ -15,18 +15,18 @@ cron/queues/alarms); summaries and exports run on request.
 
 | Check | Result |
 | --- | --- |
-| `bun sprout/tests/daystring-test.mjs` | PASS: 2011 cases (epoch, leap days/centuries, 2000 random dates) for the integer day-label math that replaces `toISOString` |
-| `sproutboat check sprout` | PASS: `check passed — risulta-sprout (src/index.js, native-fetch)` |
-| `sproutboat build sprout --standalone` (linux-x86_64) | PASS: `built sprout/dist/risulta-sprout (3.6 MB)`, assets baked in |
-| `sproutboat build sprout --standalone --target host` (darwin-arm64) | PASS: `built sprout/dist/risulta-sprout (2.9 MB)`, serves on `$PORT` |
+| `bun tests/daystring-test.mjs` | PASS: 2011 cases (epoch, leap days/centuries, 2000 random dates) for the integer day-label math that replaces `toISOString` |
+| `sproutboat check` | PASS: `check passed — risulta-sprout (src/index.js, native-fetch)` |
+| `sproutboat build --standalone` (linux-x86_64) | PASS: `built dist/risulta-sprout (3.6 MB)`, assets baked in |
+| `sproutboat build --standalone --target host` (darwin-arm64) | PASS: `built dist/risulta-sprout (2.9 MB)`, serves on `$PORT` |
 | Boot with no secrets set | PASS (optional reads still work; only declared secrets gate boot) |
-| `bun run lint` | PASS (only the two pre-existing `lib/views.js` warnings) |
-| `bun run test` (existing Bun app) | PASS, untouched |
-| `sh sprout/verify.sh` (82 assertions, fresh state) | PASS: `pass=82 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
+| `bun run lint` | PASS (clean) |
+| `bun run test` | PASS (`tests/daystring-test.mjs`, 2011 cases) |
+| `sh verify.sh` (82 assertions, fresh state) | PASS: `pass=82 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
 
 ## Runtime matrix (host binary)
 
-Covered by `sprout/verify.sh`:
+Covered by `verify.sh`:
 
 | Probe | Result |
 | --- | --- |
@@ -166,6 +166,4 @@ follow-ups and
 
 ## Notes
 
-- `sprout/dist/` is gitignored (binaries currently on disk); the committed
-  surface is `sproutboat.jsonc`, `src/`, `public/`, `tests/`, `seed.sh`,
-  `verify.sh`, `README.md`, this file.
+- `dist/` is gitignored; the committed surface is `sproutboat.jsonc`, `src/`, `public/`, `tests/`, `seed.sh`, `verify.sh`, `README.md`, this file.

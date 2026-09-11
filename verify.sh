@@ -7,7 +7,7 @@
 # (the loopback peer); for EXPECT_TRUST=0 leave it unset.
 # The scrypt-migration check additionally needs SB_DATA_DIR pointing at the
 # server's data directory; it is skipped when unset.
-# Usage: BASE=... ADMIN_EMAIL=... ADMIN_PASSWORD=... EXPECT_TRUST=0 sh sprout/verify.sh
+# Usage: BASE=... ADMIN_EMAIL=... ADMIN_PASSWORD=... EXPECT_TRUST=0 sh verify.sh
 set -eu
 BASE="${BASE:-http://127.0.0.1:8099}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.com}"
@@ -256,7 +256,7 @@ if [ "$HIT429" = 1 ]; then ok "ingest rate limit 429"; else bad "ingest rate lim
 if [ -n "${SB_DATA_DIR:-}" ]; then
   SCRYPT_EMAIL="migrated-$STAMP@example.com"
   SCRYPT_PW="migrated-password-0001"
-  SCRYPT_ROW=$(SCRYPT_PW="$SCRYPT_PW" bun -e "import { hashPassword } from './lib/auth.js'; console.log(hashPassword(process.env.SCRYPT_PW))")
+  SCRYPT_ROW=$(SCRYPT_PW="$SCRYPT_PW" bun tests/make-scrypt-fixture.mjs)
   export SCRYPT_EMAIL SCRYPT_PW SCRYPT_ROW
   SB_DATA_DIR="${SB_DATA_DIR%/}" python3 -c 'import os,sqlite3,time; e=os.environ; db=sqlite3.connect(e["SB_DATA_DIR"]+"/d1/DB.sqlite", timeout=10); db.execute("INSERT INTO users (email, password_hash, role, display_name, created_at) VALUES (?, ?, ?, ?, ?)", (e["SCRYPT_EMAIL"], e["SCRYPT_ROW"], "viewer", "migrated", int(time.time()))); db.commit(); db.close()' \
     && ok "scrypt fixture inserted" || bad "scrypt fixture inserted"

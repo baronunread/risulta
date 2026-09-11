@@ -1,7 +1,7 @@
 // Dev-only localhost ingest benchmark for the standalone sprout.
-// Mirrors ../benchmark.js methodology: free port, warmup, fixed-duration
+// Methodology: free port, warmup, fixed-duration free port, warmup, fixed-duration
 // hammering at fixed concurrency, RPS + latency percentiles + RSS +
-// tracker bytes. Run: bun sprout/bench.mjs (build the host binary first).
+// tracker bytes. Run: bun bench.mjs (build the host binary first).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -12,7 +12,7 @@ import { gzipSync } from "node:zlib";
 const concurrency = Math.max(1, Number(process.env.CONCURRENCY || 25));
 const durationSeconds = Math.max(1, Number(process.env.DURATION || 5));
 const dir = mkdtempSync(`${tmpdir()}/sprout-bench-`);
-const binary = process.env.SPROUT_BENCH_BINARY || "sprout/dist/risulta-sprout";
+const binary = process.env.SPROUT_BENCH_BINARY || "dist/risulta-sprout";
 const adminEmail = "bench@example.com";
 const adminPassword = "benchmark-password-0001";
 
