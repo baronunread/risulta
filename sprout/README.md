@@ -6,7 +6,8 @@ CSV reports behind a polling dashboard that looks like Risulta: same design
 tokens, topbar, metric panels, SVG charts and report cards (server-rendered;
 htmx swaps a live fragment every 5 seconds, no framework, no-JS fallback
 shows the same numbers). It runs from
-`sproutboat build --standalone` output and keeps state in `SB_DATA_DIR`:
+`sproutboat build --standalone` output (requires sproutboat 0.10.3 or later;
+0.10.0 is deprecated upstream) and keeps state in `SB_DATA_DIR`:
 
 ```sh
 sproutboat build sprout --standalone            # linux-x86_64 -> sprout/dist/risulta-sprout
@@ -33,14 +34,24 @@ site and manage users; viewers are limited to assigned sites.
 
 In:
 
-- Password login with an iterated salted SHA-256 KDF (fresh accounts only;
-  scrypt rows from the Bun app are never accepted), expiring sessions,
-  CSRF protection, login rate limiting, admin/viewer roles.
-- Daily salted visitor hashes (IP + User-Agent, neither stored), per-day
-  breakdowns, 30-minute visit boundary, top pages/sources, conversion
-  goals with rates, explicit UTC date ranges (at most 366 days).
-- Bounded JSON/CSV reports (100 rows max, exact-match filters), generated
-  synchronously on request.
+- Password login with an iterated HMAC-SHA-256 KDF (`h1$`, 20k steps),
+  expiring sessions, CSRF protection, login rate limiting, admin/viewer
+  roles. Bun-app `scrypt$` rows verify through the runtime and are
+  re-hashed to `h1$` on next login, so existing users migrate; previous
+  standalone `s2$` rows migrate the same way.
+- Daily salted visitor hashes (runtime-resolved client IP + User-Agent,
+  neither stored), per-day breakdowns, 30-minute visit boundary, top
+  pages/sources, conversion goals with rates, explicit UTC date ranges
+  (at most 366 days).
+- Per-IP ingest limiting (240 events per 60 s window via the INGEST
+  rate-limit binding), bounded JSON/CSV reports (100 rows max,
+  exact-match filters), generated synchronously on request.
+- Loopback `/metrics` in Prometheus exposition (same counter names as the
+  Bun app) and one JSON request record per response on stderr (neither
+  carries bodies, headers, IPs, user agents, or tokens; set
+  `RISULTA_LOG_LEVEL=silent` to disable).
+- Online backup: `POST /api/backup` (admin) writes an integrity-checked
+  snapshot to `backups/` with no downtime.
 - Multiple sites under one binary, per-site tracker snippets (MIT),
   embedded static assets, SQLite state in one directory.
 
@@ -48,16 +59,22 @@ Out, by design:
 
 - Scheduled summaries, alerts and queued exports. No cron, queues or
   background jobs exist standalone.
-- Migrating Bun-app users or databases. The KDF differs from scrypt by
-  necessity (the sprout runtime has no crypto primitives); the standalone
-  product starts with its own accounts.
+- Historical event import from a Bun deployment. Users migrate
+  automatically, but past pageviews need a manual SQLite import.
 
 ## Visitor identity and proxies
 
 The collector hashes a daily site salt with the client IP and User-Agent.
-The IP is only taken from `X-Forwarded-For` when `RISULTA_TRUST_PROXY=1`,
-and your proxy must overwrite that header or any visitor can spoof it.
-Behind Caddy:
+The IP is the runtime-resolved `request.cf.clientIp`: the connection's
+remote address, or the rightmost untrusted `X-Forwarded-For` hop when the
+peer matches `SB_TRUSTED_PROXIES` (comma-separated CIDRs or bare IPs).
+With the list unset or the peer not in it, `X-Forwarded-For` is ignored
+entirely and direct exposure hashes the peer address (better uniqueness
+than before, still no stored IPs). Behind Caddy on the same host:
+
+```sh
+SB_TRUSTED_PROXIES=127.0.0.1 SB_DATA_DIR=/var/lib/risulta-sprout PORT=8099 ./sprout/dist/risulta-sprout
+```
 
 ```caddy
 reverse_proxy 127.0.0.1:8099 {
@@ -65,65 +82,79 @@ reverse_proxy 127.0.0.1:8099 {
 }
 ```
 
-Direct exposure (trust off) hashes the User-Agent alone: counts keep
-working, uniqueness degrades. The dashboard does not report which mode is
-on; know your own setup.
+Your proxy must overwrite that header, not append: appenders let a visitor
+prepend a fake hop. The dashboard does not report which mode is on; know
+your own setup.
 
 ## Layout
 
 - `sproutboat.jsonc`: project `risulta-sprout`, one D1 database (`DB`),
-  embedded `public/` assets, `vars` and four secrets. No service bindings
+  one rate limiter (`INGEST`, 240 events per 60 s per IP), embedded
+  `public/` assets, `vars` and three secrets. No service bindings
   (standalone binaries have no edge).
 - `src/index.js`: request router only. Domain rules live in `domain.js`,
   storage in `store.js`, auth in `auth.js`, pages in `views.js`, charts
-  in `chart.js`, crypto in `sha256.js`. No `node:` imports anywhere
-  in sprout modules.
-- `src/sha256.js`: vendored pure-JS SHA-256 (no runtime crypto exists).
-  Vectors in `tests/sha256-test.mjs` (`bun sprout/tests/sha256-test.mjs`).
+  in `chart.js`, counters and logging in `metrics.js`. No `node:` imports
+  anywhere in sprout modules. Hashing and password verification run
+  through the runtime's `crypto.subtle` and `crypto.scryptVerify`, so the
+  old vendored SHA-256 is gone.
 - `public/`: Risulta stylesheet, htmx 4 (BSD-0-Clause, vendored from the
   repo's `node_modules` for dashboard polling), and a small glue script
   (tracker copy button, poll status). Static files, not compiled through
   Porffor.
-- `seed.sh`, `verify.sh`: fixture seeding and a 48-assertion boundary
-  check against a running binary (both trust modes covered).
+- `seed.sh`, `verify.sh`: fixture seeding and a boundary check against a
+  running binary (both trust modes covered, plus metrics, backup, ingest
+  throttle, and scrypt migration). Run both
+  from the repo root; the scrypt check needs `SB_DATA_DIR` pointing at
+  the server's data directory and is skipped otherwise.
 
 ## Run it
 
 ```sh
-sproutboat check sprout                            # validate config + entry
+sproutboat check sprout                            # validate config + entry (0.10.3+)
 sproutboat dev sprout --port 8080                  # local dev against a broker
 sproutboat build sprout --standalone --target host # this machine, for trying it
 SB_DATA_DIR=./risulta-sprout.data PORT=8099 ./sprout/dist/risulta-sprout
 BASE=http://127.0.0.1:8099 ADMIN_EMAIL=... ADMIN_PASSWORD=... sh sprout/seed.sh
-BASE=http://127.0.0.1:8099 ADMIN_EMAIL=... ADMIN_PASSWORD=... EXPECT_TRUST=0 sh sprout/verify.sh
+SB_DATA_DIR=./risulta-sprout.data BASE=http://127.0.0.1:8099 ADMIN_EMAIL=... ADMIN_PASSWORD=... EXPECT_TRUST=0 sh sprout/verify.sh
 ```
 
-`GET /healthz` answers `ok`. The site page at `/sites/<id>` shows the
-tracker snippet, live stats, goals and report links.
+For `EXPECT_TRUST=1`, start the binary with `SB_TRUSTED_PROXIES=127.0.0.1`.
+`GET /healthz` answers `ok`; `GET /metrics` (loopback only, do not proxy
+it) exposes the operational counters. The site page at `/sites/<id>` shows
+the tracker snippet, live stats, goals and report links. `POST /api/backup`
+(admin, CSRF) writes an integrity-checked D1 snapshot to `backups/`.
 
 ## Performance
 
-Same-machine loopback ingest (concurrency 25, 5 s): 2.6 MB binary (24x
-smaller than the Bun build), 2.7 MB idle RSS, 0.03 s cold start, tracker
-byte-identical in spirit (760 B raw). Sustained ingest is ~1,265 RPS at
-p50 ~19 ms, about 8x slower than Bun: the runtime serves serially and
-each event pays one JS hash plus one D1 round-trip. Full table, method
-and caveats in `PROBE-RESULTS.md`; reproduce with `bun sprout/bench.mjs`.
+Same-machine loopback ingest (concurrency 25, 5 s): 2.9 MB binary (21x
+smaller than the Bun build), 0.09 s cold start, tracker byte-identical
+in spirit (760 B raw). Sustained ingest is ~5,024 RPS at p50 ~4.3 ms,
+about 2x slower than Bun: the runtime serves serially and each event
+pays one C hash plus one cached-statement D1 round-trip plus a serial
+write commit. Full table, method and caveats in `PROBE-RESULTS.md`;
+reproduce with `bun sprout/bench.mjs` (it rotates test-net source IPs so
+the per-IP throttle does not cap the measurement).
 
 ## Operate it
 
 The data directory holds `store.sqlite` and `d1/DB.sqlite` (plus WAL
-files). Writable user data lives there, never inside the binary.
+files), with integrity-checked snapshots under `backups/` written by
+`POST /api/backup`. Writable user data lives there, never inside the
+binary.
 
 ```sh
-# back up (stop first so the WAL checkpoints cleanly)
+# back up online (admin session): snapshot lands in backups/
+curl -X POST http://127.0.0.1:8099/api/backup -b admin.jar -H 'x-csrf-token: ...'
+cp -r /var/lib/risulta-sprout/backups /var/backups/risulta-sprout-$(date +%F)
+
+# cold copy also works, but stop first so the WAL checkpoints cleanly
 kill <pid>  # or systemctl stop risulta-sprout
 cp -r /var/lib/risulta-sprout "/var/backups/risulta-sprout-$(date +%F)"
 
 # restore
 systemctl stop risulta-sprout
-rm -rf /var/lib/risulta-sprout
-cp -r /var/backups/risulta-sprout-<date> /var/lib/risulta-sprout
+cp /var/backups/risulta-sprout-<date>/<snapshot-file> /var/lib/risulta-sprout/d1/DB.sqlite
 systemctl start risulta-sprout
 
 # upgrade: replace the binary, keep the data directory
@@ -135,6 +166,12 @@ Schema changes are additive (`CREATE TABLE IF NOT EXISTS`), so a new
 binary starts against an old data directory. Keep a backup before
 upgrading anyway.
 
+Serve it behind Caddy or equivalent for TLS. The standalone server binds
+loopback (`http://127.0.0.1:$PORT` in the startup log); confirm that line
+on first run and terminate TLS at the proxy. On Linux, scale past one
+core by running several copies on the same `$PORT` and `SB_DATA_DIR`
+(`SO_REUSEPORT` load-balances; WAL plus the runtime write timeout keep
+the shared databases safe), fronted by the same proxy.
 Serve it behind Caddy or equivalent for TLS. The standalone server binds
 loopback (`http://127.0.0.1:$PORT` in the startup log); confirm that line
 on first run and terminate TLS at the proxy.

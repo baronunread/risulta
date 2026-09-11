@@ -29,6 +29,12 @@ const app = spawn(binary, [], {
     ...process.env,
     PORT: String(port),
     SB_DATA_DIR: dir,
+    // Trust loopback as a proxy so each hammer request can carry a distinct
+    // X-Forwarded-For test-net address. The INGEST binding limits per IP
+    // (240/60s like production); rotating 512 keys keeps the aggregate
+    // quota far above what 5 seconds can spend, so the number measures
+    // server capacity, not the throttle.
+    SB_TRUSTED_PROXIES: "127.0.0.1",
     RISULTA_ADMIN_EMAIL: adminEmail,
     RISULTA_ADMIN_PASSWORD: adminPassword,
   },
@@ -71,8 +77,17 @@ const site = await created.json();
 
 const endpoint = `${base}/api/event/${site.publicKey}`;
 const body = JSON.stringify({ name: "pageview", domain: site.domain, path: "/benchmark", referrer: "" });
+let keyCounter = 0;
+const nextIp = () => {
+  const n = keyCounter++;
+  return `198.51.100.${n % 256}`;
+};
 const send = async () => {
-  const response = await fetch(endpoint, { method: "POST", body, headers: { "user-agent": "risulta-benchmark" } });
+  const response = await fetch(endpoint, {
+    method: "POST",
+    body,
+    headers: { "user-agent": "risulta-benchmark", "x-forwarded-for": nextIp() },
+  });
   assert.equal(response.status, 202);
 };
 for (let index = 0; index < 100; index += 1) await send();

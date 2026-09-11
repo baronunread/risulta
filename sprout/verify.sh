@@ -1,7 +1,12 @@
 #!/bin/sh
 # Verify a running Risulta Sprout: auth, boundaries, isolation, attribution,
-# goals, reports, ranges and static assets. Fails non-zero on any mismatch.
-# The server must have been started with the admin secrets below.
+# goals, reports, ranges, metrics, backup and static assets. Fails non-zero
+# on any mismatch.
+# The server must have been started with the admin secrets below, built with
+# sproutboat 0.10.3+. For EXPECT_TRUST=1 also set SB_TRUSTED_PROXIES=127.0.0.1
+# (the loopback peer); for EXPECT_TRUST=0 leave it unset.
+# The scrypt-migration check additionally needs SB_DATA_DIR pointing at the
+# server's data directory; it is skipped when unset.
 # Usage: BASE=... ADMIN_EMAIL=... ADMIN_PASSWORD=... EXPECT_TRUST=0 sh sprout/verify.sh
 set -eu
 BASE="${BASE:-http://127.0.0.1:8099}"
@@ -49,11 +54,12 @@ SHOP="shop-$STAMP.example.com"
 BLOG="blog-$STAMP.example.com"
 FAKE="nobody-$STAMP@example.com"
 
-# Anonymous: HTML goes to login, API gets 401, collector stays public.
-expect_code "anonymous home redirects" GET / "" 302
+# Anonymous: HTML goes to login (303 POST-redirect-GET, like the Bun app),
+# API gets 401, collector stays public.
+expect_code "anonymous home redirects" GET / "" 303
 expect_code "anonymous stats 401" GET /api/sites/1/stats "" 401
 expect_code "anonymous report 401" GET /api/sites/1/report "" 401
-expect_code "anonymous site page redirects" GET /sites/1 "" 302
+expect_code "anonymous site page redirects" GET /sites/1 "" 303
 expect_code "wrong password 401" POST /login "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"wrong-password-000\"}" 401
 i=0; while [ $i -lt 5 ]; do
   curl -s -m 10 -o /dev/null -X POST "$BASE/login" -H 'content-type: application/json' -d "{\"email\":\"$FAKE\",\"password\":\"x\"}"
@@ -118,13 +124,30 @@ case "$FRAG" in
   *'class="metrics"'*'Top pages'*) ok "live fragment (authed)" ;;
   *) bad "live fragment (authed)" ;;
 esac
-expect_code "live fragment anonymous" GET "/sites/$SHOP_ID/partials/live?period=1" "" 302
+expect_code "live fragment anonymous" GET "/sites/$SHOP_ID/partials/live?period=1" "" 303
 expect_code "live fragment unknown site" GET /sites/999999/partials/live?period=1 "" 404 "application/json" "$JAR_A"
 CSV=$(curl -s -m 10 -b "$JAR_A" "$BASE/api/sites/$SHOP_ID/report?dimension=path&format=csv")
 case "$CSV" in
   "label,pageviews,visitors,value"*) ok "csv header" ;;
   *) bad "csv header ($CSV)" ;;
 esac
+
+# Operational counters: 5 accepted events (4 shop + 1 blog), 4 rejected
+# (wrong domain, bad name, bad value, non-JSON body). Unknown keys 404 and
+# are not counted, mirroring the Bun app.
+METRICS=$(curl -s -m 10 "$BASE/metrics")
+METRICS_TYPE=$(curl -s -m 10 -o /dev/null -w '%{content_type}' "$BASE/metrics")
+case "$METRICS_TYPE" in
+  *text/plain*) ok "metrics content type ($METRICS_TYPE)" ;;
+  *) bad "metrics content type ($METRICS_TYPE)" ;;
+esac
+metric_is() { echo "$METRICS" | python3 -c "import sys; rows=dict(l.split() for l in sys.stdin.read().splitlines() if l.strip()); sys.exit(0 if rows.get('$1') == '$2' else 1)"; }
+if metric_is events_accepted_total 5; then ok "metrics accepted (5)"; else bad "metrics accepted ($(echo "$METRICS" | grep events_accepted_total))"; fi
+if metric_is events_rejected_total 4; then ok "metrics rejected (4)"; else bad "metrics rejected ($(echo "$METRICS" | grep events_rejected_total))"; fi
+# NOTE: x-sb-cpu-ms is not asserted: the runtime stamps it only on
+# synchronously returned responses, and this router always returns a
+# promise (async crypto). Observed additionally that the tag does not
+# fire even for sync string-body handlers on 0.10.2.
 
 # Viewer isolation.
 VIEWER="viewer-$STAMP@example.com"
@@ -163,6 +186,45 @@ expect_code "password restored" POST /login "{\"email\":\"$ADMIN_EMAIL\",\"passw
 # Fresh session for the final checks (rotation revoked the old jar).
 curl -s -m 10 -X POST "$BASE/login" -H 'content-type: application/json' -c "$JAR_A" -b "$JAR_A" -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" > /dev/null
 CSRF_A=$(curl -s -m 10 -b "$JAR_A" "$BASE/api/session" | python3 -c 'import sys,json; print(json.load(sys.stdin)["csrf"])')
+
+# Online backup (admin only): integrity-checked snapshot, no downtime.
+BACKUP_RESP=$(curl -s -m 10 -X POST "$BASE/api/backup" -H 'content-type: application/json' -H "x-csrf-token: $CSRF_A" -b "$JAR_A" -d '{}')
+echo "$BACKUP_RESP" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("ok") is True and d.get("bytes", 0) > 0 and d.get("path"), "bad backup response"' \
+  && ok "online backup" || bad "online backup ($BACKUP_RESP)"
+expect_code "backup needs csrf" POST /api/backup '{}' 403 "application/json" "$JAR_A"
+expect_code "viewer cannot backup" POST /api/backup '{}' 403 "application/json" "$JAR_V" "$CSRF_V"
+
+# Ingest throttle: 240 events per 60 s window per IP (INGEST binding), so
+# 300 rapid posts from one client must trip at least one 429. A throwaway
+# site keeps the earlier pageview assertions intact.
+FLOOD_RESP=$(curl -s -m 10 -X POST "$BASE/api/sites" -H 'content-type: application/json' -H "x-csrf-token: $CSRF_A" -b "$JAR_A" -d "{\"name\":\"Flood\",\"domain\":\"flood-$STAMP.example.com\"}")
+FLOOD_KEY=$(echo "$FLOOD_RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin)["publicKey"])')
+HIT429=0
+i=0; while [ $i -lt 300 ]; do
+  code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "$BASE/api/event/$FLOOD_KEY" -H 'content-type: text/plain' -A "flood-ua" -d "{\"name\":\"pageview\",\"path\":\"/f\",\"domain\":\"flood-$STAMP.example.com\"}")
+  if [ "$code" = 429 ]; then HIT429=1; fi
+  i=$((i + 1))
+done
+if [ "$HIT429" = 1 ]; then ok "ingest rate limit 429"; else bad "ingest rate limit 429 (never tripped)"; fi
+
+# Bun-hash migration: a scrypt$ row (Bun format) logs in via the runtime's
+# verify-only scrypt and is re-hashed to the current KDF. Needs SB_DATA_DIR
+# pointing at the server's data directory; skipped when unset.
+if [ -n "${SB_DATA_DIR:-}" ]; then
+  SCRYPT_EMAIL="migrated-$STAMP@example.com"
+  SCRYPT_PW="migrated-password-0001"
+  SCRYPT_ROW=$(SCRYPT_PW="$SCRYPT_PW" bun -e "import { hashPassword } from './lib/auth.js'; console.log(hashPassword(process.env.SCRYPT_PW))")
+  export SCRYPT_EMAIL SCRYPT_PW SCRYPT_ROW
+  SB_DATA_DIR="${SB_DATA_DIR%/}" python3 -c 'import os,sqlite3,time; e=os.environ; db=sqlite3.connect(e["SB_DATA_DIR"]+"/d1/DB.sqlite", timeout=10); db.execute("INSERT INTO users (email, password_hash, role, display_name, created_at) VALUES (?, ?, ?, ?, ?)", (e["SCRYPT_EMAIL"], e["SCRYPT_ROW"], "viewer", "migrated", int(time.time()))); db.commit(); db.close()' \
+    && ok "scrypt fixture inserted" || bad "scrypt fixture inserted"
+  SCRYPT_FMT=$(SB_DATA_DIR="${SB_DATA_DIR%/}" python3 -c 'import os,sqlite3; e=os.environ; db=sqlite3.connect(e["SB_DATA_DIR"]+"/d1/DB.sqlite", timeout=10); print(db.execute("SELECT password_hash FROM users WHERE email = ?", (e["SCRYPT_EMAIL"],)).fetchone()[0].split("$")[0])')
+  if [ "$SCRYPT_FMT" = scrypt ]; then ok "scrypt fixture format"; else bad "scrypt fixture format ($SCRYPT_FMT)"; fi
+  expect_code "scrypt login 200" POST /login "{\"email\":\"$SCRYPT_EMAIL\",\"password\":\"$SCRYPT_PW\"}" 200
+  SCRYPT_FMT2=$(SB_DATA_DIR="${SB_DATA_DIR%/}" python3 -c 'import os,sqlite3; e=os.environ; db=sqlite3.connect(e["SB_DATA_DIR"]+"/d1/DB.sqlite", timeout=10); print(db.execute("SELECT password_hash FROM users WHERE email = ?", (e["SCRYPT_EMAIL"],)).fetchone()[0].split("$")[0])')
+  if [ "$SCRYPT_FMT2" = h1 ]; then ok "scrypt rehashed to h1"; else bad "scrypt rehashed to h1 ($SCRYPT_FMT2)"; fi
+else
+  echo "skip: scrypt migration check (SB_DATA_DIR unset)"
+fi
 
 # Logout kills the session; public assets never needed auth.
 DASH=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID" | python3 -c 'import sys; print("live-stats" in sys.stdin.read())')

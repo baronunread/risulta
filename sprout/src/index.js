@@ -12,6 +12,7 @@ import {
   expiredSessionCookie,
   hashPassword,
   loginAllowed,
+  loginRateLimitKeys,
   normalizeEmail,
   randomHex,
   readSession,
@@ -40,7 +41,9 @@ import {
   siteReport,
   siteSummary,
   visitorId,
+  clientIp,
 } from "./store.js";
+import { incrementCounter, logRequest, metricsText, safeRoute } from "./metrics.js";
 import { escapeHtml } from "./util.js";
 import {
   accountPage,
@@ -54,10 +57,14 @@ import {
   usersPage,
 } from "./views.js";
 
-function json(data, status) {
+function json(data, status, headers) {
+  const responseHeaders = { "content-type": "application/json" };
+  if (headers) {
+    for (const name in headers) responseHeaders[name] = headers[name];
+  }
   return new Response(JSON.stringify(data), {
     status: status || 200,
-    headers: { "content-type": "application/json" },
+    headers: responseHeaders,
   });
 }
 
@@ -72,12 +79,44 @@ function parseJson(body) {
 function redirect(to, cookie) {
   const headers = { location: to };
   if (cookie) headers["set-cookie"] = cookie;
-  return new Response("", { status: 302, headers });
+  return new Response("", { status: 303, headers });
 }
 
-export default {
-  fetch(request) {
-    ensureReady(env.DB);
+// Per-IP ingest throttle through the INGEST rate-limit binding (declared in
+// sproutboat.jsonc, 240 events per 60 s window like the Bun app). Fails open
+// only when the binding is undeclared; production builds declare it and
+// verify.sh proves the 429 path. The binding returns { success, resetAt }
+// (epoch ms of the window roll), so Retry-After is exact.
+let ingestBindingWarned = false;
+function ingestThrottle(request) {
+  const binding = env.INGEST;
+  const limit = binding ? binding.limit : null;
+  if (limit) {
+    try {
+      const result = limit.call(binding, { key: clientIp(request) || "unknown" });
+      if (result && result.success === false) {
+        const resetAt = result.resetAt;
+        const retryAfter = resetAt > Date.now() ? Math.ceil((resetAt - Date.now()) / 1000) : 60;
+        return { allowed: false, retryAfter: Math.max(1, retryAfter) };
+      }
+      return { allowed: true, retryAfter: 0 };
+    } catch {
+      return { allowed: true, retryAfter: 0 };
+    }
+  }
+  if (!ingestBindingWarned) {
+    ingestBindingWarned = true;
+    try {
+      console.error(JSON.stringify({ time_ms: Date.now(), type: "warning", message: "INGEST rate-limit binding is not declared; ingest is unthrottled" }));
+    } catch {
+      /* ignore */
+    }
+  }
+  return { allowed: true, retryAfter: 0 };
+}
+
+async function routeInner(request) {
+    await ensureReady(env.DB);
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
@@ -88,6 +127,14 @@ export default {
 
     if (path === "/healthz") return new Response("ok\n");
     if (path === "/favicon.ico") return new Response("", { status: 204 });
+    // Operational counters in Prometheus exposition. Unauthenticated by
+    // design like the Bun app: the binary binds loopback, so this is
+    // network-restricted. Do not route /metrics through a public proxy.
+    if (path === "/metrics" && method === "GET") {
+      return new Response(metricsText(loginRateLimitKeys()), {
+        headers: { "content-type": "text/plain; version=0.0.4", "cache-control": "no-store" },
+      });
+    }
     if (method === "GET" && (path === "/style.css" || path === "/dashboard.js")) return env.ASSETS.fetch(request);
 
     // Tracker asset: public, cookieless, same behavior as the Bun app.
@@ -99,32 +146,40 @@ export default {
     }
 
     // Collector: public. Derives the daily salted visitor hash server-side
-    // from proxy-provided IP + User-Agent; neither input is stored.
+    // from the runtime-resolved client IP + User-Agent; neither input is
+    // stored. Rejections (400/403) count as rejected events; unknown keys
+    // (404) are not a site and are not counted, mirroring the Bun app.
     const eventMatch = /^\/api\/event\/([A-Za-z0-9_-]+)$/.exec(path);
     if (eventMatch && method === "POST") {
       const site = siteForKey(env.DB, eventMatch[1]);
       if (!site) return json({ error: "unknown site" }, 404);
       const parsed = parseJson(body);
-      if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+      if (!parsed.ok) { incrementCounter("events_rejected_total"); return json({ error: "body must be JSON" }, 400); }
       const input = parsed.value;
       const name = String(input.name || "");
-      if (!validEventName(name)) return json({ error: "event name is invalid" }, 400);
+      if (!validEventName(name)) { incrementCounter("events_rejected_total"); return json({ error: "event name is invalid" }, 400); }
       const value = validValue(input.value === undefined ? null : input.value);
-      if (value === false) return json({ error: "value is out of range" }, 400);
+      if (value === false) { incrementCounter("events_rejected_total"); return json({ error: "value is out of range" }, 400); }
       const domain = cleanDomain(input.domain);
-      if (domain !== site.domain) return json({ error: "domain mismatch" }, 403);
+      if (domain !== site.domain) { incrementCounter("events_rejected_total"); return json({ error: "domain mismatch" }, 403); }
       const parts = splitPathAndAttribution(input.path);
-      if (parts.path.charAt(0) !== "/") return json({ error: "path must start with /" }, 400);
+      if (parts.path.charAt(0) !== "/") { incrementCounter("events_rejected_total"); return json({ error: "path must start with /" }, 400); }
+      const throttle = ingestThrottle(request);
+      if (!throttle.allowed) {
+        incrementCounter("rate_limits_total");
+        return json({ error: "too many analytics events, try again shortly" }, 429, { "retry-after": String(throttle.retryAfter) });
+      }
       const ts = Math.floor(Date.now() / 1000);
       env.DB.prepare(
         "INSERT INTO events (site_id, ts, name, path, referrer, visitor, source, medium, campaign, content, term, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
         .bind(
           site.id, ts, name, parts.path, referrerHost(input.referrer),
-          visitorId(env.DB, site, request),
+          await visitorId(env.DB, site, request),
           parts.source, parts.medium, parts.campaign, parts.content, parts.term, value,
         )
         .run();
+      incrementCounter("events_accepted_total");
       return json({ ok: true }, 202);
     }
 
@@ -132,7 +187,7 @@ export default {
     // page re-rendered with an error.
     if (path === "/login") {
       if (method === "GET") {
-        const existing = readSession(env.DB, request);
+        const existing = await readSession(env.DB, request);
         if (existing) return redirect("/");
         return new Response(loginPage(""), { headers: { "content-type": "text/html;charset=utf-8" } });
       }
@@ -150,17 +205,29 @@ export default {
           password = String(form.get("password") || "");
         }
         if (!loginAllowed(email)) {
+          incrementCounter("rate_limits_total");
           if (wantsJson) return json({ error: "too many attempts, try later" }, 429);
           return new Response(loginPage("Too many attempts, try again later."), { headers: { "content-type": "text/html;charset=utf-8" } });
         }
         const user = env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
-        if (!user || !verifyPassword(password, user.password_hash)) {
+        const check = user ? await verifyPassword(password, user.password_hash) : { ok: false, rehash: false };
+        if (!user || !check.ok) {
+          incrementCounter("auth_failures_total");
           recordLoginFailure(email);
           if (wantsJson) return json({ error: "invalid email or password" }, 401);
           return new Response(loginPage("Invalid email or password."), { headers: { "content-type": "text/html;charset=utf-8" } });
         }
         clearLoginFailures(email);
-        const session = createSession(env.DB, user.id);
+        if (check.rehash) {
+          // Legacy row (s2$ standalone or Bun scrypt$): upgrade to the
+          // current KDF now that the password is proven.
+          try {
+            env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(await hashPassword(password), user.id).run();
+          } catch {
+            /* keep the legacy hash on failure */
+          }
+        }
+        const session = await createSession(env.DB, user.id);
         const cookie = setSessionCookie(session.token, secure);
         if (wantsJson) return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json", "set-cookie": cookie } });
         return redirect("/", cookie);
@@ -169,7 +236,7 @@ export default {
 
     // Everything below requires a session. API callers get 401 JSON,
     // browsers get the sign-in page via redirect.
-    const session = readSession(env.DB, request);
+    const session = await readSession(env.DB, request);
     const apiRoute = path === "/api" || path.indexOf("/api/") === 0;
     if (!session) {
       if (apiRoute) return json({ error: "sign in required" }, 401);
@@ -179,7 +246,7 @@ export default {
 
     if (path === "/logout" && method === "POST") {
       if (!csrfValid(session, csrfValue(request, body))) return wantsJson ? json({ error: "csrf mismatch" }, 403) : redirect("/login");
-      destroySession(env.DB, request);
+      await destroySession(env.DB, request);
       const expired = expiredSessionCookie(secure);
       if (wantsJson) return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": expired } });
       return redirect("/login", expired);
@@ -226,9 +293,9 @@ export default {
       }
       if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
       const user = env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
-      if (!user || !verifyPassword(current, user.password_hash)) return json({ error: "current password is wrong" }, 403);
+      if (!user || !(await verifyPassword(current, user.password_hash)).ok) return json({ error: "current password is wrong" }, 403);
       if (next.length < 12) return json({ error: "new password needs 12+ characters" }, 400);
-      changePassword(env.DB, session, hashPassword(next));
+      changePassword(env.DB, session, await hashPassword(next));
       if (wantsJson) return json({ ok: true });
       return redirect("/account?changed=1");
     }
@@ -281,7 +348,7 @@ export default {
       }
       let userId = 0;
       try {
-        userId = createUser(env.DB, email, password, role, siteIds, displayName);
+        userId = await createUser(env.DB, email, password, role, siteIds, displayName);
       } catch {
         if (wantsJson) return json({ error: "email already registered" }, 409);
         return redirect("/users");
@@ -479,11 +546,52 @@ export default {
       return json({ site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, ...report });
     }
 
+    // Online backup of the D1 database: an integrity-checked single-file
+    // snapshot in backups/, no downtime, no WAL sidecars. Admin only.
+    // Copy the file off the box; restore by putting it back at
+    // d1/DB.sqlite on a stopped binary.
+    if (path === "/api/backup" && method === "POST") {
+      if (!isAdmin) return json({ error: "forbidden" }, 403);
+      if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
+      try {
+        const snapshot = env.DB.backup();
+        return json({ ok: true, path: snapshot.path, bytes: snapshot.bytes });
+      } catch {
+        incrementCounter("database_errors_total");
+        return json({ error: "backup failed" }, 500);
+      }
+    }
+
     // Embedded static assets for signed-in pages. The assets directory is
     // the URL root; unknown API routes stay JSON.
     if (apiRoute) return json({ error: "not found", path }, 404);
     if (method === "GET") return env.ASSETS.fetch(request);
 
     return json({ error: "not found", path }, 404);
+  }
+
+async function routeRequest(request) {
+  const startedAt = Date.now();
+  let response;
+  try {
+    response = await routeInner(request);
+  } catch {
+    incrementCounter("database_errors_total");
+    response = json({ error: "internal error" }, 500);
+  }
+  try {
+    logRequest(request.method, safeRoute(new URL(request.url).pathname), response.status, Date.now() - startedAt);
+  } catch {
+    /* logging must never break a response */
+  }
+  return response;
+}
+
+export default {
+  // The runtime resolves a returned promise directly; no .then() chaining
+  // on top of it (that shape hangs). Logging and error counting live
+  // inside routeRequest so this stays a direct return.
+  fetch(request) {
+    return routeRequest(request);
   },
 };

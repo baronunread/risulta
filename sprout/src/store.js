@@ -3,8 +3,8 @@
 // row carries site_id and every query scopes on it. Hot-path caches mirror
 // the Bun app's per-process stores; public keys are immutable so the
 // miss-fill site cache is exactly coherent.
-import { sha256Hex } from "./sha256.js";
-import { hashPassword, normalizeEmail, randomHex } from "./auth.js";
+import { bytesToHex, hashPassword, normalizeEmail, randomHex } from "./auth.js";
+import { dayStringFromMs } from "./util.js";
 
 // Daily salts cached per process like the Bun app's SiteStore: the day
 // changes rarely, so the hot path skips three salt queries per event.
@@ -25,8 +25,9 @@ export function siteForKey(db, publicKey) {
 }
 
 // Schema and bootstrap run once per process (like the Bun app migrating at
-// startup), not per request. The trust flag is process env, also read once.
-let schemaReady = false;
+// startup), not per request. Memoized as a promise because hashing the first
+// administrator is async. Trust config is process env, also read once.
+let schemaReady = null;
 let trustProxyCached = null;
 
 export function optionalSecret(name) {
@@ -43,13 +44,11 @@ export function trustProxyEnabled() {
 }
 
 export function ensureReady(db) {
-  if (!schemaReady) {
-    ensureSchema(db);
-    schemaReady = true;
-  }
+  if (!schemaReady) schemaReady = ensureSchema(db);
+  return schemaReady;
 }
 
-function ensureSchema(db) {
+async function ensureSchema(db) {
   db.exec(
     "CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, domain TEXT NOT NULL UNIQUE, public_key TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);" +
       "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, ts INTEGER NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL, referrer TEXT NOT NULL DEFAULT '', visitor TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', medium TEXT NOT NULL DEFAULT '', campaign TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', term TEXT NOT NULL DEFAULT '', value REAL);" +
@@ -73,7 +72,7 @@ function ensureSchema(db) {
     const displayName = String(optionalSecret("RISULTA_ADMIN_DISPLAY_NAME") || "").trim().slice(0, 80);
     if (email && password.length >= 12) {
       db.prepare("INSERT INTO users (email, password_hash, role, display_name, created_at) VALUES (?, ?, 'admin', ?, ?)")
-        .bind(email, hashPassword(password), displayName || email.split("@")[0], Math.floor(Date.now() / 1000))
+        .bind(email, await hashPassword(password), displayName || email.split("@")[0], Math.floor(Date.now() / 1000))
         .run();
     }
   }
@@ -93,18 +92,32 @@ export function getSiteForUser(db, siteId, user) {
   ).bind(siteId, user.user_id).first() || null;
 }
 
-// Client IP for visitor hashing. Only ever taken from X-Forwarded-For when
-// the operator explicitly trusts their proxy (RISULTA_TRUST_PROXY=1); the
-// proxy must overwrite the header, otherwise any visitor can spoof it.
-// Direct exposure yields "" and weaker uniqueness. Never stored.
+// Client IP for visitor hashing. Primary source is the runtime-resolved
+// request.cf.clientIp: the connection's remote address, or the rightmost
+// untrusted X-Forwarded-For hop when the peer matches SB_TRUSTED_PROXIES
+// (the server owns the header name, so direct exposure cannot be forged).
+// Falls back to the legacy RISULTA_TRUST_PROXY=1 XFF behavior only when the
+// runtime provides no clientIp (older runtimes, defense in depth).
+// Direct exposure without any signal yields "" and weaker uniqueness.
+// Never stored.
 export function clientIp(request) {
+  try {
+    const cf = request.cf;
+    if (cf && cf.clientIp) return String(cf.clientIp).slice(0, 45);
+  } catch {
+    /* fall through to the legacy behavior */
+  }
   if (!trustProxyEnabled()) return "";
-  const forwarded = request.headers.get("x-forwarded-for") || "";
-  return forwarded.split(",")[0].trim().slice(0, 45);
+  try {
+    const forwarded = request.headers.get("x-forwarded-for") || "";
+    return forwarded.split(",")[0].trim().slice(0, 45);
+  } catch {
+    return "";
+  }
 }
 
 export function dayString() {
-  return new Date().toISOString().slice(0, 10);
+  return dayStringFromMs(Date.now());
 }
 
 export function siteSalt(db, siteId, day) {
@@ -118,11 +131,14 @@ export function siteSalt(db, siteId, day) {
   return value;
 }
 
-// A site-local identity that resets daily: neither input is stored.
-export function visitorId(db, site, request) {
+// A site-local identity that resets daily: neither input is stored. The
+// hash runs through the runtime's crypto.subtle (inline C, no host
+// round-trip); async only, so callers await it.
+export async function visitorId(db, site, request) {
   const salt = siteSalt(db, site.id, dayString());
   const ua = (request.headers.get("user-agent") || "").slice(0, 512);
-  return sha256Hex(salt + "" + clientIp(request) + "" + ua).slice(0, 24);
+  const digest = await crypto.subtle.digest("SHA-256", salt + "" + clientIp(request) + "" + ua);
+  return bytesToHex(new Uint8Array(digest)).slice(0, 24);
 }
 
 export function siteSummary(db, siteId, since, until) {

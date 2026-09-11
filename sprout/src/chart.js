@@ -1,6 +1,8 @@
 // SVG traffic chart, ported from lib/views.js to runtime-safe constructs
-// (no Intl, no Array.from, no padStart, no optional chaining).
-import { escapeHtml, fmtInt } from "./util.js";
+// (no Intl, no Array.from, no padStart, no optional chaining, and no
+// `new Date().toISOString()`, which livelocks the runtime in async turns;
+// day labels come from dayStringFromMs in util.js).
+import { dayStringFromMs, escapeHtml, fmtInt } from "./util.js";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -22,7 +24,7 @@ export function dateSeries(days, rows) {
   const out = [];
   const todayStart = Math.floor(Date.now() / 86400000) * 86400000;
   for (let offset = days - 1; offset >= 0; offset--) {
-    const day = new Date(todayStart - offset * 86400000).toISOString().slice(0, 10);
+    const day = dayStringFromMs(todayStart - offset * 86400000);
     out.push(values[day] || { day, pageviews: 0, visitors: 0, visits: 0 });
   }
   return out;
