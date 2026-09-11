@@ -1,230 +1,204 @@
-# Risulta
+# Risulta: single-binary analytics for your own sites
 
-Risulta is completely open-source, privacy-friendly web analytics for multiple
-websites. One login, one process, one SQLite-based data directory, and one
-Bun-compiled executable provide the whole product. The dashboard is
-server-rendered and the tracked websites receive no cookies.
+One binary, one data directory, no platform. Sign in, add a website, paste
+its tracker snippet, and get pageviews, conversions, attribution and bounded
+CSV reports behind a polling dashboard that looks like Risulta: same design
+tokens, topbar, metric panels, SVG charts and report cards (server-rendered;
+htmx swaps a live fragment every 5 seconds, no framework, no-JS fallback
+shows the same numbers). It runs from
+`sproutboat build --standalone` output (requires sproutboat 0.10.3 or later;
+0.10.0 is deprecated upstream) and keeps state in `SB_DATA_DIR`:
 
-## Run from source
+```sh
+sproutboat build --standalone            # linux-x86_64 -> dist/risulta-sprout
+SB_DATA_DIR=/var/lib/risulta-sprout PORT=8099 ./dist/risulta-sprout
+```
 
-Requires [Bun](https://bun.sh/).
+## First run
+
+The first administrator comes from secrets (environment for a standalone
+binary). They are read only while the user table is empty; remove the
+password from the environment afterwards.
 
 ```sh
 RISULTA_ADMIN_EMAIL=you@example.com \
 RISULTA_ADMIN_DISPLAY_NAME='Your name' \
 RISULTA_ADMIN_PASSWORD='use-a-long-unique-password' \
-bun run dev
+SB_DATA_DIR=/var/lib/risulta-sprout PORT=8099 ./dist/risulta-sprout
 ```
 
-Open <http://localhost:3000>, sign in, and choose **Add website**. The new
-website dashboard contains its permanent tracker snippet.
+Open the printed address, sign in, add a website. Administrators see every
+site and manage users; viewers are limited to assigned sites.
+
+## Scope: deliberately small
+
+In:
+
+- Password login with an iterated HMAC-SHA-256 KDF (`h1$`, 20k steps),
+  expiring sessions, CSRF protection, login rate limiting, admin/viewer
+  roles. Bun-app `scrypt$` rows verify through the runtime and are
+  re-hashed to `h1$` on next login, so existing users migrate; previous
+  standalone `s2$` rows migrate the same way.
+- Daily salted visitor hashes (runtime-resolved client IP + User-Agent,
+  neither stored), per-day breakdowns, 30-minute visit boundary, top
+  pages/sources, conversion goals with rates, funnels over ordered goal
+  sequences (bounded to the 50,000 most recent events in range, so counts
+  on huge ranges are approximate), previous-period comparison, explicit
+  UTC date ranges (at most 366 days).
+- Per-IP ingest limiting (240 events per 60 s window via the INGEST
+  rate-limit binding), bounded JSON/CSV reports (100 rows max,
+  exact-match filters) plus full HTML report pages with filters and
+  pagination, generated synchronously on request.
+- Website settings pages (tracker snippet, goal and funnel management),
+  account profiles with generated avatars and self-deletion with
+  last-admin guard, origin-checked login, favicon and webmanifest assets.
+- Loopback `/metrics` in Prometheus exposition (same counter names as the
+  Bun app) and one JSON request record per response on stderr (neither
+  carries bodies, headers, IPs, user agents, or tokens; set
+  `RISULTA_LOG_LEVEL=silent` to disable).
+- Online backup: `POST /api/backup` (admin) writes an integrity-checked
+  snapshot to `backups/` with a row-count manifest, no downtime.
+- Multiple sites under one binary, per-site tracker snippets (MIT),
+  embedded static assets, SQLite state in one directory.
+
+Out, by design:
+
+- Scheduled summaries, alerts and queued exports. No cron, queues or
+  background jobs exist standalone.
+- Historical event import from a Bun deployment. Users migrate
+  automatically, but past pageviews need a manual SQLite import.
+
+## Visitor identity and proxies
+
+The collector hashes a daily site salt with the client IP and User-Agent.
+The IP is the runtime-resolved `request.cf.clientIp`: the connection's
+remote address, or the rightmost untrusted `X-Forwarded-For` hop when the
+peer matches `SB_TRUSTED_PROXIES` (comma-separated CIDRs or bare IPs).
+With the list unset or the peer not in it, `X-Forwarded-For` is ignored
+entirely and direct exposure hashes the peer address (better uniqueness
+than before, still no stored IPs). Behind Caddy on the same host:
 
 ```sh
-bun run test       # multi-site authentication and isolation self-check
-bun run build      # writes the single executable to ./risulta
+SB_TRUSTED_PROXIES=127.0.0.1 SB_DATA_DIR=/var/lib/risulta-sprout PORT=8099 ./dist/risulta-sprout
 ```
 
-Tagged releases publish checksum-protected Linux binaries for x64 and arm64.
-The release workflow uses Bun 1.4.0, runs the source and compiled test suites,
-and attaches build provenance to each executable.
+```caddy
+reverse_proxy 127.0.0.1:8099 {
+        header_up X-Forwarded-For {http.request.remote.host}
+}
+```
 
-The compiled executable needs no Bun installation at runtime:
+Your proxy must overwrite that header, not append: appenders let a visitor
+prepend a fake hop. The dashboard does not report which mode is on; know
+your own setup.
+
+## Layout
+
+- `sproutboat.jsonc`: project `risulta-sprout`, one D1 database (`DB`),
+  one rate limiter (`INGEST`, 240 events per 60 s per IP), embedded
+  `public/` assets, `vars` and three secrets. No service bindings
+  (standalone binaries have no edge).
+- `src/index.js`: request router only. Domain rules live in `domain.js`,
+  storage in `store.js`, auth in `auth.js`, pages in `views.js`, charts
+  in `chart.js`, counters and logging in `metrics.js`, generated avatars
+  in `avatar.js` (the same blobatar bundle as the Bun app, called with
+  `normalize: false` because the runtime has no
+  `String.prototype.normalize`; seeds are trimmed and lowercased
+  app-side, so names with combining marks render differently across the
+  two deployments). No `node:` imports anywhere in sprout modules.
+  Hashing and password verification run through the runtime's
+  `crypto.subtle` and `crypto.scryptVerify`, so the old vendored SHA-256
+  is gone.
+- `public/`: Risulta stylesheet, htmx 4 (BSD-0-Clause, vendored from the
+  repo's `node_modules` for dashboard polling), and a small glue script
+  (tracker copy button, poll status). Static files, not compiled through
+  Porffor.
+- `seed.sh`, `verify.sh`: fixture seeding and a boundary check against a
+  running binary (both trust modes covered, plus metrics, backup with
+  manifest, ingest throttle, scrypt migration, comparison, HTML reports,
+  settings, funnels, account profile and deletion, origin checks, and
+  static assets). Run both
+  from the repo root; the scrypt check needs `SB_DATA_DIR` pointing at
+  the server's data directory and is skipped otherwise.
+
+## Run it
 
 ```sh
-PORT=3000 DATA_DIR=./data \
-RISULTA_ADMIN_EMAIL=you@example.com \
-RISULTA_ADMIN_DISPLAY_NAME='Your name' \
-RISULTA_ADMIN_PASSWORD='use-a-long-unique-password' \
-./risulta
+sproutboat check                            # validate config + entry (0.10.3+)
+sproutboat dev --port 8080                  # local dev against a broker
+sproutboat build --standalone --target host # this machine, for trying it
+SB_DATA_DIR=./risulta-sprout.data PORT=8099 ./dist/risulta-sprout
+BASE=http://127.0.0.1:8099 ADMIN_EMAIL=... ADMIN_PASSWORD=... sh seed.sh
+SB_DATA_DIR=./risulta-sprout.data BASE=http://127.0.0.1:8099 ADMIN_EMAIL=... ADMIN_PASSWORD=... EXPECT_TRUST=0 sh verify.sh
 ```
 
-The bootstrap credentials are read only when there are no users. After the
-first successful start, remove the password from the environment.
+For `EXPECT_TRUST=1`, start the binary with `SB_TRUSTED_PROXIES=127.0.0.1`.
+`GET /healthz` answers `ok`; `GET /metrics` (loopback only, do not proxy
+it) exposes the operational counters. The site page at `/sites/<id>` shows
+the tracker snippet, live stats, goals and report links. `POST /api/backup`
+(admin, CSRF) writes an integrity-checked D1 snapshot to `backups/`.
 
-## How multi-site storage works
+## Performance
 
-`DATA_DIR/control.db` contains users, sessions, website definitions, and access
-rules. Analytics are isolated in `DATA_DIR/sites/<id>.db`, one WAL-mode SQLite
-database per website. An administrator sees every website through the same
-login and can create viewer accounts limited to selected websites.
+Same-machine loopback ingest (concurrency 25, 5 s): 2.9 MB binary (21x
+smaller than the Bun build), 0.09 s cold start, tracker byte-identical
+in spirit (760 B raw). Sustained ingest is ~5,024 RPS at p50 ~4.3 ms,
+about 2x slower than Bun: the runtime serves serially and each event
+pays one C hash plus one cached-statement D1 round-trip plus a serial
+write commit. Full table, method and caveats in `PROBE-RESULTS.md`;
+reproduce with `bun bench.mjs` (it rotates test-net source IPs so
+the per-IP throttle does not cap the measurement).
 
-Each website receives an unguessable public tracker URL. The public key selects
-the website; it is not treated as a secret. Risulta also verifies the hostname
-reported by the browser before accepting an event. Daily salted visitor hashes
-provide unique counts without retaining IP addresses or allowing visitors to be
-linked across days.
+## Operate it
 
-## Analytics metric definitions
-
-- **Unique visitor**: one browser identity, derived from the visitor's IP address
-  and User-Agent with a random, site-local salt for the current UTC day. Neither
-  input is stored.
-- **Unique visitor-day**: a unique visitor counted within one UTC day. Seven and
-  thirty-day totals use this metric because daily salts intentionally prevent
-  people from being linked across days.
-- **Visit**: a sequence of pageviews by one daily visitor identity, where a gap
-  of more than 30 minutes starts a new visit. A visit spanning midnight starts
-  again because the visitor identity resets.
-- **Current visitor**: a distinct daily visitor identity with a pageview in the
-  last five minutes.
-
-Daily and hourly chart points count unique visitors within their individual UTC
-intervals. Never add them together to derive a period total.
-
-## Acquisition attribution
-
-Risulta reads standard `utm_source`, `utm_medium`, `utm_campaign`,
-`utm_content`, and `utm_term` parameters from the landing page URL. Attribution
-is fixed when a visit starts and remains with subsequent pageviews in that
-30-minute visit. Untagged external landings use the referrer's hostname as the
-source. Direct visits are reported as **Direct / None**. Values are trimmed and
-bounded before storage.
-
-## Custom events
-
-The tracker exposes `window.risulta.track(name, value)`. Event names must use
-lowercase letters, numbers, and underscores, begin with a letter, and be at
-most 64 characters. `value` is optional and must be a finite number from zero
-to 1,000,000,000. Risulta sends the current page context automatically; direct
-API callers must provide a path and the configured website domain. Events are
-best effort, deduplicated only by the reporting model, and retries can create
-another event.
-
-## Reports and API access
-
-The dashboard links to a full report for pages, sources, mediums, campaigns,
-and events. Reports support exact filters for `path`, `source`, `medium`,
-`campaign`, and `event`, pagination up to 100 rows, and CSV download.
-
-Signed-in users can also request `GET /api/sites/<id>/stats`. It accepts
-`period` (`1`, `7`, or `30`), or a UTC `from` and `to` date range up to 366
-days, plus `dimension` (`path`, `source`, `medium`, `campaign`, or `event`),
-the same exact-match filters, `limit`, `offset`, and `sort` (`visitors`,
-`pageviews`, or `value`). The response is JSON with the site, selected range,
-unfiltered traffic summary, and bounded report rows. Website access rules apply
-to both the API and CSV export.
-
-Back up the entire `DATA_DIR`, including `control.db` and `sites/`. SQLite's
-online backup command creates a consistent snapshot without stopping Risulta:
+The data directory holds `store.sqlite` and `d1/DB.sqlite` (plus WAL
+files), with integrity-checked snapshots under `backups/` written by
+`POST /api/backup`. Writable user data lives there, never inside the
+binary.
 
 ```sh
-./risulta backup /var/backups/risulta
+# back up online (admin session): snapshot lands in backups/
+curl -X POST http://127.0.0.1:8099/api/backup -b admin.jar -H 'x-csrf-token: ...'
+cp -r /var/lib/risulta-sprout/backups /var/backups/risulta-sprout-$(date +%F)
+
+# cold copy also works, but stop first so the WAL checkpoints cleanly
+kill <pid>  # or systemctl stop risulta-sprout
+cp -r /var/lib/risulta-sprout "/var/backups/risulta-sprout-$(date +%F)"
+
+# restore
+systemctl stop risulta-sprout
+cp /var/backups/risulta-sprout-<date>/<snapshot-file> /var/lib/risulta-sprout/d1/DB.sqlite
+systemctl start risulta-sprout
+
+# upgrade: replace the binary, keep the data directory
+install -m 0755 dist/risulta-sprout /usr/local/bin/risulta-sprout
+systemctl restart risulta-sprout
 ```
 
-Each snapshot contains a `manifest.json` with the Risulta version, schema
-versions, site database inventory, file sizes, and SHA-256 checksums. Verify a
-snapshot before restoring it:
+Schema changes are additive (`CREATE TABLE IF NOT EXISTS`), so a new
+binary starts against an old data directory. Keep a backup before
+upgrading anyway.
 
-```sh
-./risulta verify-backup /var/backups/risulta/<snapshot-directory>
-```
+Serve it behind Caddy or equivalent for TLS. The standalone server binds
+loopback (`http://127.0.0.1:$PORT` in the startup log); confirm that line
+on first run and terminate TLS at the proxy. On Linux, scale past one
+core by running several copies on the same `$PORT` and `SB_DATA_DIR`
+(`SO_REUSEPORT` load-balances; WAL plus the runtime write timeout keep
+the shared databases safe), fronted by the same proxy.
+Serve it behind Caddy or equivalent for TLS. The standalone server binds
+loopback (`http://127.0.0.1:$PORT` in the startup log); confirm that line
+on first run and terminate TLS at the proxy.
 
-To restore, stop Risulta, verify the snapshot, move the current data directory
-aside, copy the contents of the verified snapshot into the empty data directory,
-start Risulta, and sign in to verify websites and recent events. Keep backups
-outside `DATA_DIR`; the command creates one timestamped directory containing
-`control.db`, `sites/`, and `manifest.json`.
+## Verification
 
-## Deploy on a Debian/Ubuntu VPS
-
-For a guided Debian or Ubuntu installation or update, run:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/baronunread/risulta/main/deploy/install.sh | sudo sh
-```
-
-The installer downloads and verifies the latest release, creates the systemd
-service, and can configure Caddy for HTTPS.
-
-Build on Linux for the target server, then copy `risulta` and the provided
-deployment files:
-
-```sh
-bun run build
-sudo install -m 0755 risulta /usr/local/bin/risulta
-sudo useradd --system --home /var/lib/risulta --shell /usr/sbin/nologin risulta
-sudo install -d -m 0750 -o risulta -g risulta /var/lib/risulta /etc/risulta
-sudo install -m 0644 deploy/risulta.service /etc/systemd/system/risulta.service
-sudo install -m 0600 deploy/risulta.env.example /etc/risulta/risulta.env
-```
-
-Edit `/etc/risulta/risulta.env` with the public analytics URL and initial admin
-credentials. Replace `analytics.example.com` in `deploy/Caddyfile`, install
-Caddy, and then:
-
-```sh
-sudo install -m 0644 deploy/Caddyfile /etc/caddy/Caddyfile
-sudo systemctl daemon-reload
-sudo systemctl enable --now risulta caddy
-curl https://analytics.example.com/healthz
-```
-
-When the first administrator exists, remove `RISULTA_ADMIN_PASSWORD` and
-`RISULTA_ADMIN_EMAIL` from `/etc/risulta/risulta.env`, then restart Risulta. Caddy
-terminates HTTPS and compresses the tracker. Set `RISULTA_TRUST_PROXY_CIDRS` to
-the IP ranges of proxies that connect directly to Risulta, so it can safely use
-their forwarding headers for anonymous daily visitor counts.
-
-## Environment
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `PORT` | `3000` | Local HTTP port |
-| `HOST` | `0.0.0.0` | Listen address; use `127.0.0.1` behind Caddy |
-| `DATA_DIR` | `.` | Durable databases and site directory |
-| `RISULTA_BASE_URL` | request origin | Public HTTPS URL used in tracker snippets |
-| `RISULTA_TRUST_PROXY_CIDRS` | unset | Comma-separated CIDRs allowed to supply forwarding headers |
-| `RISULTA_TRUST_PROXY` | unset | Deprecated compatibility switch, trusts loopback proxies only |
-| `RISULTA_MAX_OPEN_SITES` | `32` | LRU limit for simultaneously open site databases |
-| `RISULTA_INGEST_RATE_LIMIT` | `240` | Maximum accepted analytics events per IP address per minute |
-| `RISULTA_LOG_LEVEL` | `info` | Set to `silent` to disable structured request logs |
-| `RISULTA_ADMIN_EMAIL` | unset | First administrator email |
-| `RISULTA_ADMIN_DISPLAY_NAME` | unset | First administrator display name |
-| `RISULTA_ADMIN_PASSWORD` | unset | First administrator password (12+ characters) |
-
-## Operational diagnostics
-
-Risulta writes one JSON request record per response to stderr, which systemd
-captures in journald. Records contain the method, normalized route, status, and
-duration. They never include passwords, session or CSRF tokens, tracker keys,
-raw IP addresses, or full user-agent strings. Set `RISULTA_LOG_LEVEL=silent` when
-request logs are not needed.
-
-The loopback-only `/metrics` endpoint exposes bounded runtime counters for
-accepted and rejected events, authentication failures, rate limits, database
-errors, open site databases, and active rate-limit keys:
-
-```sh
-curl http://127.0.0.1:3000/metrics
-```
-
-## Database migrations
-
-Risulta applies numbered SQLite migrations at startup, independently for the
-control database and every website database. A migration runs once in a SQLite
-transaction and records its version with `PRAGMA user_version`. Backup manifests
-record those schema versions, so a restore and migration can be audited before
-the service starts. Keep a recent verified snapshot before upgrading, then
-verify the migration through the normal startup and dashboard checks.
-
-## Performance baseline
-
-Run `bun run build && RISULTA_BENCH_BINARY=./risulta bun run bench` on the target
-server. The benchmark creates temporary data, warms the process, and reports
-ingest throughput, latency percentiles, post-load RSS, and tracker size.
-
-On the current Apple Silicon development machine, the compiled binary accepted
-8,199 events/second at concurrency 25 over five seconds: p50 2.57 ms, p95
-5.52 ms, p99 7.66 ms, and 83.9 MB RSS after load. The keyed tracker is currently
-638 bytes raw and 441 bytes gzip. This is a loopback baseline, not a VPS capacity
-promise; disk, CPU, TLS, traffic shape, dashboard queries, and retention all
-matter. Re-run it on the actual VPS before setting production limits.
+`PROBE-RESULTS.md` records the build matrix and every runtime probe with
+actual output.
 
 ## License
 
 Risulta's server and dashboard are licensed under AGPL-3.0-or-later. The browser
 tracker returned from `/js/<site-key>.js` is licensed under MIT so it can be
-embedded on any website. There is no open-core or proprietary edition.
+embedded on any website (see `LICENSE-TRACKER`). There is no open-core or
+proprietary edition.
 
-Visual rules live in [DESIGN.md](DESIGN.md); engineering priorities live in
-[PLAN.md](PLAN.md).
+Visual rules live in [DESIGN.md](DESIGN.md).
