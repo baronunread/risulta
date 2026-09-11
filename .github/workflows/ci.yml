@@ -23,8 +23,20 @@ jobs:
         run: npm install --global sproutboat@0.10.3
       - run: sproutboat check
       - run: sproutboat build --standalone
-      - name: Seed and verify (untrusted proxies)
+      - name: Seed against a scratch server
         run: |
+          SB_DATA_DIR=/tmp/risulta-ci-seed PORT=8099 \
+            RISULTA_ADMIN_EMAIL=admin@example.com \
+            RISULTA_ADMIN_DISPLAY_NAME=Admin \
+            RISULTA_ADMIN_PASSWORD='change-me-verify-0001' \
+            ./dist/risulta-sprout > /tmp/risulta-ci-seed.log 2>&1 &
+          echo $! > /tmp/risulta-ci-seed.pid
+          sleep 2
+          BASE=http://127.0.0.1:8099 ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='change-me-verify-0001' sh seed.sh
+          kill "$(cat /tmp/risulta-ci-seed.pid)"
+      - name: Verify (untrusted proxies, fresh state)
+        run: |
+          rm -rf /tmp/risulta-ci && mkdir -p /tmp/risulta-ci
           SB_DATA_DIR=/tmp/risulta-ci PORT=8099 \
             RISULTA_ADMIN_EMAIL=admin@example.com \
             RISULTA_ADMIN_DISPLAY_NAME=Admin \
@@ -32,10 +44,9 @@ jobs:
             ./dist/risulta-sprout > /tmp/risulta-ci.log 2>&1 &
           echo $! > /tmp/risulta-ci.pid
           sleep 2
-          BASE=http://127.0.0.1:8099 ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='change-me-verify-0001' sh seed.sh
           SB_DATA_DIR=/tmp/risulta-ci BASE=http://127.0.0.1:8099 ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='change-me-verify-0001' EXPECT_TRUST=0 sh verify.sh
           kill "$(cat /tmp/risulta-ci.pid)"
-      - name: Verify (trusted proxy)
+      - name: Verify (trusted proxy, fresh state)
         run: |
           rm -rf /tmp/risulta-ci-trusted && mkdir -p /tmp/risulta-ci-trusted
           SB_DATA_DIR=/tmp/risulta-ci-trusted PORT=8099 SB_TRUSTED_PROXIES=127.0.0.1 \

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Verify a running Risulta Sprout: auth, boundaries, isolation, attribution,
 # goals, reports, ranges, metrics, backup and static assets. Fails non-zero
-# on any mismatch.
+# on any mismatch. Requires FRESH state (empty data directory); counters
+# assert exact fixture totals.
 # The server must have been started with the admin secrets below, built with
 # sproutboat 0.10.3+. For EXPECT_TRUST=1 also set SB_TRUSTED_PROXIES=127.0.0.1
 # (the loopback peer); for EXPECT_TRUST=0 leave it unset.
