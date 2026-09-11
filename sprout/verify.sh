@@ -285,6 +285,16 @@ STATIC_ICON=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$BASE/favicon-light.
 if [ "$STATIC_ICON" = 200 ]; then ok "static favicon"; else bad "static favicon ($STATIC_ICON)"; fi
 STATIC_MANIFEST=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$BASE/site.webmanifest")
 if [ "$STATIC_MANIFEST" = 200 ]; then ok "static webmanifest"; else bad "static webmanifest ($STATIC_MANIFEST)"; fi
+AVATAR=$(curl -s -m 10 "$BASE/avatar.svg?name=Verify")
+case "$AVATAR" in
+  "<svg"*"viewBox"*) ok "avatar renders" ;;
+  *) bad "avatar renders" ;;
+esac
+AVATAR_TYPE=$(curl -s -m 10 -o /dev/null -w '%{content_type}' "$BASE/avatar.svg?name=Verify")
+case "$AVATAR_TYPE" in
+  *svg*) ok "avatar content type ($AVATAR_TYPE)" ;;
+  *) bad "avatar content type ($AVATAR_TYPE)" ;;
+esac
 
 echo "---"
 echo "pass=$PASS fail=$FAIL"

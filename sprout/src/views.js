@@ -1,6 +1,7 @@
 // Server-rendered pages. Markup follows lib/views.js class names so the
 // same stylesheet renders both apps.
 import { chart, dateSeries, hourSeries } from "./chart.js";
+import { avatarFor } from "./avatar.js";
 import { escapeHtml, fmtInt } from "./util.js";
 
 export function trackerFor(publicKey) {
@@ -27,7 +28,7 @@ function topbar(user, site, sites) {
       : "") + gear + "</div>"
     : "";
   return '<header class="topbar"><div class="shell topbar-inner"><a class="brand" href="/">' + MARK + "<span>Risulta</span></a>" + switcher +
-    '<nav class="nav" aria-label="Account"><details class="account-menu"><summary><span class="account-trigger-email">' + escapeHtml(user.email) + "</span></summary>" +
+    '<nav class="nav" aria-label="Account"><details class="account-menu"><summary><span class="avatar" aria-hidden="true">' + avatarFor(user.display_name || user.email) + '</span><span class="account-trigger-email">' + escapeHtml(user.email) + "</span></summary>" +
     '<div class="account-panel"><span class="account-email">' + escapeHtml(user.email) + '</span><a href="/">Websites</a><a href="/account">Account settings</a>' +
     (user.role === "admin" ? '<a href="/users">Users</a>' : "") +
     '<form method="post" action="/logout"><input type="hidden" name="csrf" value="' + user.csrf + '"><button class="link-button" type="submit">Log out</button></form>' +
@@ -248,6 +249,8 @@ export function accountPage(user, options) {
     user,
     '<main class="shell" id="main"><div class="titlebar"><div><p class="eyebrow">Account</p><h1>Account settings</h1></div></div>' +
       '<section class="card settings-section" aria-labelledby="profile-title"><h2 id="profile-title">Profile</h2>' + profileMessage +
+      '<div class="profile-avatar"><img class="avatar" data-avatar-preview src="/avatar.svg?name=' + encodeURIComponent(displayName) + '" alt="Avatar preview">' +
+      '<p class="hint">Your avatar is generated from your display name.</p></div>' +
       '<form class="form" method="post" action="/api/account/profile"><input type="hidden" name="csrf" value="' + user.csrf + '">' +
       '<div class="field"><label for="display-name">Display name</label><input id="display-name" name="displayName" autocomplete="name" maxlength="80" required value="' + escapeHtml(displayName) + '"></div>' +
       '<div class="field"><label for="profile-email">Email</label><input id="profile-email" name="email" type="email" autocomplete="email" required value="' + escapeHtml(user.email) + '"></div>' +

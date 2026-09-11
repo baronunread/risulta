@@ -63,6 +63,7 @@ import {
   trackerFor,
   usersPage,
 } from "./views.js";
+import { avatarFor } from "./avatar.js";
 
 function json(data, status, headers) {
   const responseHeaders = { "content-type": "application/json" };
@@ -174,6 +175,11 @@ async function routeInner(request) {
 
     if (path === "/healthz") return new Response("ok\n");
     if (path === "/favicon.ico") return new Response("", { status: 204 });
+    if (path === "/avatar.svg" && method === "GET") {
+      const svg = avatarFor(url.searchParams.get("name") || "Risulta");
+      if (!svg) return new Response("Not found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+      return new Response(svg, { headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=300" } });
+    }
     // Operational counters in Prometheus exposition. Unauthenticated by
     // design like the Bun app: the binary binds loopback, so this is
     // network-restricted. Do not route /metrics through a public proxy.

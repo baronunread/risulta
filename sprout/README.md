@@ -50,8 +50,8 @@ In:
   exact-match filters) plus full HTML report pages with filters and
   pagination, generated synchronously on request.
 - Website settings pages (tracker snippet, goal and funnel management),
-  account profiles and self-deletion with last-admin guard, origin-checked
-  login, favicon and webmanifest assets.
+  account profiles with generated avatars and self-deletion with
+  last-admin guard, origin-checked login, favicon and webmanifest assets.
 - Loopback `/metrics` in Prometheus exposition (same counter names as the
   Bun app) and one JSON request record per response on stderr (neither
   carries bodies, headers, IPs, user agents, or tokens; set
@@ -100,10 +100,15 @@ your own setup.
   (standalone binaries have no edge).
 - `src/index.js`: request router only. Domain rules live in `domain.js`,
   storage in `store.js`, auth in `auth.js`, pages in `views.js`, charts
-  in `chart.js`, counters and logging in `metrics.js`. No `node:` imports
-  anywhere in sprout modules. Hashing and password verification run
-  through the runtime's `crypto.subtle` and `crypto.scryptVerify`, so the
-  old vendored SHA-256 is gone.
+  in `chart.js`, counters and logging in `metrics.js`, generated avatars
+  in `avatar.js` (the same blobatar bundle as the Bun app, called with
+  `normalize: false` because the runtime has no
+  `String.prototype.normalize`; seeds are trimmed and lowercased
+  app-side, so names with combining marks render differently across the
+  two deployments). No `node:` imports anywhere in sprout modules.
+  Hashing and password verification run through the runtime's
+  `crypto.subtle` and `crypto.scryptVerify`, so the old vendored SHA-256
+  is gone.
 - `public/`: Risulta stylesheet, htmx 4 (BSD-0-Clause, vendored from the
   repo's `node_modules` for dashboard polling), and a small glue script
   (tracker copy button, poll status). Static files, not compiled through

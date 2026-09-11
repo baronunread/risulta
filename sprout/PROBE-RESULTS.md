@@ -22,7 +22,7 @@ cron/queues/alarms); summaries and exports run on request.
 | Boot with no secrets set | PASS (optional reads still work; only declared secrets gate boot) |
 | `bun run lint` | PASS (only the two pre-existing `lib/views.js` warnings) |
 | `bun run test` (existing Bun app) | PASS, untouched |
-| `sh sprout/verify.sh` (80 assertions, fresh state) | PASS: `pass=80 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
+| `sh sprout/verify.sh` (82 assertions, fresh state) | PASS: `pass=82 fail=0` with `EXPECT_TRUST=0` and again with `EXPECT_TRUST=1` |
 
 ## Runtime matrix (host binary)
 
@@ -48,6 +48,7 @@ Covered by `sprout/verify.sh`:
 | Account profile update, duplicate-email 409, self-deletion | PASS |
 | Cross-origin login 403 (host comparison) | PASS |
 | Favicon and webmanifest served publicly | PASS |
+| Generated avatars byte-identical to the Bun bundle for the same seed | PASS |
 | Stats summary, byDay, top paths/sources, 30-minute visit boundary | PASS |
 | Explicit `from`/`to` ranges, reversed range 400 | PASS |
 | Bounded report JSON and CSV download | PASS |
