@@ -4,7 +4,7 @@
 // the Bun app's per-process stores; public keys are immutable so the
 // miss-fill site cache is exactly coherent.
 import { bytesToHex, hashPassword, normalizeEmail, randomHex } from "./auth.js";
-import { dayStringFromMs } from "./util.js";
+import { dayStringFromMs, utf8Bytes, utf8Encode } from "./util.js";
 
 // Daily salts cached per process like the Bun app's SiteStore: the day
 // changes rarely, so the hot path skips three salt queries per event.
@@ -26,9 +26,8 @@ export function siteForKey(db, publicKey) {
 
 // Schema and bootstrap run once per process (like the Bun app migrating at
 // startup), not per request. Memoized as a promise because hashing the first
-// administrator is async. Trust config is process env, also read once.
+// administrator is async.
 let schemaReady = null;
-let trustProxyCached = null;
 
 export function optionalSecret(name) {
   try {
@@ -36,11 +35,6 @@ export function optionalSecret(name) {
   } catch {
     return "";
   }
-}
-
-export function trustProxyEnabled() {
-  if (trustProxyCached === null) trustProxyCached = optionalSecret("RISULTA_TRUST_PROXY") === "1";
-  return trustProxyCached;
 }
 
 export function ensureReady(db) {
@@ -121,28 +115,20 @@ export function getSiteForUser(db, siteId, user) {
   ).bind(siteId, user.user_id).first() || null;
 }
 
-// Client IP for visitor hashing. Primary source is the runtime-resolved
+// Client IP for visitor hashing. Only source is the runtime-resolved
 // request.cf.clientIp: the connection's remote address, or the rightmost
 // untrusted X-Forwarded-For hop when the peer matches SB_TRUSTED_PROXIES
 // (the server owns the header name, so direct exposure cannot be forged).
-// Falls back to the legacy RISULTA_TRUST_PROXY=1 XFF behavior only when the
-// runtime provides no clientIp (older runtimes, defense in depth).
-// Direct exposure without any signal yields "" and weaker uniqueness.
-// Never stored.
+// Without any signal (older runtimes) this yields "" and weaker
+// uniqueness. Never stored.
 export function clientIp(request) {
   try {
     const cf = request.cf;
     if (cf && cf.clientIp) return String(cf.clientIp).slice(0, 45);
   } catch {
-    /* fall through to the legacy behavior */
+    /* ignore */
   }
-  if (!trustProxyEnabled()) return "";
-  try {
-    const forwarded = request.headers.get("x-forwarded-for") || "";
-    return forwarded.split(",")[0].trim().slice(0, 45);
-  } catch {
-    return "";
-  }
+  return "";
 }
 
 export function dayString() {
@@ -162,11 +148,13 @@ export function siteSalt(db, siteId, day) {
 
 // A site-local identity that resets daily: neither input is stored. The
 // hash runs through the runtime's crypto.subtle (inline C, no host
-// round-trip); async only, so callers await it.
+// round-trip) over the true UTF-8 bytes, matching the Bun app's visitor
+// hashes for the same inputs; async only, so callers await it.
 export async function visitorId(db, site, request) {
   const salt = siteSalt(db, site.id, dayString());
   const ua = (request.headers.get("user-agent") || "").slice(0, 512);
-  const digest = await crypto.subtle.digest("SHA-256", salt + "" + clientIp(request) + "" + ua);
+  const input = new Uint8Array(utf8Bytes(salt + "" + clientIp(request) + "" + ua));
+  const digest = await crypto.subtle.digest("SHA-256", input);
   return bytesToHex(new Uint8Array(digest)).slice(0, 24);
 }
 
@@ -374,5 +362,7 @@ export function reportCsv(report) {
     const r = report.rows[i];
     lines.push(csvEscape(r.label) + "," + r.pageviews + "," + r.visitors + "," + csvEscape(r.value));
   }
-  return lines.join("\n") + "\n";
+  // Manual UTF-8 encoding: the runtime emits Latin-1-range strings as raw
+  // bytes, which would corrupt non-English labels on the wire.
+  return utf8Encode(lines.join("\n") + "\n");
 }

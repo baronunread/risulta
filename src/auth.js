@@ -7,6 +7,8 @@
 // crypto.scryptVerify, enabling real user migration). String comparison of
 // secrets always goes through subtle.verify or a manual constant-time loop,
 // never plain ===.
+import { utf8Bytes } from "./util.js";
+
 export const SESSION_SECONDS = 7 * 24 * 60 * 60;
 // 20k HMAC iterations: trivial wall-clock for an interactive login (C hash,
 // one microtask turn per step), enough to blunt offline guessing alongside
@@ -120,7 +122,9 @@ async function verifyS2(password, iterations, salt, expected) {
 
 // Bun-app format: scrypt$N$r$p$saltBase64url$hashBase64url (N=32768, r=8,
 // p=3 in the Bun app). Verifies through the runtime's verify-only
-// scrypt primitive. Synchronous; throws on malformed rows.
+// scrypt primitive. The password goes in as true UTF-8 bytes so rows made
+// by the Bun app verify for non-ASCII passwords too. Synchronous; throws
+// on malformed rows.
 function verifyBunScrypt(password, parts) {
   const params = { N: Number(parts[1]), r: Number(parts[2]), p: Number(parts[3]) };
   if (!Number.isInteger(params.N) || !Number.isInteger(params.r) || !Number.isInteger(params.p)) return false;
@@ -128,7 +132,8 @@ function verifyBunScrypt(password, parts) {
   const saltBytes = base64urlDecode(parts[4]);
   const expectedBytes = base64urlDecode(parts[5]);
   if (saltBytes.length === 0 || expectedBytes.length === 0) return false;
-  return crypto.scryptVerify(String(password), saltBytes, expectedBytes, params) === true;
+  const passwordBytes = new Uint8Array(utf8Bytes(String(password)));
+  return crypto.scryptVerify(passwordBytes, saltBytes, expectedBytes, params) === true;
 }
 
 // Returns { ok, rehash }: rehash is true for legacy formats that should be

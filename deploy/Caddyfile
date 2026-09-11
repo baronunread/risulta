@@ -1,0 +1,6 @@
+analytics.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8099 {
+		header_up X-Forwarded-For {http.request.remote.host}
+	}
+}

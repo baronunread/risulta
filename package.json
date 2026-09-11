@@ -6,7 +6,7 @@
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "lint": "oxlint .",
-    "test": "bun tests/daystring-test.mjs",
+    "test": "bun tests/daystring-test.mjs && bun tests/encoding-test.mjs",
     "check": "sproutboat check",
     "build": "sproutboat build --standalone",
     "bench": "bun bench.mjs"

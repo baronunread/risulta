@@ -128,6 +128,17 @@ expect_code "funnel needs name" POST "/api/sites/$SHOP_ID/funnels" "{\"name\":\"
 expect_code "funnel needs two goals" POST "/api/sites/$SHOP_ID/funnels" "{\"name\":\"Short\",\"goalIds\":[$G1]}" 400 "application/json" "$JAR_A" "$CSRF_A"
 expect_code "funnel rejects foreign goal" POST "/api/sites/$SHOP_ID/funnels" "{\"name\":\"Nope\",\"goalIds\":[$G1,999999]}" 400 "application/json" "$JAR_A" "$CSRF_A"
 expect_json "funnel step conversions" "/api/sites/$SHOP_ID/stats?period=1" 'json.load(sys.stdin)["funnels"][0]["steps"][0]["conversions"]' 1 "$JAR_A"
+# Non-English text survives end to end: stored byte-identically, valid
+# UTF-8 on pages, true text in JSON, correct bytes in CSV.
+UNI_RESP=$(curl -s -m 10 -X POST "$BASE/api/sites" -H 'content-type: application/json' -H "x-csrf-token: $CSRF_A" -b "$JAR_A" -d "{\"name\":\"Café\",\"domain\":\"cafe-$STAMP.example.com\"}")
+UNI_ID=$(echo "$UNI_RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+UNI_KEY=$(echo "$UNI_RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin)["publicKey"])')
+curl -s -m 10 -o /dev/null -X POST "$BASE/api/event/$UNI_KEY" -H 'content-type: text/plain' -A "unicode-ua" --data-binary "{\"name\":\"pageview\",\"path\":\"/café\",\"domain\":\"cafe-$STAMP.example.com\"}"
+expect_json "unicode label round-trip" "/api/sites/$UNI_ID/report?dimension=path" 'json.load(sys.stdin)["rows"][0]["label"]' "/café" "$JAR_A"
+curl -s -m 10 -b "$JAR_A" "$BASE/sites/$UNI_ID" | python3 -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' \
+  && ok "unicode page is valid utf-8" || bad "unicode page is valid utf-8"
+curl -s -m 10 -b "$JAR_A" "$BASE/api/sites/$UNI_ID/report?dimension=path&format=csv" | python3 -c 'import sys; assert "/café" in sys.stdin.buffer.read().decode("utf-8")' \
+  && ok "unicode csv bytes" || bad "unicode csv bytes"
 CMP=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID?compare=1")
 case "$CMP" in
   *"Previous period"*) ok "comparison mode" ;;
@@ -161,9 +172,9 @@ case "$CSV" in
   *) bad "csv header ($CSV)" ;;
 esac
 
-# Operational counters: 5 accepted events (4 shop + 1 blog), 4 rejected
-# (wrong domain, bad name, bad value, non-JSON body). Unknown keys 404 and
-# are not counted, mirroring the Bun app.
+# Operational counters: 6 accepted events (4 shop + 1 blog + 1 unicode),
+# 4 rejected (wrong domain, bad name, bad value, non-JSON body). Unknown
+# keys 404 and are not counted, mirroring the Bun app.
 METRICS=$(curl -s -m 10 "$BASE/metrics")
 METRICS_TYPE=$(curl -s -m 10 -o /dev/null -w '%{content_type}' "$BASE/metrics")
 case "$METRICS_TYPE" in
@@ -171,7 +182,7 @@ case "$METRICS_TYPE" in
   *) bad "metrics content type ($METRICS_TYPE)" ;;
 esac
 metric_is() { echo "$METRICS" | python3 -c "import sys; rows=dict(l.split() for l in sys.stdin.read().splitlines() if l.strip()); sys.exit(0 if rows.get('$1') == '$2' else 1)"; }
-if metric_is events_accepted_total 5; then ok "metrics accepted (5)"; else bad "metrics accepted ($(echo "$METRICS" | grep events_accepted_total))"; fi
+if metric_is events_accepted_total 6; then ok "metrics accepted (6)"; else bad "metrics accepted ($(echo "$METRICS" | grep events_accepted_total))"; fi
 if metric_is events_rejected_total 4; then ok "metrics rejected (4)"; else bad "metrics rejected ($(echo "$METRICS" | grep events_rejected_total))"; fi
 # NOTE: x-sb-cpu-ms is not asserted: the runtime stamps it only on
 # synchronously returned responses, and this router always returns a

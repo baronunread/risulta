@@ -12,7 +12,9 @@
   "secrets": [
     "RISULTA_ADMIN_EMAIL",
     "RISULTA_ADMIN_DISPLAY_NAME",
-    "RISULTA_ADMIN_PASSWORD"
+    "RISULTA_ADMIN_PASSWORD",
+    "RISULTA_BASE_URL",
+    "RISULTA_LOG_LEVEL"
   ],
   "assets": {
     "directory": "public",
