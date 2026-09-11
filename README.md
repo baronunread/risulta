@@ -78,9 +78,10 @@ The collector hashes a daily site salt with the client IP and User-Agent.
 The IP is the runtime-resolved `request.cf.clientIp`: the connection's
 remote address, or the rightmost untrusted `X-Forwarded-For` hop when the
 peer matches `SB_TRUSTED_PROXIES` (comma-separated CIDRs or bare IPs).
-With the list unset or the peer not in it, `X-Forwarded-For` is ignored
-entirely and direct exposure hashes the peer address (better uniqueness
-than before, still no stored IPs). Behind Caddy on the same host:
+With the list unset or the peer not in it, the collector ignores
+`X-Forwarded-For` entirely and hashes the direct-exposure peer address
+instead (better uniqueness than before, still no stored IPs). Behind Caddy
+on the same host:
 
 ```sh
 SB_TRUSTED_PROXIES=127.0.0.1 SB_DATA_DIR=/var/lib/risulta-sprout PORT=8099 ./dist/risulta-sprout
@@ -107,8 +108,8 @@ your own setup.
   in `chart.js`, counters and logging in `metrics.js`, generated avatars
   in `avatar.js` (the same blobatar bundle as the Bun app, called with
   `normalize: false` because the runtime has no
-  `String.prototype.normalize`; seeds are trimmed and lowercased
-  app-side, so names with combining marks render differently across the
+  `String.prototype.normalize`; the app trims and lowercases seeds
+  instead, so names with combining marks render differently across the
   two deployments). No `node:` imports anywhere in sprout modules.
   Hashing and password verification run through the runtime's
   `crypto.subtle` and `crypto.scryptVerify`, so the old vendored SHA-256
@@ -122,8 +123,8 @@ your own setup.
   manifest, ingest throttle, scrypt migration, comparison, HTML reports,
   settings, funnels, account profile and deletion, origin checks, and
   static assets). Run both
-  from the repo root; the scrypt check needs `SB_DATA_DIR` pointing at
-  the server's data directory and is skipped otherwise.
+  from the repo root; `verify.sh` skips the scrypt check unless
+  `SB_DATA_DIR` points at the server's data directory.
 
 ## Run it
 
@@ -238,7 +239,7 @@ actual output.
 
 Risulta's server and dashboard are licensed under AGPL-3.0-or-later. The browser
 tracker returned from `/js/<site-key>.js` is licensed under MIT so it can be
-embedded on any website (see `LICENSE-TRACKER`). There is no open-core or
-proprietary edition.
+embedded on any website (see `LICENSE-TRACKER`). Risulta has no open-core
+or proprietary edition.
 
 Visual rules live in [DESIGN.md](DESIGN.md).

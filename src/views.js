@@ -12,8 +12,12 @@ export function trackerFor(publicKey) {
   );
 }
 
-const MARK = '<span class="mark" aria-hidden="true"><i></i><i></i></span>';
-const GEAR = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 0 0-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 0 0-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 0 0-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 0 0 1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 0 0 1.066-2.573c-.94-1.543.826-3.31 2.37-2.37a1.724 1.724 0 0 0 2.572-1.065"/><path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0-6 0"/></svg>';
+const MARK = '<svg class="mark" width="20" height="20" viewBox="0 0 32 32" aria-hidden="true">' +
+  '<rect x="1" y="1" width="30" height="30" rx="8" fill="var(--bg)" stroke="var(--line)" stroke-width="2"/>' +
+  '<path fill="var(--fg)" d="M9 23C10 15 16 9 25 8C22 14 15 19 9 23Z"/>' +
+  '<path d="M10.5 21.3C14 17 18 13 21.8 10" fill="none" stroke="var(--bg)" stroke-width="1.3" stroke-linecap="round"/></svg>';
+// Cog6Tooth from Heroicons (MIT, Tailwind Labs) - https://heroicons.com
+const GEAR = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/><path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/></svg>';
 
 function topbar(user, site, sites) {
   const gear = site && user.role === "admin"
@@ -40,10 +44,13 @@ export function pageShell(title, user, body, site, sites) {
     '<meta name="color-scheme" content="light dark"><meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">' +
     '<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">' +
     '<link rel="stylesheet" href="/style.css">' +
+    '<link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)">' +
+    '<link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)">' +
+    '<link rel="manifest" href="/site.webmanifest">' +
     "<title>" + escapeHtml(title) + " - Risulta</title>" +
     '<script src="/htmx.min.js"></script><script src="/dashboard.js" defer></script></head><body><a class="skip" href="#main">Skip to content</a>' +
     (user ? topbar(user, site || null, sites || []) : "") + body +
-    (user ? '<footer class="footer"><div class="shell"><span><strong>Risulta Sprout</strong> standalone analytics</span></div></footer>' : "") +
+    (user ? '<footer class="footer"><div class="shell"><span><strong>Risulta</strong> is a standalone, experimental analytics platform grown with <a class="footer-link" href="https://sproutboat.com" target="_blank" rel="noopener">Sproutboat</a></span></div></footer>' : "") +
     "</body></html>";
 }
 
@@ -123,7 +130,7 @@ export function liveFragment(site, analytics, range, days, metric, comparison) {
         '<a class="footer-link" href="/sites/' + site.id + "?" + toggleQuery + "&metric=" + metric + '">' + (comparison ? "Hide comparison" : "Compare previous period") + "</a>" + comparisonLabel + "</div>"
       : '<div class="empty"><h2>Waiting for the first visitor</h2><p>Install the tracker below. New visits will appear here live.</p></div>') +
     "</section>" +
-    '<p class="hint metrics-note">Visitor identities reset at each UTC day. Multi-day totals are unique visitor-days, not deduplicated people. <span class="status" id="poll-status" data-state="live">Live.</span></p>' +
+    '<p class="hint metrics-note"><span class="status" id="poll-status" data-state="live"></span></p>' +
     '<div id="dashboard-reports" class="reports">' + goalCard(analytics.goals) + funnelCard(analytics.funnels, analytics.funnelsTruncated) +
     reportCard("Top pages", analytics.paths, "Pages will appear after the first view.", reportLinks) +
     reportCard("Top sources", analytics.referrers, "Sources will appear after the first visit.", reportLinks) +
@@ -184,7 +191,7 @@ export function sitePage(user, site, sites, analytics, range, days, metric, orig
   const snippet = '<script defer src="' + origin + "/js/" + site.public_key + '.js"></script>';
   const install = '<section class="card install" aria-labelledby="install-title"><h2 id="install-title">Install the tracker</h2><p>Paste this into the <code>&lt;head&gt;</code> of ' +
     escapeHtml(site.domain) + '.</p><div class="snippet" role="region" tabindex="0" aria-label="Tracker installation code"><code>' + escapeHtml(snippet) +
-    '</code></div><button class="button secondary" type="button" data-copy-code>Copy code</button><p class="hint" id="copy-status" role="status" aria-live="polite"></p></section>';
+    '</code></div><button class="button secondary" type="button" data-copy-code>Copy code</button></section>';
   return pageShell(
     site.name + " analytics",
     user,
@@ -237,12 +244,13 @@ export function usersPage(admin, users, sites) {
 export function accountPage(user, options) {
   const settings = options || {};
   const profileMessages = {
-    "1": '<p class="success" role="status">Profile updated.</p>',
     "name-required": '<p class="error" role="alert">Enter your display name.</p>',
     "email-invalid": '<p class="error" role="alert">Enter a valid email address.</p>',
     "email-registered": '<p class="error" role="alert">That email address is already in use.</p>',
   };
-  const profileMessage = profileMessages[settings.profile] || "";
+  const profileMessage = settings.profile === "1"
+    ? '<p hidden data-toast>Profile updated.</p>'
+    : profileMessages[settings.profile] || "";
   const displayName = user.display_name || user.email.split("@")[0];
   return pageShell(
     "Account settings",
@@ -379,10 +387,10 @@ export function settingsPage(session, site, sites, goals, funnels, error, origin
     "funnel-save-failed": "Unable to save this funnel.",
   };
   const snippet = '<script defer src="' + origin + "/js/" + site.public_key + '.js"></script>';
-  const trackerCard = '<section class="card settings-section" aria-labelledby="tracker-title"><h2 id="tracker-title">Tracker code</h2>' +
-    "<p class=\"hint\">Paste this into the <code>&lt;head&gt;</code> of " + escapeHtml(site.domain) + ".</p>" +
+  const trackerCard = '<section class="card settings-section install" aria-labelledby="tracker-title"><h2 id="tracker-title">Tracker code</h2>' +
+    "<p>Paste this into the <code>&lt;head&gt;</code> of " + escapeHtml(site.domain) + ".</p>" +
     '<div class="snippet" role="region" tabindex="0" aria-label="Tracker installation code"><code>' + escapeHtml(snippet) + "</code></div>" +
-    '<button class="button secondary" type="button" data-copy-code>Copy code</button><p class="hint" id="copy-status" role="status" aria-live="polite"></p></section>';
+    '<button class="button secondary" type="button" data-copy-code>Copy code</button></section>';
   const goalItems = goals.map((g) => "<li><strong>" + escapeHtml(g.name) + "</strong><span>" + escapeHtml(g.event_name) + (g.path ? " at " + escapeHtml(g.path) : "") + "</span></li>").join("");
   const goalCard = session.role === "admin"
     ? '<section class="card settings-section" aria-labelledby="goals-settings-title"><h2 id="goals-settings-title">Goals</h2><p class="hint">Track a custom event or a pageview at one exact path.</p>' +

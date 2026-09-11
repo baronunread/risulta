@@ -5,5 +5,7 @@ hutch
 *.db-wal
 data/
 dist/
+.sproutboat/
 node_modules/
 .DS_Store
+.dev.vars

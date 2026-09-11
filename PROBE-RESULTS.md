@@ -67,7 +67,7 @@ Covered by `verify.sh`:
 ## Runtime findings (upstream-worthy)
 
 1. Stats window used strict `ts < now`, hiding same-second events.
-   Fix: `until = now + 1`. Keep this rule if the queries are reused.
+   Fix: `until = now + 1`. Keep this rule if you reuse the queries.
 2. Asset URLs must not use a `/static/` prefix: the assets directory is the
    URL root. Unknown GETs fall through to `env.ASSETS.fetch`.
 3. Status **303** works on 0.10.2 (fixed upstream as
@@ -166,8 +166,8 @@ follow-ups and
   need a manual SQLite import. New credentials use iterated
   HMAC-SHA-256 (`h1$`, count encoded per row) with constant-time
   comparison via `subtle.verify`.
-- KV cache: deliberately not added. A cache is admitted only for a measured
-  repeated lookup/summary hotspot; none has been observed.
+- KV cache: deliberately not added. Add a cache only for a measured,
+  repeated lookup/summary hotspot — none exists yet.
 - `crypto.subtle` is now used directly (digest for visitor hashes and
   session tokens, HMAC for the password KDF, `scryptVerify` for Bun
   rows); the vendored SHA-256 is deleted. `subtle` is async-only, so the
