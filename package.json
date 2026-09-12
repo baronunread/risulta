@@ -19,6 +19,8 @@
     "style-doctor": "^0.3.0"
   },
   "dependencies": {
-    "blobatar": "^2.5.0"
+    "blobatar": "^2.5.0",
+    "preact": "^10.29.8",
+    "preact-render-to-string": "^6.7.0"
   }
 }
