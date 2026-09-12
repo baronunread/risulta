@@ -204,6 +204,14 @@ function bodyOf(request) {
   return method === "POST" || method === "PUT" ? request.body || "" : "";
 }
 
+function wantsJsonFrom(request) {
+  return (request.headers.get("content-type") || "").indexOf("application/json") !== -1;
+}
+
+function isSecure(request) {
+  return new URL(request.url).protocol === "https:";
+}
+
 const app = new Hono();
 
 app.use("*", async (c, next) => {
@@ -291,8 +299,7 @@ app.get("/login", async (c) => {
 app.post("/login", async (c) => {
   const request = c.req.raw;
   const body = bodyOf(request);
-  const ctype = request.headers.get("content-type") || "";
-  const wantsJson = ctype.indexOf("application/json") !== -1;
+  const wantsJson = wantsJsonFrom(request);
   if (!sameOriginHost(request)) {
     if (wantsJson) return json({ error: "forbidden" }, 403);
     return new Response("Forbidden", { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } });
@@ -325,7 +332,7 @@ app.post("/login", async (c) => {
     }
   }
   const session = await createSession(env.DB, user.id);
-  const secure = new URL(request.url).protocol === "https:";
+  const secure = isSecure(request);
   const cookie = setSessionCookie(session.token, secure);
   if (wantsJson) return json({ ok: true }, 200, { "set-cookie": cookie });
   return redirect("/", cookie);
@@ -350,11 +357,10 @@ app.post("/logout", async (c) => {
   const session = c.get("session");
   const request = c.req.raw;
   const body = bodyOf(request);
-  const ctype = request.headers.get("content-type") || "";
-  const wantsJson = ctype.indexOf("application/json") !== -1;
+  const wantsJson = wantsJsonFrom(request);
   if (!csrfValid(session, csrfValue(request, body))) return wantsJson ? json({ error: "csrf mismatch" }, 403) : redirect("/login");
   await destroySession(env.DB, request);
-  const secure = new URL(request.url).protocol === "https:";
+  const secure = isSecure(request);
   const expired = expiredSessionCookie(secure);
   if (wantsJson) return json({ ok: true }, 200, { "set-cookie": expired });
   return redirect("/login", expired);
@@ -396,8 +402,7 @@ app.post("/api/account/password", async (c) => {
   const session = c.get("session");
   const request = c.req.raw;
   const body = bodyOf(request);
-  const ctype = request.headers.get("content-type") || "";
-  const wantsJson = ctype.indexOf("application/json") !== -1;
+  const wantsJson = wantsJsonFrom(request);
   const parsed = inputFrom(body, wantsJson);
   if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
   const current = String(parsed.value.current || "");
@@ -415,8 +420,7 @@ app.post("/api/account/profile", async (c) => {
   const session = c.get("session");
   const request = c.req.raw;
   const body = bodyOf(request);
-  const ctype = request.headers.get("content-type") || "";
-  const wantsJson = ctype.indexOf("application/json") !== -1;
+  const wantsJson = wantsJsonFrom(request);
   const parsed = inputFrom(body, wantsJson);
   if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
   const displayName = String(parsed.value.displayName || parsed.value.display_name || "").trim().slice(0, 80);
@@ -442,8 +446,7 @@ app.post("/api/account/delete", async (c) => {
   const session = c.get("session");
   const request = c.req.raw;
   const body = bodyOf(request);
-  const ctype = request.headers.get("content-type") || "";
-  const wantsJson = ctype.indexOf("application/json") !== -1;
+  const wantsJson = wantsJsonFrom(request);
   const parsed = inputFrom(body, wantsJson);
   if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
   const confirmation = String(parsed.value.confirmation || "");
@@ -460,7 +463,7 @@ app.post("/api/account/delete", async (c) => {
   }
   removeUser(env.DB, session.user_id);
   await destroySession(env.DB, request);
-  const secure = new URL(request.url).protocol === "https:";
+  const secure = isSecure(request);
   const expired = expiredSessionCookie(secure);
   if (wantsJson) return json({ ok: true }, 200, { "set-cookie": expired });
   return redirect("/login", expired);
@@ -483,8 +486,7 @@ app.post("/api/users", async (c) => {
   const isAdmin = session.role === "admin";
   const request = c.req.raw;
   const body = bodyOf(request);
-  const ctype = request.headers.get("content-type") || "";
-  const wantsJson = ctype.indexOf("application/json") !== -1;
+  const wantsJson = wantsJsonFrom(request);
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
   let email = "";
@@ -533,8 +535,7 @@ app.post("/api/users/:id{[0-9]+}/delete", async (c) => {
   const isAdmin = session.role === "admin";
   const request = c.req.raw;
   const body = bodyOf(request);
-  const ctype = request.headers.get("content-type") || "";
-  const wantsJson = ctype.indexOf("application/json") !== -1;
+  const wantsJson = wantsJsonFrom(request);
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
   const targetId = Number(c.req.param("id"));
@@ -585,8 +586,7 @@ app.post("/api/sites", async (c) => {
   const isAdmin = session.role === "admin";
   const request = c.req.raw;
   const body = bodyOf(request);
-  const ctype = request.headers.get("content-type") || "";
-  const wantsJson = ctype.indexOf("application/json") !== -1;
+  const wantsJson = wantsJsonFrom(request);
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
   const parsed = inputFrom(body, wantsJson);
@@ -628,8 +628,7 @@ app.post("/api/sites/:id{[0-9]+}/goals", async (c) => {
   if (!site) return json({ error: "unknown site" }, 404);
   const request = c.req.raw;
   const body = bodyOf(request);
-  const ctype = request.headers.get("content-type") || "";
-  const wantsJson = ctype.indexOf("application/json") !== -1;
+  const wantsJson = wantsJsonFrom(request);
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
   const parsed = inputFrom(body, wantsJson);
@@ -675,8 +674,7 @@ app.post("/api/sites/:id{[0-9]+}/funnels", async (c) => {
   if (!site) return json({ error: "unknown site" }, 404);
   const request = c.req.raw;
   const body = bodyOf(request);
-  const ctype = request.headers.get("content-type") || "";
-  const wantsJson = ctype.indexOf("application/json") !== -1;
+  const wantsJson = wantsJsonFrom(request);
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
   let name = "";
