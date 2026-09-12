@@ -1,10 +1,7 @@
 // Risulta Sprout: request router. Thin by design (sproutboat-site shape):
 // domain rules live in domain.js, storage in store.js, auth in auth.js,
-// pages in views.js, charts in chart.js. Hono only does path matching and
-// param extraction here - every handler keeps reading the body exactly as
-// before (request.body is already a plain string in this runtime, not a
-// ReadableStream; Hono's own body helpers like parseBody()/formData() crash
-// the whole process on this runtime and must never be called).
+// pages in views.js, charts in chart.js. Hono is routing only - never call
+// its parseBody()/formData(); they crash this runtime's process outright.
 import { Hono } from "hono";
 import {
   changePassword,
@@ -185,8 +182,6 @@ function publicOrigin(request, url) {
   return url.origin;
 }
 
-// Read the POST/PUT body once, the same way for every handler: a plain
-// string, never a stream read. GET/DELETE etc. never have one.
 function bodyOf(request) {
   const method = request.method;
   return method === "POST" || method === "PUT" ? request.body || "" : "";
@@ -198,10 +193,6 @@ app.use("*", async (c, next) => {
   await ensureReady(env.DB);
   await next();
 });
-
-// ---------------------------------------------------------------------
-// Public routes: no session required.
-// ---------------------------------------------------------------------
 
 app.get("/healthz", () => new Response("ok\n"));
 app.get("/favicon.ico", () => new Response("", { status: 204 }));
@@ -331,11 +322,8 @@ app.post("/login", async (c) => {
   return redirect("/", cookie);
 });
 
-// ---------------------------------------------------------------------
-// Session gate: everything below requires a session. API callers get 401
-// JSON, browsers get the sign-in page via redirect.
-// ---------------------------------------------------------------------
-
+// Gates every route registered below this point: API callers get 401 JSON,
+// browsers get redirected to sign in.
 app.use("*", async (c, next) => {
   const request = c.req.raw;
   const path = new URL(request.url).pathname;
@@ -348,10 +336,6 @@ app.use("*", async (c, next) => {
   c.set("session", session);
   await next();
 });
-
-// ---------------------------------------------------------------------
-// Protected routes.
-// ---------------------------------------------------------------------
 
 app.post("/logout", async (c) => {
   const session = c.get("session");
