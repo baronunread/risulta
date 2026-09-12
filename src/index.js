@@ -89,6 +89,23 @@ function parseJson(body) {
   }
 }
 
+// URLSearchParams has no .entries()/iterator on this runtime, only .get()
+// and .forEach() - first-wins here to match what repeated .get(key) calls
+// would each return.
+function formToObject(usp) {
+  const out = {};
+  usp.forEach((value, key) => {
+    if (!(key in out)) out[key] = value;
+  });
+  return out;
+}
+
+// Single-value form/JSON bodies only - a route with a checkbox list
+// (form.getAll(...)) parses the form itself instead.
+function inputFrom(body, wantsJson) {
+  return wantsJson ? parseJson(body) : { ok: true, value: formToObject(new URLSearchParams(body)) };
+}
+
 // Same-origin check for unauthenticated form/JSON writes (login). Compares
 // hosts only, not schemes: TLS terminates at the proxy, so the browser's
 // https origin never equals the binary's http origin. Missing Origin (curl,
@@ -280,18 +297,10 @@ app.post("/login", async (c) => {
     if (wantsJson) return json({ error: "forbidden" }, 403);
     return new Response("Forbidden", { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } });
   }
-  let email = "";
-  let password = "";
-  if (wantsJson) {
-    const parsed = parseJson(body);
-    if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
-    email = normalizeEmail(parsed.value.email);
-    password = String(parsed.value.password || "");
-  } else {
-    const form = new URLSearchParams(body);
-    email = normalizeEmail(form.get("email"));
-    password = String(form.get("password") || "");
-  }
+  const parsed = inputFrom(body, wantsJson);
+  if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+  const email = normalizeEmail(parsed.value.email);
+  const password = String(parsed.value.password || "");
   if (!loginAllowed(email)) {
     incrementCounter("rate_limits_total");
     if (wantsJson) return json({ error: "too many attempts, try later" }, 429);
@@ -389,18 +398,10 @@ app.post("/api/account/password", async (c) => {
   const body = bodyOf(request);
   const ctype = request.headers.get("content-type") || "";
   const wantsJson = ctype.indexOf("application/json") !== -1;
-  let current = "";
-  let next = "";
-  if (wantsJson) {
-    const parsed = parseJson(body);
-    if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
-    current = String(parsed.value.current || "");
-    next = String(parsed.value.password || "");
-  } else {
-    const form = new URLSearchParams(body);
-    current = String(form.get("current") || "");
-    next = String(form.get("password") || "");
-  }
+  const parsed = inputFrom(body, wantsJson);
+  if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+  const current = String(parsed.value.current || "");
+  const next = String(parsed.value.password || "");
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
   const user = env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
   if (!user || !(await verifyPassword(current, user.password_hash)).ok) return json({ error: "current password is wrong" }, 403);
@@ -416,18 +417,10 @@ app.post("/api/account/profile", async (c) => {
   const body = bodyOf(request);
   const ctype = request.headers.get("content-type") || "";
   const wantsJson = ctype.indexOf("application/json") !== -1;
-  let displayName = "";
-  let email = "";
-  if (wantsJson) {
-    const parsed = parseJson(body);
-    if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
-    displayName = String(parsed.value.displayName || parsed.value.display_name || "").trim().slice(0, 80);
-    email = normalizeEmail(parsed.value.email);
-  } else {
-    const form = new URLSearchParams(body);
-    displayName = String(form.get("displayName") || form.get("display_name") || "").trim().slice(0, 80);
-    email = normalizeEmail(form.get("email"));
-  }
+  const parsed = inputFrom(body, wantsJson);
+  if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+  const displayName = String(parsed.value.displayName || parsed.value.display_name || "").trim().slice(0, 80);
+  const email = normalizeEmail(parsed.value.email);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
   const profileCheck = validate(ProfileSchema, { displayName, email });
   if (!profileCheck.ok) {
@@ -451,14 +444,9 @@ app.post("/api/account/delete", async (c) => {
   const body = bodyOf(request);
   const ctype = request.headers.get("content-type") || "";
   const wantsJson = ctype.indexOf("application/json") !== -1;
-  let confirmation = "";
-  if (wantsJson) {
-    const parsed = parseJson(body);
-    if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
-    confirmation = String(parsed.value.confirmation || "");
-  } else {
-    confirmation = String(new URLSearchParams(body).get("confirmation") || "");
-  }
+  const parsed = inputFrom(body, wantsJson);
+  if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+  const confirmation = String(parsed.value.confirmation || "");
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
   if (confirmation !== "DELETE") {
     if (wantsJson) return json({ error: "type DELETE to confirm account deletion" }, 400);
@@ -512,16 +500,14 @@ app.post("/api/users", async (c) => {
     displayName = String(input.displayName || input.display_name || "").trim().slice(0, 80);
     password = String(input.password || "");
     role = input.role === "admin" ? "admin" : "viewer";
-    const rawSites = input.siteIds || input.site_ids || [];
-    for (let i = 0; i < rawSites.length; i++) siteIds.push(Number(rawSites[i]));
+    siteIds = (input.siteIds || input.site_ids || []).map(Number);
   } else {
     const form = new URLSearchParams(body);
     email = normalizeEmail(form.get("email"));
     displayName = String(form.get("display_name") || "").trim().slice(0, 80);
     password = String(form.get("password") || "");
     role = form.get("role") === "admin" ? "admin" : "viewer";
-    const checked = form.getAll("site");
-    for (let i = 0; i < checked.length; i++) siteIds.push(Number(checked[i]));
+    siteIds = form.getAll("site").map(Number);
   }
   if (!email) {
     if (wantsJson) return json({ error: "email is required" }, 400);
@@ -603,19 +589,10 @@ app.post("/api/sites", async (c) => {
   const wantsJson = ctype.indexOf("application/json") !== -1;
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
-  let name = "";
-  let domain = "";
-  if (wantsJson) {
-    const parsed = parseJson(body);
-    if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
-    const input = parsed.value;
-    name = String(input.name || "").trim().slice(0, 80);
-    domain = cleanDomain(input.domain);
-  } else {
-    const form = new URLSearchParams(body);
-    name = String(form.get("name") || "").trim().slice(0, 80);
-    domain = cleanDomain(form.get("domain"));
-  }
+  const parsed = inputFrom(body, wantsJson);
+  if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+  const name = String(parsed.value.name || "").trim().slice(0, 80);
+  const domain = cleanDomain(parsed.value.domain);
   const siteCheck = validate(SiteSchema, { name, domain });
   if (!siteCheck.ok) {
     const messages = { "name-required": "name is required", "domain-invalid": "domain is invalid" };
@@ -655,22 +632,11 @@ app.post("/api/sites/:id{[0-9]+}/goals", async (c) => {
   const wantsJson = ctype.indexOf("application/json") !== -1;
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
-  let name = "";
-  let eventName = "";
-  let goalPath = "";
-  if (wantsJson) {
-    const parsed = parseJson(body);
-    if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
-    const input = parsed.value;
-    name = String(input.name || "").trim().slice(0, 80);
-    eventName = String(input.eventName || input.event_name || "").trim().slice(0, 64);
-    goalPath = String(input.path || "").trim().slice(0, 2048);
-  } else {
-    const form = new URLSearchParams(body);
-    name = String(form.get("name") || "").trim().slice(0, 80);
-    eventName = String(form.get("event_name") || "").trim().slice(0, 64);
-    goalPath = String(form.get("path") || "").trim().slice(0, 2048);
-  }
+  const parsed = inputFrom(body, wantsJson);
+  if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+  const name = String(parsed.value.name || "").trim().slice(0, 80);
+  const eventName = String(parsed.value.eventName || parsed.value.event_name || "").trim().slice(0, 64);
+  const goalPath = String(parsed.value.path || "").trim().slice(0, 2048);
   const goalCheck = validate(GoalSchema, { name, eventName, path: goalPath });
   if (!goalCheck.ok) {
     const messages = {
@@ -720,13 +686,11 @@ app.post("/api/sites/:id{[0-9]+}/funnels", async (c) => {
     if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
     const input = parsed.value;
     name = String(input.name || "").trim().slice(0, 100);
-    const rawIds = input.goalIds || input.goal_ids || [];
-    for (let i = 0; i < rawIds.length; i++) goalIds.push(Number(rawIds[i]));
+    goalIds = (input.goalIds || input.goal_ids || []).map(Number);
   } else {
     const form = new URLSearchParams(body);
     name = String(form.get("name") || "").trim().slice(0, 100);
-    const checked = form.getAll("goal");
-    for (let i = 0; i < checked.length; i++) goalIds.push(Number(checked[i]));
+    goalIds = form.getAll("goal").map(Number);
   }
   const settingsUrl = "/sites/" + site.id + "/settings";
   if (!name) {
@@ -734,16 +698,15 @@ app.post("/api/sites/:id{[0-9]+}/funnels", async (c) => {
     return redirect(settingsUrl + "?error=funnel-name-required");
   }
   const siteGoals = env.DB.prepare("SELECT id FROM goals WHERE site_id = ?").bind(site.id).all().results;
-  const validIds = {};
-  for (let i = 0; i < siteGoals.length; i++) validIds[siteGoals[i].id] = 1;
-  const seen = {};
+  const validIds = new Set(siteGoals.map((g) => g.id));
+  const seen = new Set();
   let stepsOk = goalIds.length >= 2;
-  for (let i = 0; i < goalIds.length; i++) {
-    if (!validIds[goalIds[i]] || seen[goalIds[i]]) {
+  for (const id of goalIds) {
+    if (!validIds.has(id) || seen.has(id)) {
       stepsOk = false;
       break;
     }
-    seen[goalIds[i]] = 1;
+    seen.add(id);
   }
   if (!stepsOk) {
     if (wantsJson) return json({ error: "select at least two distinct goals of this site" }, 400);
