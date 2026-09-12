@@ -8,6 +8,7 @@
 // secrets always goes through subtle.verify or a manual constant-time loop,
 // never plain ===.
 import { utf8Bytes } from "./util.js";
+import { parseCookie, stringifySetCookie } from "cookie";
 
 export const SESSION_SECONDS = 7 * 24 * 60 * 60;
 // 20k HMAC iterations: trivial wall-clock for an interactive login (C hash,
@@ -187,20 +188,7 @@ async function tokenHash(token) {
 }
 
 export function readCookies(header) {
-  const out = {};
-  const parts = String(header || "").split(";");
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i];
-    const index = part.indexOf("=");
-    if (index < 0) {
-      const name = part.trim();
-      if (name) out[name] = "";
-    } else {
-      const name = part.slice(0, index).trim();
-      if (name) out[name] = part.slice(index + 1).trim();
-    }
-  }
-  return out;
+  return parseCookie(String(header || ""));
 }
 
 export function sessionCookieName(secure) {
@@ -208,11 +196,27 @@ export function sessionCookieName(secure) {
 }
 
 export function setSessionCookie(token, secure) {
-  return sessionCookieName(secure) + "=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + SESSION_SECONDS + (secure ? "; Secure" : "");
+  return stringifySetCookie({
+    name: sessionCookieName(secure),
+    value: token,
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    maxAge: SESSION_SECONDS,
+    secure,
+  });
 }
 
 export function expiredSessionCookie(secure) {
-  return sessionCookieName(secure) + "=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" + (secure ? "; Secure" : "");
+  return stringifySetCookie({
+    name: sessionCookieName(secure),
+    value: "",
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    maxAge: 0,
+    secure,
+  });
 }
 
 export async function readSession(db, request) {
