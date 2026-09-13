@@ -77,13 +77,10 @@ export function chart(series, metric, metricLabel) {
     const afterY = i + 1 < series.length ? ys[i + 1] : ys[i];
     const segmentMin = Math.min(ys[i - 1], ys[i]);
     const segmentMax = Math.max(ys[i - 1], ys[i]);
-    const clampY = function (value) {
-      return Math.max(segmentMin, Math.min(segmentMax, value));
-    };
     const c1x = xs[i - 1] + (xs[i] - beforeX) / 6;
-    const c1y = clampY(ys[i - 1] + (ys[i] - beforeY) / 6);
+    const c1y = Math.max(segmentMin, Math.min(segmentMax, ys[i - 1] + (ys[i] - beforeY) / 6));
     const c2x = xs[i] - (afterX - xs[i - 1]) / 6;
-    const c2y = clampY(ys[i] - (afterY - ys[i - 1]) / 6);
+    const c2y = Math.max(segmentMin, Math.min(segmentMax, ys[i] - (afterY - ys[i - 1]) / 6));
     line += "C" + c1x.toFixed(1) + "," + c1y.toFixed(1) + " " + c2x.toFixed(1) + "," + c2y.toFixed(1) + " " + xs[i].toFixed(1) + "," + ys[i].toFixed(1);
   }
   const area = line + " L" + width + "," + (height - bottom) + " L0," + (height - bottom) + " Z";
@@ -109,7 +106,7 @@ export function chart(series, metric, metricLabel) {
     '<defs><linearGradient id="area" x1="0" x2="0" y1="0" y2="1"><stop stop-color="currentColor" stop-opacity=".16"/>' +
     '<stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>' +
     '<g class="grid" aria-hidden="true"><path d="M0 ' + top + "H" + width + "M0 " + (height - bottom + top) / 2 + "H" + width + "M0 " + (height - bottom) + 'H' + width + '"/></g>' +
-    '<polygon points="' + area + '" fill="url(#area)" aria-hidden="true"/>' +
+    '<path d="' + area + '" fill="url(#area)" aria-hidden="true"/>' +
     '<path d="' + line + '" fill="none" stroke="currentColor" stroke-width="2" vector-effect="non-scaling-stroke" aria-hidden="true"/>' +
     circles + tickLabels + "</svg>";
 }

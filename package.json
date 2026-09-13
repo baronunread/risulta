@@ -8,14 +8,20 @@
     "lint": "oxlint .",
     "test": "bun tests/daystring-test.mjs && bun tests/encoding-test.mjs",
     "check": "sproutboat check",
+    "dev": "sproutboat dev --port 8099",
     "build": "sproutboat build --standalone",
     "bench": "bun bench.mjs"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.80.0",
-    "oxlint": "1.80.0"
+    "oxlint": "1.80.0",
+    "sproutboat": "0.10.3",
+    "style-doctor": "^0.3.0"
   },
   "dependencies": {
-    "blobatar": "^2.5.0"
+    "blobatar": "^2.5.0",
+    "cookie": "^2.0.1",
+    "hono": "^4.13.7",
+    "valibot": "^1.5.0"
   }
 }

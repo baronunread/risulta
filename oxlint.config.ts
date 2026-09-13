@@ -14,6 +14,7 @@ export default defineConfig({
     ".roo/**",
     ".windsurf/**",
     "node_modules/**",
+    ".sproutboat/**",
     "tools/oxlint/anti-slop/**",
   ],
   jsPlugins: [

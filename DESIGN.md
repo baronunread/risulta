@@ -1,7 +1,7 @@
 # Risulta design system
 
 Risulta uses a quiet, data-first visual language for a focused analytics
-product. The interface should feel precise and fast: black and white
+product. The interface feels precise and fast: black and white
 foundations, neutral grays, compact controls, strong typographic hierarchy,
 and detail supplied by data rather than decoration.
 
@@ -33,7 +33,7 @@ Display values use tabular numbers. Headings use slightly tight tracking.
 
 Use an 8px corner radius for controls and 12px for major panels. Nested
 corners must be concentric. Structural cards use a 1px line; selected compact
-controls may use a very small shadow for elevation.
+controls use a small shadow for elevation.
 
 ## Layout
 
@@ -46,7 +46,8 @@ controls may use a very small shadow for elevation.
 
 ## Components
 
-- The original Risulta mark is a compact three-bar result chart.
+- The Risulta mark is a single leaning leaf, a nod to Sproutboat: solid black,
+  one cut vein, no gradient or color.
 - Segmented controls sit on a subtle surface; the current item uses the canvas.
 - Metric selection is a 2px foreground edge, never color alone.
 - Charts use a 2px foreground line, subtle neutral grid, and a faint area fill.
