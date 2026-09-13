@@ -196,7 +196,7 @@ export function sitePage(user, site, sites, analytics, range, days, metric, orig
     site.name + " analytics",
     user,
     '<main class="shell" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + "</p><h1>" + escapeHtml(title) + "</h1></div>" +
-      '<div class="dashboard-controls"><div id="live-current" aria-live="polite"><span class="current"><span class="site-dot" aria-hidden="true"></span><strong data-current>' +
+      '<div class="dashboard-controls"><div id="live-current" aria-live="polite"><span class="current"><span class="site-dot" aria-hidden="true"></span><strong id="live-current-value" data-current>' +
       fmtInt(analytics.current) + '</strong> current</span></div><nav class="periods" aria-label="Date range">' + periodTabs + "</nav>" +
       '<details class="range-picker"><summary class="button secondary">Custom range</summary>' +
       '<form class="range-form" method="get" action="/sites/' + site.id + '"><input type="hidden" name="metric" value="' + escapeHtml(metric) + '">' +

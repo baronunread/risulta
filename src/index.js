@@ -50,7 +50,7 @@ import {
   clientIp,
 } from "./store.js";
 import { incrementCounter, logRequest, metricsText, safeRoute } from "./metrics.js";
-import { asciiJson } from "./util.js";
+import { asciiJson, fmtInt } from "./util.js";
 import { escapeHtml } from "./util.js";
 import {
   accountPage,
@@ -755,7 +755,8 @@ app.get("/sites/:id{[0-9]+}/partials/live", (c) => {
   if (url.searchParams.get("compare") === "1") {
     comparison = siteSummary(env.DB, site.id, range.since - days * 86400, range.since);
   }
-  return new Response(liveFragment(site, analytics, range, days, metric, comparison),
+  const oobCurrent = '<strong id="live-current-value" data-current hx-swap-oob="true">' + fmtInt(analytics.current) + "</strong>";
+  return new Response(oobCurrent + liveFragment(site, analytics, range, days, metric, comparison),
     { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
