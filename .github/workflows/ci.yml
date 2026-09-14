@@ -19,10 +19,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run test
-      - name: Install sproutboat
-        run: npm install --global sproutboat@0.10.3
-      - run: sproutboat check
-      - run: sproutboat build --standalone
+      - run: bunx sproutboat check
+      - run: bunx sproutboat build --standalone
       - name: Seed against a scratch server
         run: |
           SB_DATA_DIR=/tmp/risulta-ci-seed PORT=8099 \
