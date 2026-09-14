@@ -15,7 +15,7 @@
   "devDependencies": {
     "@oxlint/plugins": "1.80.0",
     "oxlint": "1.80.0",
-    "sproutboat": "0.10.3",
+    "sproutboat": "0.11.4",
     "style-doctor": "^0.3.0"
   },
   "dependencies": {
