@@ -15,10 +15,11 @@
   "devDependencies": {
     "@oxlint/plugins": "1.80.0",
     "oxlint": "1.80.0",
-    "sproutboat": "0.11.7",
+    "sproutboat": "^0.11.8",
     "style-doctor": "^0.3.0"
   },
   "dependencies": {
+    "@sproutboat/cli-darwin-arm64": "^0.11.8",
     "blobatar": "^2.5.0",
     "cookie": "^2.0.1",
     "hono": "^4.13.7",
