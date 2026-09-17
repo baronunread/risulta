@@ -1,0 +1,16 @@
+version: 1
+
+hooks:
+  pre-push:
+    files:
+      changed: ["bun.lock"]
+    commands:
+      lock-sync:
+        run: bun run check:lock
+        fail_on_error: true
+
+  pre-commit:
+    commands:
+      lock-sync:
+        run: bun run check:lock
+        fail_on_error: true

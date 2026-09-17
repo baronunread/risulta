@@ -8,6 +8,7 @@
     "lint": "oxlint .",
     "test": "bun tests/daystring-test.mjs && bun tests/encoding-test.mjs",
     "check": "sproutboat check",
+    "check:lock": "bun scripts/check-lock.mjs",
     "dev": "sproutboat dev --port 8099",
     "build": "sproutboat build --standalone",
     "bench": "bun bench.mjs"
