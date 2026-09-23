@@ -74,6 +74,13 @@ function constantTimeEqualStrings(a, b) {
   return diff === 0;
 }
 
+function constantTimeEqualBytes(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
 async function importHmacKey(keyBytes) {
   // NOTE: await before returning. A bare `return <promise>` from an async
   // function never resolves in this runtime (no promise adoption); every
@@ -153,14 +160,11 @@ export async function verifyPassword(password, encoded) {
       for (let i = 0; i < saltBytes.length; i++) saltBytes[i] = parseInt(saltHex.slice(i * 2, i * 2 + 2), 16);
       const key = await importHmacKey(saltBytes);
       const encoder = new TextEncoder();
-      const { previous } = await hmacChain(key, encoder.encode(String(password)), iterations);
-      // Constant-time compare via verify: recomputing HMAC(salt, prev)
-      // must equal the stored final.
+      const { final } = await hmacChain(key, encoder.encode(String(password)), iterations);
       if (!/^[0-9a-f]+$/i.test(parts[3]) || parts[3].length % 2 !== 0 || parts[3].length === 0) return { ok: false, rehash: false };
       const stored = new Uint8Array(parts[3].length / 2);
       for (let i = 0; i < stored.length; i++) stored[i] = parseInt(parts[3].slice(i * 2, i * 2 + 2), 16);
-      const ok = await crypto.subtle.verify("HMAC", key, stored, previous);
-      return { ok: ok === true, rehash: false };
+      return { ok: constantTimeEqualBytes(final, stored), rehash: false };
     }
     if (text.startsWith("s2$")) {
       const parts = text.split("$");

@@ -271,10 +271,17 @@ i=0; while [ $i -lt 300 ]; do
 done
 if [ "$HIT429" = 1 ]; then ok "ingest rate limit 429"; else bad "ingest rate limit 429 (never tripped)"; fi
 
-# Bun-hash migration: a scrypt$ row (Bun format) logs in via the runtime's
-# verify-only scrypt and is re-hashed to the current KDF. Needs SB_DATA_DIR
-# pointing at the server's data directory; skipped when unset.
+# Cross-runtime H1 verification and Bun-hash migration fixtures. Needs
+# SB_DATA_DIR pointing at the server's data directory; skipped when unset.
 if [ -n "${SB_DATA_DIR:-}" ]; then
+  H1_EMAIL="h1-fixture-$STAMP@example.com"
+  H1_PW="h1-regression-password-0001"
+  H1_ROW='h1$20000$0102030405060708090a0b0c0d0e0f10$6fc13fe86ee33d9d4651274e1f326016437ecf19d28813b66a745b5bd3ea85d0'
+  export H1_EMAIL H1_PW H1_ROW
+  SB_DATA_DIR="${SB_DATA_DIR%/}" python3 -c 'import os,sqlite3,time; e=os.environ; db=sqlite3.connect(e["SB_DATA_DIR"]+"/d1/DB.sqlite", timeout=10); db.execute("INSERT INTO users (email, password_hash, role, display_name, created_at) VALUES (?, ?, ?, ?, ?)", (e["H1_EMAIL"], e["H1_ROW"], "viewer", "h1-fixture", int(time.time()))); db.commit(); db.close()' \
+    && ok "h1 fixture inserted" || bad "h1 fixture inserted"
+  expect_code "h1 cross-runtime login 200" POST /login "{\"email\":\"$H1_EMAIL\",\"password\":\"$H1_PW\"}" 200
+
   SCRYPT_EMAIL="migrated-$STAMP@example.com"
   SCRYPT_PW="migrated-password-0001"
   SCRYPT_ROW=$(SCRYPT_PW="$SCRYPT_PW" bun tests/make-scrypt-fixture.mjs)
