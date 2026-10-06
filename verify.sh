@@ -264,9 +264,10 @@ expect_code "viewer cannot backup" POST /api/backup '{}' 403 "application/json" 
 FLOOD_RESP=$(curl -s -m 10 -X POST "$BASE/api/sites" -H 'content-type: application/json' -H "x-csrf-token: $CSRF_A" -b "$JAR_A" -d "{\"name\":\"Flood\",\"domain\":\"flood-$STAMP.example.com\"}")
 FLOOD_KEY=$(echo "$FLOOD_RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin)["publicKey"])')
 HIT429=0
-i=0; while [ $i -lt 300 ]; do
+# Allow one minute-window rollover: 2 * 240 + 1 requests must trip the limit.
+i=0; while [ $i -lt 481 ]; do
   code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "$BASE/api/event/$FLOOD_KEY" -H 'content-type: text/plain' -A "flood-ua" -d "{\"name\":\"pageview\",\"path\":\"/f\",\"domain\":\"flood-$STAMP.example.com\"}")
-  if [ "$code" = 429 ]; then HIT429=1; fi
+  if [ "$code" = 429 ]; then HIT429=1; break; fi
   i=$((i + 1))
 done
 if [ "$HIT429" = 1 ]; then ok "ingest rate limit 429"; else bad "ingest rate limit 429 (never tripped)"; fi

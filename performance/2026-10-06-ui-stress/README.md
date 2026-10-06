@@ -67,3 +67,9 @@ This command only accepts a loopback preview. Default credentials are the dispos
 The final Linux x64 artifact passed 88 existing checks and 63 feature HTTP checks in both proxy modes in `/home/baronunread/risulta-nightly-validation.hHxAil` on the VPS. The nightly workflow now uses the CLI default build for Linux x64 and the explicit host build for native ARM.
 
 Final five-request local observations after closing the automation browser are in `final-timings.json`: home 309ms, 30-day overview 1,159ms, live fragment 1,143ms, full stats 2,351ms. The full stats response also reconciled both visit series with the summary on each request. Earlier and later measurements were not controlled throughput runs.
+
+## Published nightly validation
+
+The first nightly is [nightly-20261006-79e88c783332](https://github.com/baronunread/risulta/releases/tag/nightly-20261006-79e88c783332). Both static Linux x64 and ARM64 artifacts passed the native release tests. Normal CI passed as well, and GitHub's stable latest release remains v0.1.6.
+
+The published x64 artifact was downloaded, checked against its checksum and exact commit metadata, then passed 88 existing checks and 63 feature HTTP checks in each proxy mode on the VPS. A first VPS attempt exposed a false failure in the rate-limit test: 300 requests straddled a minute boundary, with 169 and 131 requests in the adjacent windows. The harness now allows 481 requests (twice the 240-request limit plus one), stopping at the first 429. The limiter itself required no change.
