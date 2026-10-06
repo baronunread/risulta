@@ -126,14 +126,16 @@ jobs:
       - run: bun run lint
       - run: bun run test
       - run: bun run check
-      - name: Prepare native ARM musl compiler
+      - name: Prepare native ARM static compiler
         if: matrix.target == 'host'
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools
-          printf '#!/bin/sh\nexec musl-gcc -static "$@"\n' > "$RUNNER_TEMP/risulta-cc"
-          chmod +x "$RUNNER_TEMP/risulta-cc"
+          sudo apt-get install -y build-essential
+          printf '#!/bin/sh\nexec gcc -static "$@"\n' > "$RUNNER_TEMP/risulta-cc"
+          printf '#!/bin/sh\nexec g++ -static "$@"\n' > "$RUNNER_TEMP/risulta-cxx"
+          chmod +x "$RUNNER_TEMP/risulta-cc" "$RUNNER_TEMP/risulta-cxx"
           echo "CC=$RUNNER_TEMP/risulta-cc" >> "$GITHUB_ENV"
+          echo "CXX=$RUNNER_TEMP/risulta-cxx" >> "$GITHUB_ENV"
       - name: Build and verify exact artifact
         env:
           ARTIFACT: ${{ matrix.artifact }}
