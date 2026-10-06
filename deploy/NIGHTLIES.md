@@ -76,8 +76,10 @@ schema, stop the service and restore the matching data, executable and
 configuration from the same recovery directory, preserving ownership.
 Restoring older data discards activity collected since that backup. If the
 schema remains compatible, an exact-version install can replace only the
-executable while preserving current data. The first nightly adds only the
-`read_api_keys` table; the earlier binary ignores that additive table.
+executable while preserving current data. The first nightly adds `read_api_keys`, `backup_settings`, `backup_history`
+and a covering analytics index. These additions preserve the existing tables
+and event data; earlier binaries ignore the new tables. Backup scheduling
+uses the separate runner described in `public/backup-setup.txt`.
 
 The readiness check confirms the service and `/healthz`; the release workflow
 also exercises login, authorization and analytics against disposable state.
