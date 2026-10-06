@@ -149,7 +149,9 @@ function verifyBunScrypt(password, parts) {
 export async function verifyPassword(password, encoded) {
   try {
     const text = String(encoded);
-    if (text.startsWith("h1$")) {
+    // Compare prefixes explicitly: startsWith can reject SQLite strings in
+    // the 0.15.0 standalone toolchain even when the prefix matches.
+    if (text.slice(0, 3) === "h1$") {
       const parts = text.split("$");
       if (parts.length !== 4) return { ok: false, rehash: false };
       const iterations = Number(parts[1]);
@@ -166,7 +168,7 @@ export async function verifyPassword(password, encoded) {
       for (let i = 0; i < stored.length; i++) stored[i] = parseInt(parts[3].slice(i * 2, i * 2 + 2), 16);
       return { ok: constantTimeEqualBytes(final, stored), rehash: false };
     }
-    if (text.startsWith("s2$")) {
+    if (text.slice(0, 3) === "s2$") {
       const parts = text.split("$");
       if (parts.length !== 4) return { ok: false, rehash: false };
       const iterations = Number(parts[1]);
@@ -174,7 +176,7 @@ export async function verifyPassword(password, encoded) {
       const ok = await verifyS2(password, iterations, parts[2], parts[3]);
       return { ok, rehash: true };
     }
-    if (text.startsWith("scrypt$")) {
+    if (text.slice(0, 7) === "scrypt$") {
       const parts = text.split("$");
       if (parts.length !== 6) return { ok: false, rehash: false };
       const ok = verifyBunScrypt(password, parts);

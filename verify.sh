@@ -142,7 +142,7 @@ curl -s -m 10 -b "$JAR_A" "$BASE/api/sites/$UNI_ID/report?dimension=path&format=
   && ok "unicode csv bytes" || bad "unicode csv bytes"
 CMP=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID?compare=1")
 case "$CMP" in
-  *"Previous period"*) ok "comparison mode" ;;
+  *"vs previous period"*|*"No previous traffic"*) ok "comparison mode" ;;
   *) bad "comparison mode" ;;
 esac
 REP_PAGE=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/reports?dimension=path")
@@ -162,7 +162,7 @@ expect_code "reversed range" GET "/api/sites/$SHOP_ID/stats?from=2026-12-31&to=2
 expect_json "report total" "/api/sites/$SHOP_ID/report?dimension=path" 'json.load(sys.stdin)["total"]' 3 "$JAR_A"
 FRAG=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/partials/live?period=1")
 case "$FRAG" in
-  *'class="metrics"'*'Top pages'*) ok "live fragment (authed)" ;;
+  *'class="metrics overview-metrics"'*'Top pages'*) ok "live fragment (authed)" ;;
   *) bad "live fragment (authed)" ;;
 esac
 # The dashboard's poller must point at the fragment route above, not the
@@ -171,7 +171,7 @@ esac
 POLL_URL=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID" | python3 -c 'import sys,re; m=re.search(r"data-stats-url=\"([^\"]+)\"", sys.stdin.read()); print(m.group(1) if m else "")')
 POLL_FRAG=$(curl -s -m 10 -b "$JAR_A" "$BASE$POLL_URL")
 case "$POLL_FRAG" in
-  *'class="metrics"'*) ok "live poll wiring" ;;
+  *'class="metrics overview-metrics"'*) ok "live poll wiring" ;;
   *) bad "live poll wiring ($POLL_URL)" ;;
 esac
 expect_code "live fragment anonymous" GET "/sites/$SHOP_ID/partials/live?period=1" "" 303

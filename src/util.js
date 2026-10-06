@@ -218,6 +218,19 @@ export function utf8Encode(text) {
   return out;
 }
 
+// Normalize byte-shaped request/storage strings before a UTF-8 transport
+// encodes them. Preserve supplementary code points as surrogate pairs.
+export function unicodeText(text) {
+  const points = decodeUnits(text);
+  const out = [];
+  for (let i = 0; i < points.length; i++) {
+    const point = points[i];
+    if (point < 0x10000) out.push(String.fromCharCode(point));
+    else out.push(String.fromCharCode(0xd800 + ((point - 0x10000) >> 10), 0xdc00 + ((point - 0x10000) & 0x3ff)));
+  }
+  return out.join("");
+}
+
 // UTC day label (YYYY-MM-DD) from epoch milliseconds using pure integer
 // arithmetic (Howard Hinnant's civil_from_days). Deliberately avoids
 // `new Date().toISOString()`, which livelocks the standalone runtime when

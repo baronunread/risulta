@@ -1,3 +1,5 @@
+import { createReadKey, readKeySite } from "./read-api.js";
+import { ensureBackupSchema, backupSettings, backupHistory, backupInput, saveBackupSettings, recordBackup } from "./backups.js";
 // Risulta Sprout: request router. Thin by design (sproutboat-site shape):
 // domain rules live in domain.js, storage in store.js, auth in auth.js,
 // pages in views.js, charts in chart.js. Hono is routing only - never call
@@ -38,6 +40,7 @@ import {
   getSiteForUser,
   listFunnels,
   listSitesForUser,
+  homeOverviews,
   removeUser,
   reportCsv,
   siteAnalytics,
@@ -45,6 +48,8 @@ import {
   siteForKey,
   siteReport,
   siteSummary,
+  siteGoals,
+  siteFunnels,
   updateProfile,
   visitorId,
   clientIp,
@@ -60,11 +65,15 @@ import {
   newSitePage,
   pageShell,
   reportsPage,
+  journeysPage,
   settingsPage,
   sitePage,
   trackerFor,
   usersPage,
+  backupsPage,
+  conversionsPage,
 } from "./views.js";
+import { journeyInput, siteJourneys } from "./journeys.js";
 import { avatarFor } from "./avatar.js";
 import { GoalSchema, ProfileSchema, SiteSchema, validate } from "./validation.js";
 
@@ -215,6 +224,7 @@ function isSecure(request) {
 const app = new Hono();
 
 app.use("*", async (c, next) => {
+  ensureBackupSchema(env.DB);
   await ensureReady(env.DB);
   await next();
 });
@@ -343,6 +353,14 @@ app.post("/login", async (c) => {
 app.use("*", async (c, next) => {
   const request = c.req.raw;
   const path = new URL(request.url).pathname;
+  // Bearer credentials never become a session and are checked only here.
+  const readSite = await readKeySite(env.DB, request);
+  if (readSite) {
+    c.set("readSite", readSite);
+    await next();
+    c.header("cache-control", "no-store");
+    return;
+  }
   const session = await readSession(env.DB, request);
   const apiRoute = path === "/api" || path.indexOf("/api/") === 0;
   if (!session) {
@@ -373,13 +391,7 @@ app.get("/api/session", (c) => {
 
 app.get("/", (c) => {
   const session = c.get("session");
-  const sites = listSitesForUser(env.DB, session);
-  const now = Math.floor(Date.now() / 1000);
-  const overviews = [];
-  for (let i = 0; i < sites.length; i++) {
-    const summary = siteSummary(env.DB, sites[i].id, now - 7 * 86400, now + 1);
-    overviews.push({ id: sites[i].id, name: sites[i].name, domain: sites[i].domain, overview: { visitors: Number(summary.visitors), pageviews: Number(summary.pageviews) } });
-  }
+  const overviews = homeOverviews(env.DB, session, Math.floor(Date.now() / 1000));
   return new Response(homePage(session, overviews), { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
@@ -478,7 +490,7 @@ app.get("/users", (c) => {
       "GROUP BY users.id ORDER BY users.created_at, users.id",
   ).all().results;
   const sites = env.DB.prepare("SELECT id, name, domain FROM sites ORDER BY name COLLATE NOCASE").all().results;
-  return new Response(usersPage(session, users, sites), { headers: { "content-type": "text/html;charset=utf-8" } });
+  return new Response(usersPage(session, users, sites, new URL(c.req.raw.url).searchParams.get("backup")), { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
 app.post("/api/users", async (c) => {
@@ -567,7 +579,7 @@ app.get("/sites/:id{[0-9]+}", (c) => {
   const days = rangeDays(range);
   const metricParam = url.searchParams.get("metric") || "visitors";
   const metric = metricParam === "visits" || metricParam === "pageviews" ? metricParam : "visitors";
-  const analytics = siteAnalytics(env.DB, site, range.since, range.until);
+  const analytics = siteAnalytics(env.DB, site, range.since, range.until, false);
   // Previous-period comparison: the summary for the immediately preceding
   // window of the same length, like the Bun app.
   let comparison = null;
@@ -611,6 +623,39 @@ app.post("/api/sites", async (c) => {
   siteByKey.set(publicKey, { id: Number(res.meta.last_row_id), domain });
   if (wantsJson) return json({ id: res.meta.last_row_id, name, domain, publicKey }, 201);
   return redirect("/sites/" + res.meta.last_row_id);
+});
+
+// Credential management stays behind the session gate and admin boundary.
+app.get("/api/sites/:id{[0-9]+}/read-keys", (c) => {
+  const session = c.get("session");
+  if (session.role !== "admin") return json({ error: "forbidden" }, 403);
+  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  if (!site) return json({ error: "unknown site" }, 404);
+  return json(env.DB.prepare("SELECT id, site_id, created_at FROM read_api_keys WHERE site_id = ? ORDER BY id").bind(site.id).all().results, 200, { "cache-control": "no-store" });
+});
+
+app.post("/api/sites/:id{[0-9]+}/read-keys", async (c) => {
+  const session = c.get("session");
+  if (session.role !== "admin") return json({ error: "forbidden" }, 403);
+  const request = c.req.raw;
+  if (!csrfValid(session, csrfValue(request, bodyOf(request)))) return json({ error: "csrf mismatch" }, 403);
+  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  if (!site) return json({ error: "unknown site" }, 404);
+  return json(await createReadKey(env.DB, site.id), 201, { "cache-control": "no-store" });
+});
+
+app.post("/api/sites/:id{[0-9]+}/read-keys/:keyId{[0-9]+}/revoke", (c) => {
+  const session = c.get("session");
+  if (session.role !== "admin") return json({ error: "forbidden" }, 403);
+  const request = c.req.raw;
+  if (!csrfValid(session, csrfValue(request, bodyOf(request)))) return json({ error: "csrf mismatch" }, 403);
+  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  if (!site) return json({ error: "unknown site" }, 404);
+  const keyId = Number(c.req.param("keyId"));
+  const key = env.DB.prepare("SELECT id FROM read_api_keys WHERE site_id = ? AND id = ?").bind(site.id, keyId).first();
+  if (!key) return json({ error: "unknown key" }, 404);
+  env.DB.prepare("DELETE FROM read_api_keys WHERE site_id = ? AND id = ?").bind(site.id, keyId).run();
+  return json({ ok: true }, 200, { "cache-control": "no-store" });
 });
 
 // Goals per site (writes are admin-only; reads follow site access).
@@ -750,7 +795,7 @@ app.get("/sites/:id{[0-9]+}/partials/live", (c) => {
   const days = rangeDays(range);
   const metricParam = url.searchParams.get("metric") || "visitors";
   const metric = metricParam === "visits" || metricParam === "pageviews" ? metricParam : "visitors";
-  const analytics = siteAnalytics(env.DB, site, range.since, range.until);
+  const analytics = siteAnalytics(env.DB, site, range.since, range.until, false);
   let comparison = null;
   if (url.searchParams.get("compare") === "1") {
     comparison = siteSummary(env.DB, site.id, range.since - days * 86400, range.since);
@@ -767,7 +812,7 @@ app.get("/sites/:id{[0-9]+}/partials/live", (c) => {
 app.get("/api/sites/:id{[0-9]+}/stats", (c) => {
   const session = c.get("session");
   const url = new URL(c.req.url);
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = c.get("readSite") || getSiteForUser(env.DB, Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
   const now = Math.floor(Date.now() / 1000);
   const range = parseRange(url.searchParams, now);
@@ -781,7 +826,7 @@ app.get("/api/sites/:id{[0-9]+}/stats", (c) => {
 app.get("/api/sites/:id{[0-9]+}/report", (c) => {
   const session = c.get("session");
   const url = new URL(c.req.url);
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = c.get("readSite") || getSiteForUser(env.DB, Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
   const now = Math.floor(Date.now() / 1000);
   const range = parseRange(url.searchParams, now);
@@ -829,6 +874,37 @@ app.get("/sites/:id{[0-9]+}/reports", (c) => {
     { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
+// Authenticated, site-scoped read over existing events. No collector changes.
+app.get("/api/sites/:id{[0-9]+}/journeys", (c) => {
+  const session = c.get("session");
+  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  if (!site) return json({ error: "unknown site" }, 404);
+  const params = new URL(c.req.url).searchParams;
+  const range = parseRange(params, Math.floor(Date.now() / 1000));
+  const input = journeyInput(params);
+  if (range.error || input.error) return json({ error: range.error || input.error }, 400);
+  return json({ site: { id: site.id, name: site.name, domain: site.domain }, range,
+    ...siteJourneys(env.DB, site.id, range.since, range.until, input) }, 200, { "cache-control": "no-store" });
+});
+
+app.get("/sites/:id{[0-9]+}/reports/journeys", (c) => {
+  const session = c.get("session");
+  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const params = new URL(c.req.url).searchParams;
+  const range = parseRange(params, Math.floor(Date.now() / 1000));
+  const input = journeyInput(params);
+  if (!params.get("limit")) input.limit = 10;
+  if (!site || range.error || input.error) {
+    const message = !site ? "Unknown site" : range.error || input.error;
+    return new Response(pageShell("Journeys", session,
+      '<main class="shell" id="main"><h1>' + escapeHtml(message) + "</h1></main>", null, []),
+      { status: !site ? 404 : 400, headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
+  }
+  const report = siteJourneys(env.DB, site.id, range.since, range.until, input);
+  return new Response(journeysPage(session, site, listSitesForUser(env.DB, session), report, range),
+    { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
+});
+
 // Online backup of the D1 database: an integrity-checked single-file
 // snapshot in backups/, no downtime, no WAL sidecars. Admin only. The
 // response carries a manifest (row counts per table) so a copied snapshot
@@ -839,15 +915,19 @@ app.post("/api/backup", async (c) => {
   const isAdmin = session.role === "admin";
   const request = c.req.raw;
   const body = bodyOf(request);
+  const htmlForm = (request.headers.get("content-type") || "").indexOf("application/x-www-form-urlencoded") === 0 &&
+    (request.headers.get("accept") || "").indexOf("text/html") >= 0;
   if (!isAdmin) return json({ error: "forbidden" }, 403);
-  if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
+  if (!csrfValid(session, csrfValue(request, body))) return htmlForm ? redirect("/users?backup=csrf") : json({ error: "csrf mismatch" }, 403);
   try {
     const snapshot = env.DB.backup();
-    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users"];
+    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history"];
     const counts = {};
     for (let i = 0; i < tables.length; i++) {
       counts[tables[i]] = Number(env.DB.prepare("SELECT count(*) AS n FROM " + tables[i]).first().n);
     }
+    recordBackup(env.DB, snapshot);
+    if (htmlForm) return redirect("/users?backup=success");
     return json({
       ok: true,
       path: snapshot.path,
@@ -856,8 +936,51 @@ app.post("/api/backup", async (c) => {
     });
   } catch {
     incrementCounter("database_errors_total");
-    return json({ error: "backup failed" }, 500);
+    return htmlForm ? redirect("/users?backup=failed") : json({ error: "backup failed" }, 500);
   }
+});
+
+app.get("/sites/:id{[0-9]+}/conversions", (c) => {
+  const session = c.get("session");
+  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  if (!site) return new Response("Unknown site", { status: 404 });
+  const range = parseRange(new URL(c.req.url).searchParams, Math.floor(Date.now() / 1000));
+  if (range.error) return new Response(range.error, { status: 400 });
+  const summary = siteSummary(env.DB, site.id, range.since, range.until);
+  const goals = siteGoals(env.DB, site.id, range.since, range.until, Number(summary.visitors));
+  const result = siteFunnels(env.DB, site.id, range.since, range.until);
+  return new Response(conversionsPage(session, site, listSitesForUser(env.DB, session), goals, result.funnels, result.truncated, range),
+    { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
+});
+
+app.get("/backups", (c) => {
+  const session = c.get("session");
+  if (session.role !== "admin") return redirect("/");
+  const message = new URL(c.req.url).searchParams.get("saved") === "1" ? "Backup preferences saved." : "";
+  return new Response(backupsPage(session, backupSettings(env.DB), backupHistory(env.DB), message),
+    { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
+});
+
+app.get("/api/backup/settings", (c) => {
+  if (c.get("session").role !== "admin") return json({ error: "forbidden" }, 403);
+  return json({ settings: backupSettings(env.DB), history: backupHistory(env.DB) }, 200, { "cache-control": "no-store" });
+});
+
+app.post("/api/backup/settings", (c) => {
+  const session = c.get("session");
+  if (session.role !== "admin") return json({ error: "forbidden" }, 403);
+  const request = c.req.raw;
+  const body = bodyOf(request);
+  const wantsJson = wantsJsonFrom(request);
+  if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
+  const parsed = inputFrom(body, wantsJson);
+  if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+  const input = backupInput(parsed.value);
+  if (input.error) return wantsJson ? json({ error: input.error }, 400) : new Response(
+    backupsPage(session, backupSettings(env.DB), backupHistory(env.DB), input.error, true),
+    { status: 400, headers: { "content-type": "text/html;charset=utf-8" } });
+  saveBackupSettings(env.DB, input);
+  return wantsJson ? json({ ok: true }) : redirect("/backups?saved=1");
 });
 
 // Embedded static assets for signed-in pages. The assets directory is the

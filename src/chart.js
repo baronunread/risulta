@@ -18,11 +18,11 @@ export function hourLabel(hour) {
 }
 
 // Fill trailing UTC days so the chart never has gaps.
-export function dateSeries(days, rows) {
+export function dateSeries(days, rows, until) {
   const values = {};
   for (let i = 0; i < rows.length; i++) values[rows[i].day] = rows[i];
   const out = [];
-  const todayStart = Math.floor(Date.now() / 86400000) * 86400000;
+  const todayStart = Math.floor((until ? (until - 1) * 1000 : Date.now()) / 86400000) * 86400000;
   for (let offset = days - 1; offset >= 0; offset--) {
     const day = dayStringFromMs(todayStart - offset * 86400000);
     out.push(values[day] || { day, pageviews: 0, visitors: 0, visits: 0 });
@@ -46,9 +46,10 @@ export function chartPointLabel(point) {
   return hourLabel(point.hour) + " UTC";
 }
 
-export function chart(series, metric, metricLabel) {
-  const width = 960;
-  const height = 248;
+export function chart(series, metric, metricLabel, mobile) {
+  const width = mobile ? 320 : 960;
+  const height = mobile ? 190 : 248;
+  const suffix = mobile ? "-mobile" : "";
   const top = 16;
   const bottom = 30;
   let max = 1;
@@ -86,7 +87,7 @@ export function chart(series, metric, metricLabel) {
   const area = line + " L" + width + "," + (height - bottom) + " L0," + (height - bottom) + " Z";
   const ticks = [];
   for (let i = 0; i < series.length; i++) {
-    if (series.length <= 7 || i % Math.ceil(series.length / 6) === 0 || i === series.length - 1) ticks.push(i);
+    if (series.length <= (mobile ? 3 : 7) || i % Math.ceil(series.length / (mobile ? 3 : 6)) === 0 || i === series.length - 1) ticks.push(i);
   }
   let circles = "";
   for (let i = 0; i < series.length; i++) {
@@ -100,13 +101,13 @@ export function chart(series, metric, metricLabel) {
     const text = chartPointLabel(series[i]).replace(" UTC", "");
     tickLabels += '<text x="' + xs[i] + '" y="' + (height - 7) + '" text-anchor="' + anchor + '">' + escapeHtml(text) + "</text>";
   }
-  return '<svg class="chart" viewBox="0 0 ' + width + " " + height + '" role="img" aria-labelledby="chart-title chart-desc">' +
-    '<title id="chart-title">' + escapeHtml(metricLabel) + " over the selected period</title>" +
-    '<desc id="chart-desc">A line chart with a peak of ' + fmtInt(max) + " " + escapeHtml(metricLabel.toLowerCase()) + " in one interval.</desc>" +
-    '<defs><linearGradient id="area" x1="0" x2="0" y1="0" y2="1"><stop stop-color="currentColor" stop-opacity=".16"/>' +
+  return '<svg class="chart ' + (mobile ? 'chart-mobile' : 'chart-desktop') + '" viewBox="0 0 ' + width + " " + height + '" role="img" aria-labelledby="chart-title' + suffix + ' chart-desc' + suffix + '">' +
+    '<title id="chart-title' + suffix + '">' + escapeHtml(metricLabel) + " over the selected period</title>" +
+    '<desc id="chart-desc' + suffix + '">A line chart with a peak of ' + fmtInt(max) + " " + escapeHtml(metricLabel.toLowerCase()) + " in one interval.</desc>" +
+    '<defs><linearGradient id="area' + suffix + '" x1="0" x2="0" y1="0" y2="1"><stop stop-color="currentColor" stop-opacity=".16"/>' +
     '<stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>' +
     '<g class="grid" aria-hidden="true"><path d="M0 ' + top + "H" + width + "M0 " + (height - bottom + top) / 2 + "H" + width + "M0 " + (height - bottom) + 'H' + width + '"/></g>' +
-    '<path d="' + area + '" fill="url(#area)" aria-hidden="true"/>' +
+    '<path d="' + area + '" fill="url(#area' + suffix + ')" aria-hidden="true"/>' +
     '<path d="' + line + '" fill="none" stroke="currentColor" stroke-width="2" vector-effect="non-scaling-stroke" aria-hidden="true"/>' +
     circles + tickLabels + "</svg>";
 }

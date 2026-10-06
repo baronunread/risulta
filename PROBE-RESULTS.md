@@ -178,3 +178,36 @@ follow-ups and
 ## Notes
 
 - `dist/` is gitignored; the committed surface is `sproutboat.jsonc`, `src/`, `public/`, `tests/`, `seed.sh`, `verify.sh`, `README.md`, this file.
+
+## 2026-10-06: Sproutboat 0.15.0 upgrade
+
+Updated both `sproutboat` and the explicitly declared
+`@sproutboat/cli-darwin-arm64` from 0.11.11 to 0.15.0, the latest npm
+release when checked. Regenerated `bun.lock` with Bun 1.4.1.
+
+- Frozen-lockfile installation, lock consistency, lint, unit tests and
+  `sproutboat check` passed. Civil-date tests cover 2,011 cases; encoding
+  tests now cover Unicode normalization for CSV, including supplementary
+  characters and byte-shaped input.
+- Standalone linux-x86_64 and native darwin-arm64 builds succeeded, about
+  5.3 MB and 4.5 MB respectively. Linux was cross-compiled on macOS;
+  integration checks ran against the native macOS executable.
+- `seed.sh` passed against fresh scratch state. `verify.sh` passed with
+  **88 checks, zero failures** in each of the untrusted and trusted proxy
+  configurations, using separate fresh data directories. This includes
+  Unicode CSV, authentication, password changes, H1 verification, Bun
+  scrypt migration, site isolation, reports, goals/funnels, throttling,
+  metrics, assets and online backups.
+- Two compatibility changes were necessary. `startsWith("h1$")` returned
+  false for a SQLite-loaded hash whose slice was `h1$`; password-format
+  detection now compares explicit slices. The output transport now
+  UTF-8-encodes CSV strings, so CSV normalizes byte-shaped strings to
+  Unicode instead of manually pre-encoding bytes.
+- Original date, async-return and avatar workarounds remain. Upstream
+  issue closure is not a substitute for checking their original repros.
+
+No production data, schema, deployed service or GitHub issue was changed.
+
+For the controlled 0.11.11 versus 0.15.0 native performance comparison,
+including raw samples and a reproducible benchmark, see
+[performance/2026-10-06-cli-comparison](performance/2026-10-06-cli-comparison/README.md).

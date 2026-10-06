@@ -1,0 +1,246 @@
+[
+  {
+    "path": "/",
+    "width": 1440,
+    "scroll": 1440,
+    "heading": "Your websites",
+    "cards": [
+      204,
+      204,
+      204,
+      204,
+      204,
+      204,
+      204,
+      204,
+      204,
+      204
+    ],
+    "overflow": [],
+    "page": "home"
+  },
+  {
+    "path": "/sites/1",
+    "width": 1440,
+    "scroll": 1440,
+    "heading": "Overview",
+    "cards": [],
+    "overflow": [],
+    "page": "overview"
+  },
+  {
+    "path": "/sites/1/reports",
+    "width": 1440,
+    "scroll": 1440,
+    "heading": "Full report",
+    "cards": [],
+    "overflow": [],
+    "page": "reports"
+  },
+  {
+    "path": "/sites/1/reports/journeys",
+    "width": 1440,
+    "scroll": 1440,
+    "heading": "Visitor journeys",
+    "cards": [],
+    "overflow": [],
+    "page": "journeys"
+  },
+  {
+    "path": "/sites/1/conversions",
+    "width": 1440,
+    "scroll": 1440,
+    "heading": "Conversions",
+    "cards": [],
+    "overflow": [],
+    "page": "conversions"
+  },
+  {
+    "path": "/sites/1/settings",
+    "width": 1440,
+    "scroll": 1440,
+    "heading": "Website settings",
+    "cards": [],
+    "overflow": [],
+    "page": "settings"
+  },
+  {
+    "path": "/users",
+    "width": 1440,
+    "scroll": 1440,
+    "heading": "Users",
+    "cards": [],
+    "overflow": [],
+    "page": "users"
+  },
+  {
+    "path": "/account",
+    "width": 1440,
+    "scroll": 1440,
+    "heading": "Account settings",
+    "cards": [],
+    "overflow": [],
+    "page": "account"
+  },
+  {
+    "path": "/backups",
+    "width": 1440,
+    "scroll": 1440,
+    "heading": "Backups",
+    "cards": [],
+    "overflow": [],
+    "page": "backups"
+  },
+  {
+    "path": "/sites/new",
+    "width": 1440,
+    "scroll": 1440,
+    "heading": "Add a website",
+    "cards": [],
+    "overflow": [],
+    "page": "new-site"
+  },
+  {
+    "path": "/",
+    "width": 320,
+    "scroll": 320,
+    "heading": "Your websites",
+    "cards": [
+      204,
+      204,
+      204,
+      204,
+      204,
+      204,
+      204,
+      204,
+      204,
+      204
+    ],
+    "overflow": [],
+    "page": "home"
+  },
+  {
+    "path": "/sites/1",
+    "width": 320,
+    "scroll": 320,
+    "heading": "Overview",
+    "cards": [],
+    "overflow": [
+      {
+        "tag": "FORM",
+        "cls": "range-form"
+      },
+      {
+        "tag": "LABEL",
+        "cls": "compact-field"
+      },
+      {
+        "tag": "SPAN",
+        "cls": ""
+      },
+      {
+        "tag": "INPUT",
+        "cls": ""
+      },
+      {
+        "tag": "LABEL",
+        "cls": "compact-field"
+      },
+      {
+        "tag": "SPAN",
+        "cls": ""
+      },
+      {
+        "tag": "INPUT",
+        "cls": ""
+      },
+      {
+        "tag": "BUTTON",
+        "cls": "button secondary"
+      }
+    ],
+    "page": "overview"
+  },
+  {
+    "path": "/sites/1/reports",
+    "width": 320,
+    "scroll": 320,
+    "heading": "Full report",
+    "cards": [],
+    "overflow": [
+      {
+        "tag": "A",
+        "cls": ""
+      },
+      {
+        "tag": "A",
+        "cls": ""
+      }
+    ],
+    "page": "reports"
+  },
+  {
+    "path": "/sites/1/reports/journeys",
+    "width": 320,
+    "scroll": 320,
+    "heading": "Visitor journeys",
+    "cards": [],
+    "overflow": [],
+    "page": "journeys"
+  },
+  {
+    "path": "/sites/1/conversions",
+    "width": 320,
+    "scroll": 320,
+    "heading": "Conversions",
+    "cards": [],
+    "overflow": [],
+    "page": "conversions"
+  },
+  {
+    "path": "/sites/1/settings",
+    "width": 320,
+    "scroll": 320,
+    "heading": "Website settings",
+    "cards": [],
+    "overflow": [],
+    "page": "settings"
+  },
+  {
+    "path": "/users",
+    "width": 320,
+    "scroll": 320,
+    "heading": "Users",
+    "cards": [],
+    "overflow": [],
+    "page": "users"
+  },
+  {
+    "path": "/account",
+    "width": 320,
+    "scroll": 320,
+    "heading": "Account settings",
+    "cards": [],
+    "overflow": [],
+    "page": "account"
+  },
+  {
+    "path": "/backups",
+    "width": 320,
+    "scroll": 320,
+    "heading": "Backups",
+    "cards": [],
+    "overflow": [],
+    "page": "backups"
+  },
+  {
+    "path": "/sites/new",
+    "width": 320,
+    "scroll": 320,
+    "heading": "Add a website",
+    "cards": [],
+    "overflow": [],
+    "page": "new-site"
+  }
+]

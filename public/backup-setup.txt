@@ -1,0 +1,30 @@
+Risulta scheduled backups
+
+1. Copy deploy/backup-runner.py to /usr/local/lib/risulta/backup-runner.py.
+2. Copy deploy/risulta-backup.service and deploy/risulta-backup.timer to /etc/systemd/system/.
+3. If your data directory is custom, update ReadWritePaths in the service to match SB_DATA_DIR.
+4. Run: sudo systemctl daemon-reload
+5. Run: sudo systemctl enable --now risulta-backup.timer
+6. Choose a schedule, UTC time and retention in Backups. The connected status updates after the next runner check.
+
+Cron alternative (run as the Risulta service user):
+* * * * * /usr/bin/python3 /usr/local/lib/risulta/backup-runner.py --data-dir /var/lib/risulta-sprout
+
+The runner makes a consistent SQLite snapshot without stopping the app,
+checks database integrity, and keeps only the configured number of scheduled snapshots.
+Manual snapshots are never removed by retention. Weekly backups run on Mondays.
+If a daily backup is missed while the runner is stopped, it runs on the next check
+on that day after the configured time. The runner uses a lock to prevent overlap.
+
+Local preview:
+python3 deploy/backup-runner.py --data-dir /tmp/risulta-local-preview-20261006 --watch
+
+Backups include account and session data. Store them privately and copy them off-server.
+Environment files and the executable are not included in database snapshots.
+
+Restoration:
+Test the snapshot with PRAGMA integrity_check on a separate SQLite connection first.
+Stop Risulta. Preserve the current DB.sqlite, DB.sqlite-wal and DB.sqlite-shm.
+Move all three out of the database directory before installing the snapshot as DB.sqlite.
+Keep the service account owner and restrictive permissions. Restart and verify login,
+site counts, events and health. Practice this on a separate instance first.

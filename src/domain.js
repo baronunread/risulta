@@ -75,7 +75,7 @@ export function parseRange(searchParams, now) {
   }
   const period = searchParams.get("period") || "7";
   const days = period === "1" ? 1 : period === "30" ? 30 : 7;
-  return { since: now - days * 86400, until: now + 1, label: days + "d", days, from: "", to: "" };
+  return { since: (Math.floor(now / 86400) - days + 1) * 86400, until: now + 1, label: days + "d", days, from: "", to: "" };
 }
 
 export function rangeDays(range) {

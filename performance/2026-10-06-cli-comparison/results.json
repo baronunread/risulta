@@ -1,0 +1,290 @@
+[
+  {
+    "executable": "risulta-sprout-0.11.11-darwin-arm64",
+    "binary_bytes": 4935016,
+    "login_ms": 75.64,
+    "dashboard_1000_events_ms": {
+      "p50": 4.38,
+      "p95": 5.55
+    },
+    "concurrency": 1,
+    "duration_seconds": 5,
+    "completed": 13179,
+    "requests_per_second": 2636,
+    "latency_ms": {
+      "p50": 0.24,
+      "p95": 0.97,
+      "p99": 1.93
+    },
+    "rss_mb": 66.6,
+    "startup_ms": 296,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 491,
+    "cli_version": "0.11.11",
+    "repeat": 1
+  },
+  {
+    "executable": "risulta-sprout-0.15.0-darwin-arm64",
+    "binary_bytes": 4459440,
+    "login_ms": 73,
+    "dashboard_1000_events_ms": {
+      "p50": 4.05,
+      "p95": 4.83
+    },
+    "concurrency": 1,
+    "duration_seconds": 5,
+    "completed": 17818,
+    "requests_per_second": 3564,
+    "latency_ms": {
+      "p50": 0.22,
+      "p95": 0.49,
+      "p99": 1.21
+    },
+    "rss_mb": 28.4,
+    "startup_ms": 93,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 486,
+    "cli_version": "0.15.0",
+    "repeat": 1
+  },
+  {
+    "executable": "risulta-sprout-0.15.0-darwin-arm64",
+    "binary_bytes": 4459440,
+    "login_ms": 73.67,
+    "dashboard_1000_events_ms": {
+      "p50": 4.04,
+      "p95": 4.83
+    },
+    "concurrency": 1,
+    "duration_seconds": 5,
+    "completed": 25888,
+    "requests_per_second": 5177,
+    "latency_ms": {
+      "p50": 0.16,
+      "p95": 0.26,
+      "p99": 0.7
+    },
+    "rss_mb": 18,
+    "startup_ms": 92,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 487,
+    "cli_version": "0.15.0",
+    "repeat": 2
+  },
+  {
+    "executable": "risulta-sprout-0.11.11-darwin-arm64",
+    "binary_bytes": 4935016,
+    "login_ms": 74.93,
+    "dashboard_1000_events_ms": {
+      "p50": 4.23,
+      "p95": 5.4
+    },
+    "concurrency": 1,
+    "duration_seconds": 5,
+    "completed": 15376,
+    "requests_per_second": 3075,
+    "latency_ms": {
+      "p50": 0.22,
+      "p95": 0.75,
+      "p99": 1.55
+    },
+    "rss_mb": 66.6,
+    "startup_ms": 96,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 487,
+    "cli_version": "0.11.11",
+    "repeat": 2
+  },
+  {
+    "executable": "risulta-sprout-0.11.11-darwin-arm64",
+    "binary_bytes": 4935016,
+    "login_ms": 74.65,
+    "dashboard_1000_events_ms": {
+      "p50": 4.54,
+      "p95": 5.5
+    },
+    "concurrency": 1,
+    "duration_seconds": 5,
+    "completed": 14844,
+    "requests_per_second": 2969,
+    "latency_ms": {
+      "p50": 0.23,
+      "p95": 0.89,
+      "p99": 1.81
+    },
+    "rss_mb": 66.6,
+    "startup_ms": 96,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 488,
+    "cli_version": "0.11.11",
+    "repeat": 3
+  },
+  {
+    "executable": "risulta-sprout-0.15.0-darwin-arm64",
+    "binary_bytes": 4459440,
+    "login_ms": 73.07,
+    "dashboard_1000_events_ms": {
+      "p50": 4.15,
+      "p95": 4.6
+    },
+    "concurrency": 1,
+    "duration_seconds": 5,
+    "completed": 24226,
+    "requests_per_second": 4845,
+    "latency_ms": {
+      "p50": 0.16,
+      "p95": 0.33,
+      "p99": 0.81
+    },
+    "rss_mb": 21.9,
+    "startup_ms": 95,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 489,
+    "cli_version": "0.15.0",
+    "repeat": 3
+  },
+  {
+    "executable": "risulta-sprout-0.11.11-darwin-arm64",
+    "binary_bytes": 4935016,
+    "login_ms": 74.46,
+    "dashboard_1000_events_ms": {
+      "p50": 4.62,
+      "p95": 5.16
+    },
+    "concurrency": 25,
+    "duration_seconds": 5.01,
+    "completed": 23723,
+    "requests_per_second": 4738,
+    "latency_ms": {
+      "p50": 4.34,
+      "p95": 9.31,
+      "p99": 13.83
+    },
+    "rss_mb": 67.7,
+    "startup_ms": 93,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 490,
+    "cli_version": "0.11.11",
+    "repeat": 1
+  },
+  {
+    "executable": "risulta-sprout-0.15.0-darwin-arm64",
+    "binary_bytes": 4459440,
+    "login_ms": 110.55,
+    "dashboard_1000_events_ms": {
+      "p50": 4.71,
+      "p95": 16.21
+    },
+    "concurrency": 25,
+    "duration_seconds": 5,
+    "completed": 30369,
+    "requests_per_second": 6070,
+    "latency_ms": {
+      "p50": 3.26,
+      "p95": 6.78,
+      "p99": 11.41
+    },
+    "rss_mb": 17,
+    "startup_ms": 98,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 486,
+    "cli_version": "0.15.0",
+    "repeat": 1
+  },
+  {
+    "executable": "risulta-sprout-0.15.0-darwin-arm64",
+    "binary_bytes": 4459440,
+    "login_ms": 74.04,
+    "dashboard_1000_events_ms": {
+      "p50": 4.25,
+      "p95": 4.8
+    },
+    "concurrency": 25,
+    "duration_seconds": 5.01,
+    "completed": 29249,
+    "requests_per_second": 5841,
+    "latency_ms": {
+      "p50": 3.5,
+      "p95": 6.99,
+      "p99": 10.92
+    },
+    "rss_mb": 27.8,
+    "startup_ms": 92,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 488,
+    "cli_version": "0.15.0",
+    "repeat": 2
+  },
+  {
+    "executable": "risulta-sprout-0.11.11-darwin-arm64",
+    "binary_bytes": 4935016,
+    "login_ms": 74.78,
+    "dashboard_1000_events_ms": {
+      "p50": 4.3,
+      "p95": 5.44
+    },
+    "concurrency": 25,
+    "duration_seconds": 5.01,
+    "completed": 17676,
+    "requests_per_second": 3530,
+    "latency_ms": {
+      "p50": 4.99,
+      "p95": 16.3,
+      "p99": 47.46
+    },
+    "rss_mb": 66.6,
+    "startup_ms": 96,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 487,
+    "cli_version": "0.11.11",
+    "repeat": 2
+  },
+  {
+    "executable": "risulta-sprout-0.11.11-darwin-arm64",
+    "binary_bytes": 4935016,
+    "login_ms": 77.73,
+    "dashboard_1000_events_ms": {
+      "p50": 5.04,
+      "p95": 5.57
+    },
+    "concurrency": 25,
+    "duration_seconds": 5.01,
+    "completed": 20678,
+    "requests_per_second": 4128,
+    "latency_ms": {
+      "p50": 5.3,
+      "p95": 10.06,
+      "p99": 16.05
+    },
+    "rss_mb": 67,
+    "startup_ms": 98,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 488,
+    "cli_version": "0.11.11",
+    "repeat": 3
+  },
+  {
+    "executable": "risulta-sprout-0.15.0-darwin-arm64",
+    "binary_bytes": 4459440,
+    "login_ms": 76.6,
+    "dashboard_1000_events_ms": {
+      "p50": 4.87,
+      "p95": 9.56
+    },
+    "concurrency": 25,
+    "duration_seconds": 5,
+    "completed": 25770,
+    "requests_per_second": 5150,
+    "latency_ms": {
+      "p50": 3.85,
+      "p95": 8.36,
+      "p99": 15.24
+    },
+    "rss_mb": 26.5,
+    "startup_ms": 184,
+    "tracker_bytes": 760,
+    "tracker_gzip_bytes": 489,
+    "cli_version": "0.15.0",
+    "repeat": 3
+  }
+]

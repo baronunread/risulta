@@ -9,9 +9,30 @@ DATA_DIR="/var/lib/risulta-sprout"
 SERVICE_FILE="/etc/systemd/system/risulta-sprout.service"
 BACKUP_ROOT="/var/backups/risulta-sprout"
 PORT="${RISULTA_PORT:-}"
+STATE_FILE="$ENV_DIR/release.env"
+channel=""
+version=""
+update_only=0
 
 say() { printf '%s\n' "$*"; }
 fail() { say "Error: $*" >&2; exit 1; }
+usage() {
+  say "Usage: sh install.sh [--update] [--channel stable|nightly] [--version TAG]"
+  say "Stable is the default. Updates reuse the saved channel and settings."
+  say "An exact version applies once and does not change the saved channel."
+}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --update) update_only=1; shift ;;
+    --channel) [ "$#" -ge 2 ] && [ -n "$2" ] || fail "--channel needs stable or nightly."; channel="$2"; shift 2 ;;
+    --version) [ "$#" -ge 2 ] && [ -n "$2" ] || fail "--version needs a release tag."; version="$2"; shift 2 ;;
+    --help|-h) usage; exit 0 ;;
+    *) fail "Unknown option: $1" ;;
+  esac
+done
+case "$channel" in ""|stable|nightly) ;; *) fail "Unknown release channel: $channel" ;; esac
+[ -z "$version" ] || [ -z "$channel" ] || fail "Choose --channel or --version, not both."
+case "$version" in *[!A-Za-z0-9._-]*) fail "Invalid release tag." ;; esac
 step() {
   label="$1"; shift
   log="$tmp_dir/step.log"
@@ -19,7 +40,7 @@ step() {
     "$@" >"$log" 2>&1 & pid=$!
     case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
       *.[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' ;;
-      *) frames='-|/\\' ;;
+      *) frames='-|/' ;;
     esac
     frame_count=$(printf '%s' "$frames" | wc -m | tr -d ' ')
     index=1
@@ -66,7 +87,31 @@ env_quote() {
 saved_setting() {
   key="$1"
   [ -r "$ENV_FILE" ] || return 0
-  sed -n "s/^${key}=\"\(.*\)\"$/\1/p" "$ENV_FILE" | tail -n 1
+  sed -n "s/^${key}=\"\(.*\)\"$/\1/p; s/^${key}=\([^\"].*\)$/\1/p" "$ENV_FILE" | tail -n 1
+}
+release_setting() {
+  [ -r "$STATE_FILE" ] || return 0
+  sed -n "s/^${1}=\"\([^\"]*\)\"$/\1/p" "$STATE_FILE" | tail -n 1
+}
+save_release_state() {
+  install -d -m 0750 "$ENV_DIR"
+  {
+    printf 'CHANNEL="%s"\n' "$selected_channel"
+    printf 'TAG="%s"\n' "$release_tag"
+    printf 'COMMIT="%s"\n' "$release_commit"
+    printf 'REPOSITORY="%s"\n' "$REPOSITORY"
+  } > "$tmp_dir/release.env"
+  install -m 0600 "$tmp_dir/release.env" "$STATE_FILE.new"
+  mv -f "$STATE_FILE.new" "$STATE_FILE"
+}
+wait_healthy() {
+  attempt=0
+  while [ "$attempt" -lt 30 ]; do
+    if systemctl is-active --quiet risulta-sprout && curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then return 0; fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  return 1
 }
 detected_host_proxies() {
   found=""
@@ -110,8 +155,19 @@ caddy_failure() {
 }
 
 [ "$(id -u)" -eq 0 ] || fail "Run this installer as root: curl -fsSL <installer-url> | sudo sh"
-[ -r /dev/tty ] || fail "An interactive terminal is required. Download the script first if needed."
+if [ "$update_only" -eq 0 ]; then
+  [ -r /dev/tty ] || fail "An interactive terminal is required. Download the script first if needed."
+else
+  [ -x "$INSTALL_PATH" ] && [ -r "$ENV_FILE" ] && [ -r "$SERVICE_FILE" ] || fail "--update requires an existing installation."
+  saved_data_dir="$(saved_setting SB_DATA_DIR)"
+  if [ -n "$saved_data_dir" ]; then DATA_DIR="$saved_data_dir"; fi
+  [ -f "$DATA_DIR/d1/DB.sqlite" ] || fail "--update requires an existing Risulta database."
+  PORT="$(saved_setting PORT)"
+  case "$PORT" in ""|*[!0-9]*) fail "The saved PORT is invalid." ;; esac
+  [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || fail "The saved PORT is invalid."
+fi
 command -v curl >/dev/null 2>&1 || fail "curl is required."
+command -v python3 >/dev/null 2>&1 || fail "python3 is required to read GitHub release metadata."
 command -v systemctl >/dev/null 2>&1 || fail "Risulta currently requires a systemd-based Linux server."
 
 case "$(uname -s)" in Linux) ;; *) fail "Only Linux servers are supported by this installer." ;; esac
@@ -128,20 +184,63 @@ say ""
 
 tmp_dir="$(mktemp -d /tmp/risulta-sprout-install.XXXXXX)"
 policy_created=0
+service_stopped=0
+binary_replaced=0
+backup_target=""
 cleanup() {
+  code=$?
+  if [ "$code" -ne 0 ] && [ "$service_stopped" -eq 1 ]; then
+    if [ "$binary_replaced" -eq 0 ]; then
+      systemctl start risulta-sprout || true
+    else
+      systemctl stop risulta-sprout || true
+      say "Update failed. Recovery files: $backup_target" >&2
+      say "Keep the database backup paired with its previous executable when restoring." >&2
+    fi
+  fi
   if [ "$policy_created" -eq 1 ]; then rm -f /usr/sbin/policy-rc.d; fi
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT HUP INT TERM
 
-download_base="https://github.com/$REPOSITORY/releases/latest/download"
-latest_tag="$(curl --proto '=https' --tlsv1.2 -fsSL "https://api.github.com/repos/$REPOSITORY/releases/latest" 2>/dev/null | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-say "Available: ${latest_tag:-latest release}"
+if [ "$update_only" -eq 1 ]; then
+  command -v flock >/dev/null 2>&1 || fail "flock is required for updates. Install the util-linux package."
+  exec 9> "$ENV_DIR/install.lock"
+  flock -n 9 || fail "Another Risulta update is already running."
+fi
+
+selected_channel="${channel:-$(release_setting CHANNEL)}"
+selected_channel="${selected_channel:-stable}"
+case "$selected_channel" in stable|nightly) ;; *) fail "The saved release channel is invalid." ;; esac
+if [ -n "$version" ]; then
+  release_tag="$version"
+elif [ "$selected_channel" = nightly ]; then
+  curl --proto '=https' --tlsv1.2 -fsSL "https://api.github.com/repos/$REPOSITORY/releases?per_page=100" -o "$tmp_dir/releases.json"
+  release_tag="$(python3 -c 'import json,sys; releases=json.load(open(sys.argv[1])); candidates=[r for r in releases if not r.get("draft") and r.get("prerelease") and str(r.get("tag_name", "")).startswith("nightly-")]; candidates.sort(key=lambda r: r.get("published_at") or "", reverse=True); print(candidates[0]["tag_name"] if candidates else "")' "$tmp_dir/releases.json")"
+else
+  curl --proto '=https' --tlsv1.2 -fsSL "https://api.github.com/repos/$REPOSITORY/releases/latest" -o "$tmp_dir/release.json"
+  release_tag="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert not r.get("draft") and not r.get("prerelease"); print(r["tag_name"])' "$tmp_dir/release.json")"
+fi
+case "$release_tag" in ""|*[!A-Za-z0-9._-]*) fail "No valid release found for $selected_channel." ;; esac
+download_base="https://github.com/$REPOSITORY/releases/download/$release_tag"
+release_commit="unknown"
+if curl --proto '=https' --tlsv1.2 -fsSL "$download_base/release.json" -o "$tmp_dir/release.json" 2>/dev/null; then
+  metadata_tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag"])' "$tmp_dir/release.json")"
+  release_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$tmp_dir/release.json")"
+  [ "$metadata_tag" = "$release_tag" ] || fail "Release metadata tag mismatch."
+  case "$release_commit" in ""|*[!a-f0-9]*) fail "Invalid release commit." ;; esac
+  [ "${#release_commit}" -eq 40 ] || fail "Invalid release commit length."
+else
+  case "$release_tag" in nightly-*) fail "Nightly release metadata is missing." ;; esac
+fi
+say "Installed: $(release_setting TAG)"
+say "Target: $release_tag ($release_commit), channel $selected_channel"
 
 say ""
 step "Downloading checksum" curl --proto '=https' --tlsv1.2 -fsSL "$download_base/$artifact.sha256" -o "$tmp_dir/$artifact.sha256"
 expected_hash="$(awk '{print $1}' "$tmp_dir/$artifact.sha256")"
-[ -n "$expected_hash" ] || fail "The checksum file is empty. Try again later."
+case "$expected_hash" in ""|*[!a-fA-F0-9]*) fail "The checksum file is invalid." ;; esac
+[ "${#expected_hash}" -eq 64 ] || fail "The checksum file is invalid."
 installed_hash=""
 if [ -x "$INSTALL_PATH" ]; then
   if command -v sha256sum >/dev/null 2>&1; then
@@ -151,7 +250,50 @@ if [ -x "$INSTALL_PATH" ]; then
   fi
 fi
 if [ -n "$installed_hash" ] && [ "$installed_hash" = "$expected_hash" ]; then
+  save_release_state
   say "Risulta is up to date."
+  exit 0
+fi
+
+download_binary() {
+  step "Downloading $artifact" curl --proto '=https' --tlsv1.2 -fsSL "$download_base/$artifact" -o "$tmp_dir/$artifact"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual_hash="$(sha256sum "$tmp_dir/$artifact" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual_hash="$(shasum -a 256 "$tmp_dir/$artifact" | awk '{print $1}')"
+  else
+    fail "sha256sum or shasum is required to verify the download."
+  fi
+  [ "$actual_hash" = "$expected_hash" ] || fail "The downloaded binary failed checksum verification."
+  say "Checksum verified"
+}
+
+if [ "$update_only" -eq 1 ]; then
+  download_binary
+  install -d -m 0750 "$BACKUP_ROOT"
+  backup_target="$(mktemp -d "$BACKUP_ROOT/pre-update-$(date +%F-%H%M%S)-XXXXXX")"
+  install -m 0755 "$INSTALL_PATH" "$backup_target/risulta-sprout"
+  install -m 0600 "$ENV_FILE" "$backup_target/risulta-sprout.env"
+  if [ -r "$STATE_FILE" ]; then install -m 0600 "$STATE_FILE" "$backup_target/release.env"; fi
+  # Stage on the destination filesystem for an atomic executable replacement.
+  install -m 0755 "$tmp_dir/$artifact" "$INSTALL_PATH.new"
+  if systemctl is-active --quiet risulta-sprout; then
+    step "Stopping Risulta for a safety backup" systemctl stop risulta-sprout
+    service_stopped=1
+  fi
+  step "Creating safety backup" cp -a "$DATA_DIR" "$backup_target/data"
+  say "Recovery files: $backup_target"
+  mv -f "$INSTALL_PATH.new" "$INSTALL_PATH"
+  binary_replaced=1
+  systemctl restart risulta-sprout
+  service_stopped=1
+  if ! wait_healthy; then
+    systemctl status risulta-sprout --no-pager >&2 || true
+    fail "Risulta did not become healthy. Review: journalctl -u risulta-sprout"
+  fi
+  save_release_state
+  service_stopped=0
+  say "Updated to $release_tag. Dashboard: $(saved_setting RISULTA_BASE_URL)"
   exit 0
 fi
 
@@ -175,7 +317,7 @@ esac
 saved_domain=""
 case "$saved_base_url" in
   https://*) saved_domain="${saved_base_url#https://}" ;;
-  http://*) saved_domain="${saved_base_url#http://}"; saved_domain="${saved_domain%:$PORT}" ;;
+  http://*) saved_domain="${saved_base_url#http://}"; saved_domain="${saved_domain%:"$PORT"}" ;;
 esac
 
 reuse_settings=0
@@ -233,28 +375,17 @@ case "$proxy_mode" in
 esac
 
 say ""
-step "Downloading $artifact" curl --proto '=https' --tlsv1.2 -fsSL "$download_base/$artifact" -o "$tmp_dir/$artifact"
-(
-  cd "$tmp_dir"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum -c "$artifact.sha256"
-  elif command -v shasum >/dev/null 2>&1; then
-    expected="$(awk '{print $1}' "$artifact.sha256")"
-    actual="$(shasum -a 256 "$artifact" | awk '{print $1}')"
-    [ "$expected" = "$actual" ] || fail "The downloaded binary failed checksum verification."
-  else
-    fail "sha256sum or shasum is required to verify the download."
-  fi
-)
-say "✓ Checksum verified"
+download_binary
 
 if [ "$fresh_install" -eq 0 ]; then
   install -d -m 0750 "$BACKUP_ROOT"
   backup_target="$BACKUP_ROOT/pre-update-$(date +%F-%H%M%S)"
   if systemctl is-active --quiet risulta-sprout 2>/dev/null; then
     step "Stopping Risulta for a safety backup" systemctl stop risulta-sprout
+    service_stopped=1
   fi
   step "Creating safety backup" cp -r "$DATA_DIR" "$backup_target"
+  if [ -x "$INSTALL_PATH" ]; then install -m 0755 "$INSTALL_PATH" "$backup_target/previous-executable"; fi
   say "Safety backup at $backup_target"
 fi
 
@@ -262,8 +393,9 @@ if ! id risulta-sprout >/dev/null 2>&1; then
   useradd --system --home-dir "$DATA_DIR" --shell /usr/sbin/nologin risulta-sprout
 fi
 install -d -m 0750 -o risulta-sprout -g risulta-sprout "$DATA_DIR" "$ENV_DIR"
-install -m 0755 "$tmp_dir/$artifact" "$tmp_dir/risulta-sprout.new"
-mv -f "$tmp_dir/risulta-sprout.new" "$INSTALL_PATH"
+install -m 0755 "$tmp_dir/$artifact" "$INSTALL_PATH.new"
+mv -f "$INSTALL_PATH.new" "$INSTALL_PATH"
+binary_replaced=1
 
 previous_umask="$(umask)"
 umask 077
@@ -296,6 +428,7 @@ Wants=network-online.target
 Type=simple
 User=risulta-sprout
 Group=risulta-sprout
+UMask=0077
 EnvironmentFile=/etc/risulta-sprout/risulta-sprout.env
 ExecStart=/usr/local/bin/risulta-sprout
 Restart=on-failure
@@ -388,6 +521,8 @@ fi
 
 say ""
 say "Risulta is ready."
+save_release_state
+service_stopped=0
 say "Dashboard: $base_url"
 case "$proxy_mode" in
   caddy)

@@ -1,8 +1,7 @@
-// Dev-only checks for the ASCII-safe output encoders (run with bun;
-// never bundled into the sprout). The runtime emits Latin-1-range
-// strings as raw bytes, so HTML escapes to entities, JSON to \uXXXX,
-// and CSV through manual UTF-8 encoding.
-import { asciiJson, escapeHtml, utf8Bytes, utf8Encode } from "../src/util.js";
+// Dev-only checks for output encoders (run with bun; never bundled into
+// the sprout). HTML uses entities, JSON uses \uXXXX, and CSV normalizes
+// byte-shaped strings before the transport encodes UTF-8.
+import { asciiJson, escapeHtml, unicodeText, utf8Bytes, utf8Encode } from "../src/util.js";
 import assert from "node:assert/strict";
 
 // escapeHtml: markup chars plus every code point >= 128 as entities.
@@ -63,4 +62,11 @@ assert.deepEqual(utf8Bytes("ABC"), [65, 66, 67]);
 assert.deepEqual(utf8Bytes("Caf\xc3\xa9"), [67, 97, 102, 195, 169]);
 assert.deepEqual(utf8Bytes("Café"), [67, 97, 102, 195, 169]);
 
-console.log("encoding OK (escapeHtml, asciiJson, utf8Encode)");
+for (const text of texts) {
+  assert.equal(unicodeText(text), text);
+  assert.equal(unicodeText(Buffer.from(text, "utf8").toString("latin1")), text);
+}
+assert.equal(unicodeText("\xed\xa0\xbd\xed\xb8\x80"), "😀");
+assert.equal(unicodeText("a\ud800b"), "a\ud800b");
+
+console.log("encoding OK (escapeHtml, asciiJson, utf8Encode, unicodeText)");

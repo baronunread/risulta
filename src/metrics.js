@@ -71,5 +71,7 @@ export function safeRoute(path) {
   if (/^\/sites\/\d+\/partials\/live$/.test(path)) return "/sites/:id/partials/live";
   if (/^\/sites\/\d+$/.test(path)) return "/sites/:id";
   if (/^\/api\/users\/\d+\/delete$/.test(path)) return "/api/users/:id/delete";
-  return path;
+  if (/^\/api\/sites\/\d+\/read-keys(?:\/\d+\/revoke)?$/.test(path)) return "/api/sites/:id/read-keys";
+  // Unknown paths may contain credentials accidentally supplied in a URL.
+  return "other";
 }

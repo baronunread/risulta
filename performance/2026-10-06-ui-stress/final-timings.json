@@ -1,0 +1,42 @@
+{
+  "/": {
+    "requests_ms": [
+      312.9,
+      307.4,
+      311.8,
+      308.6,
+      306.9
+    ],
+    "median_ms": 308.6
+  },
+  "/sites/1?period=30": {
+    "requests_ms": [
+      1158.9,
+      1038.4,
+      1431.6,
+      1361.5,
+      1080.2
+    ],
+    "median_ms": 1158.9
+  },
+  "/sites/1/partials/live?period=30&metric=visits": {
+    "requests_ms": [
+      1143.3,
+      1083.9,
+      1466.3,
+      1386.3,
+      1043.0
+    ],
+    "median_ms": 1143.3
+  },
+  "/api/sites/1/stats?period=30": {
+    "requests_ms": [
+      2307.1,
+      2814.5,
+      2250.5,
+      2557.2,
+      2351.3
+    ],
+    "median_ms": 2351.3
+  }
+}

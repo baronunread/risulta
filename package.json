@@ -6,7 +6,7 @@
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "lint": "oxlint .",
-    "test": "bun tests/daystring-test.mjs && bun tests/encoding-test.mjs",
+    "test": "bun tests/daystring-test.mjs && bun tests/encoding-test.mjs && bun tests/backup-ui-test.mjs && bun tests/journeys-test.mjs && bun tests/visits-test.mjs && bun tests/home-test.mjs && bun tests/chart-range-test.mjs && bun tests/read-api-test.mjs && python3 tests/backup-schedule-test.py && python3 tests/installer-test.py",
     "check": "sproutboat check",
     "check:lock": "bun scripts/check-lock.mjs",
     "dev": "sproutboat dev --port 8099",
@@ -16,11 +16,10 @@
   "devDependencies": {
     "@oxlint/plugins": "1.80.0",
     "oxlint": "1.80.0",
-    "sproutboat": "^0.11.11",
+    "sproutboat": "^0.15.0",
     "style-doctor": "^0.3.0"
   },
   "dependencies": {
-    "@sproutboat/cli-darwin-arm64": "^0.11.11",
     "blobatar": "^2.5.0",
     "cookie": "^2.0.1",
     "hono": "^4.13.7",

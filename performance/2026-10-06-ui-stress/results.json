@@ -1,0 +1,78 @@
+{
+  "events": 1001005,
+  "database_bytes": 412008448,
+  "overview": [
+    {
+      "path": "/sites/1?period=30",
+      "requests_ms": [
+        2504.2,
+        2349.4,
+        2433.8
+      ],
+      "median_ms": 2433.8
+    },
+    {
+      "path": "/sites/1/partials/live?period=30&metric=visitors",
+      "requests_ms": [
+        1966.5,
+        2269.0,
+        2155.0
+      ],
+      "median_ms": 2155.0
+    }
+  ],
+  "site_stats": [
+    {
+      "period": 1,
+      "summary": {
+        "pageviews": 30510,
+        "visitors": 11355,
+        "visits": 12355
+      },
+      "requests_ms": [
+        1509.6,
+        1758.1,
+        2687.5
+      ],
+      "median_ms": 1758.1
+    },
+    {
+      "period": 7,
+      "summary": {
+        "pageviews": 39386,
+        "visitors": 14771,
+        "visits": 15771
+      },
+      "requests_ms": [
+        3219.2,
+        2042.9,
+        2011.0
+      ],
+      "median_ms": 2042.9
+    },
+    {
+      "period": 30,
+      "summary": {
+        "pageviews": 74335,
+        "visitors": 28210,
+        "visits": 29210
+      },
+      "requests_ms": [
+        3609.4,
+        5188.1,
+        3595.7
+      ],
+      "median_ms": 3609.4
+    }
+  ],
+  "backup": {
+    "bytes": 402604032,
+    "duration_ms": 6448.6,
+    "restored_events": 1001005
+  },
+  "limits": {
+    "report": 100,
+    "journey_events": 10000,
+    "journeys_truncated": true
+  }
+}

@@ -1,10 +1,11 @@
+import { READ_KEYS_SCHEMA } from "./read-api.js";
 // D1 repository: schema, site scoping, visitor identities, analytics.
 // Single logical D1 instead of one SQLite file per site: every site-owned
 // row carries site_id and every query scopes on it. Hot-path caches mirror
 // the Bun app's per-process stores; public keys are immutable so the
 // miss-fill site cache is exactly coherent.
 import { bytesToHex, hashPassword, normalizeEmail, randomHex } from "./auth.js";
-import { dayStringFromMs, utf8Bytes, utf8Encode } from "./util.js";
+import { dayStringFromMs, unicodeText, utf8Bytes } from "./util.js";
 
 // Daily salts cached per process like the Bun app's SiteStore: the day
 // changes rarely, so the hot path skips three salt queries per event.
@@ -58,7 +59,9 @@ async function ensureSchema(db) {
       "CREATE TABLE IF NOT EXISTS site_users (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('viewer')), PRIMARY KEY (user_id, site_id));" +
       "CREATE TABLE IF NOT EXISTS site_salts (site_id INTEGER NOT NULL, day TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (site_id, day));",
   );
+  db.exec(READ_KEYS_SCHEMA);
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts ON events(site_id, ts);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts_visitor ON events(site_id, ts, visitor);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_visitor_ts ON events(site_id, visitor, ts);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_name_ts ON events(site_id, name, ts);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);");
@@ -164,10 +167,60 @@ export async function visitorId(db, site, request) {
 
 export function siteSummary(db, siteId, since, until) {
   return db.prepare(
-    "WITH scoped AS (SELECT ts, visitor, lag(ts) OVER (PARTITION BY visitor ORDER BY ts) AS prev FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview') " +
-      "SELECT count(*) AS pageviews, count(DISTINCT visitor) AS visitors, " +
-      "coalesce(sum(CASE WHEN prev IS NULL OR ts - prev > 1800 THEN 1 ELSE 0 END), 0) AS visits FROM scoped",
-  ).bind(siteId, since, until).first();
+    "WITH pageviews AS (SELECT ts, visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'), " +
+      "scoped AS (SELECT ts, visitor, date(ts, 'unixepoch') AS day FROM events " +
+      "WHERE site_id = ? AND visitor != '' AND ts >= ? - 1800 AND ts < ?), " +
+      "marked AS (SELECT ts, visitor, day, lag(ts) OVER (PARTITION BY visitor, day ORDER BY ts) AS prev FROM scoped) " +
+      "SELECT (SELECT count(*) FROM pageviews) AS pageviews, " +
+      "(SELECT count(DISTINCT visitor) FROM pageviews) AS visitors, " +
+      "(SELECT count(*) FROM marked WHERE ts >= ? AND ts < ? AND (prev IS NULL OR ts - prev > 1800)) AS visits",
+  ).bind(siteId, since, until, siteId, since, until, since, until).first();
+}
+
+// One session scan supplies the summary and both chart resolutions.
+function sessionPeriods(db, siteId, since, until) {
+  return db.prepare(
+    "WITH scoped AS (SELECT ts, visitor, date(ts, 'unixepoch') AS day FROM events " +
+      "WHERE site_id = ? AND visitor != '' AND ts >= ? - 1800 AND ts < ?), " +
+      "marked AS (SELECT ts, visitor, day, lag(ts) OVER (PARTITION BY visitor, day ORDER BY ts) AS prev FROM scoped) " +
+      "SELECT day, cast(strftime('%H', ts, 'unixepoch') AS INTEGER) AS hour, count(*) AS visits FROM marked " +
+      "WHERE ts >= ? AND ts < ? AND (prev IS NULL OR ts - prev > 1800) GROUP BY day, hour ORDER BY day, hour",
+  ).bind(siteId, since, until, since, until).all().results;
+}
+
+export function homeOverviews(db, user, now) {
+  const sites = listSitesForUser(db, user);
+  const since = (Math.floor(now / 86400) - 6) * 86400;
+  // Join through authorized sites before aggregating, including for viewers.
+  const scope = user.role === "admin" ? "" : " JOIN site_users ON site_users.site_id = sites.id AND site_users.user_id = ?";
+  const query = db.prepare(
+    "SELECT events.site_id, date(events.ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT events.visitor) AS visitors " +
+      "FROM sites" + scope + " JOIN events ON events.site_id = sites.id " +
+      "WHERE events.ts >= ? AND events.ts < ? AND events.name = 'pageview' GROUP BY events.site_id, day ORDER BY events.site_id, day",
+  );
+  const rows = (user.role === "admin" ? query.bind(since, now + 1) : query.bind(user.user_id, since, now + 1)).all().results;
+  const daysBySite = {};
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!daysBySite[row.site_id]) daysBySite[row.site_id] = {};
+    daysBySite[row.site_id][row.day] = row;
+  }
+  const result = [];
+  for (let i = 0; i < sites.length; i++) {
+    const site = sites[i];
+    const overview = { visitors: 0, pageviews: 0, byDay: [] };
+    for (let day = 0; day < 7; day++) {
+      const label = dayStringFromMs((since + day * 86400) * 1000);
+      const row = (daysBySite[site.id] || {})[label];
+      const visitors = row ? Number(row.visitors) : 0;
+      const pageviews = row ? Number(row.pageviews) : 0;
+      overview.byDay.push({ day: label, visitors, pageviews });
+      overview.visitors += visitors;
+      overview.pageviews += pageviews;
+    }
+    result.push({ id: site.id, name: site.name, domain: site.domain, overview });
+  }
+  return result;
 }
 
 export function siteCurrent(db, siteId) {
@@ -283,27 +336,51 @@ export function siteFunnels(db, siteId, since, until) {
   return { funnels: out, truncated };
 }
 
-export function siteAnalytics(db, site, since, until) {
-  const summary = siteSummary(db, site.id, since, until);
+export function siteAnalytics(db, site, since, until, includeConversions) {
+  const summary = db.prepare(
+    "SELECT count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
+      "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'",
+  ).bind(site.id, since, until).first();
+  summary.visits = 0;
+  const sessions = sessionPeriods(db, site.id, since, until);
+  const byDay = db.prepare(
+    "SELECT date(ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
+      "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY day ORDER BY day",
+  ).bind(site.id, since, until).all().results;
+  const byHour = db.prepare(
+    "SELECT cast(strftime('%H', ts, 'unixepoch') AS INTEGER) AS hour, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
+      "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY hour ORDER BY hour",
+  ).bind(site.id, since, until).all().results;
+  const days = {};
+  const hours = {};
+  for (let i = 0; i < byDay.length; i++) { byDay[i].visits = 0; days[byDay[i].day] = byDay[i]; }
+  for (let i = 0; i < byHour.length; i++) { byHour[i].visits = 0; hours[byHour[i].hour] = byHour[i]; }
+  for (let i = 0; i < sessions.length; i++) {
+    const row = sessions[i];
+    const visits = Number(row.visits);
+    if (!days[row.day]) { days[row.day] = { day: row.day, pageviews: 0, visitors: 0, visits: 0 }; byDay.push(days[row.day]); }
+    if (!hours[row.hour]) { hours[row.hour] = { hour: Number(row.hour), pageviews: 0, visitors: 0, visits: 0 }; byHour.push(hours[row.hour]); }
+    days[row.day].visits += visits;
+    hours[row.hour].visits += visits;
+    summary.visits += visits;
+  }
+  byDay.sort((a, b) => a.day < b.day ? -1 : a.day > b.day ? 1 : 0);
+  byHour.sort((a, b) => a.hour - b.hour);
   const visitors = Number(summary.visitors);
-  const funnelResult = siteFunnels(db, site.id, since, until);
+  const funnelResult = includeConversions === false ? { funnels: [], truncated: false } : siteFunnels(db, site.id, since, until);
   return {
     summary,
     current: siteCurrent(db, site.id),
-    byDay: db.prepare(
-      "WITH scoped AS (SELECT ts, visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview') " +
-        "SELECT date(ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM scoped GROUP BY day ORDER BY day",
-    ).bind(site.id, since, until).all().results,
-    byHour: db.prepare(
-      "WITH scoped AS (SELECT ts, visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview') " +
-        "SELECT cast(strftime('%H', ts, 'unixepoch') AS INTEGER) AS hour, count(*) AS pageviews, count(DISTINCT visitor) AS visitors " +
-        "FROM scoped GROUP BY hour ORDER BY hour",
-    ).bind(site.id, since, until).all().results,
+    byDay,
+    byHour,
     paths: topList(db, site.id, since, until, "path"),
     referrers: topList(db, site.id, since, until, "coalesce(nullif(source,''),'Direct / None')"),
     mediums: topList(db, site.id, since, until, "coalesce(nullif(medium,''),'None')"),
     campaigns: topList(db, site.id, since, until, "coalesce(nullif(campaign,''),'None')"),
-    goals: siteGoals(db, site.id, since, until, visitors),
+    goals: includeConversions === false ? [] : siteGoals(db, site.id, since, until, visitors),
+    hasConversions: includeConversions === false ? Number(db.prepare(
+      "SELECT (SELECT count(*) FROM goals WHERE site_id = ?) + (SELECT count(*) FROM funnels WHERE site_id = ?) AS n",
+    ).bind(site.id, site.id).first().n) > 0 : false,
     funnels: funnelResult.funnels,
     funnelsTruncated: funnelResult.truncated,
   };
@@ -340,8 +417,8 @@ export function siteReport(db, siteId, since, until, dimension, filters, limit, 
   }
   const where = conditions.join(" AND ");
   const ordering = sort === "pageviews" || sort === "value" ? sort : "visitors";
-  const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
-  const boundedOffset = Math.max(0, Math.min(10000, Number(offset) || 0));
+  const boundedLimit = Math.max(1, Math.min(100, Math.floor(Number(limit)) || 50));
+  const boundedOffset = Math.max(0, Math.min(10000, Math.floor(Number(offset)) || 0));
   const grouped =
     "SELECT " + selected.label + " AS label, count(*) AS pageviews, count(DISTINCT visitor) AS visitors, coalesce(sum(value), 0) AS value " +
     "FROM events WHERE " + where + " GROUP BY label";
@@ -366,7 +443,7 @@ export function reportCsv(report) {
     const r = report.rows[i];
     lines.push(csvEscape(r.label) + "," + r.pageviews + "," + r.visitors + "," + csvEscape(r.value));
   }
-  // Manual UTF-8 encoding: the runtime emits Latin-1-range strings as raw
-  // bytes, which would corrupt non-English labels on the wire.
-  return utf8Encode(lines.join("\n") + "\n");
+  // The current standalone transport encodes text as UTF-8. Pre-encoding
+  // here would encode non-English labels twice.
+  return unicodeText(lines.join("\n") + "\n");
 }

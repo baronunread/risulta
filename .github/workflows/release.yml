@@ -3,58 +3,247 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        type: choice
+        options: [stable, nightly]
+        default: stable
+      ref:
+        description: "Stable: existing v tag. Nightly: commit, tag, or branch (blank uses dispatch SHA)."
+        type: string
+        default: ""
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
+
+# Serialize publication and never cancel a run while it owns a draft.
+concurrency:
+  group: risulta-release
+  cancel-in-progress: false
 
 jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      channel: ${{ steps.resolve.outputs.channel }}
+      build: ${{ steps.resolve.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: resolve
+        name: Resolve immutable release identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_REF: ${{ inputs.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="${INPUT_CHANNEL:-stable}"
+          ref="${INPUT_REF:-$GITHUB_SHA}"
+          if [[ "$EVENT" == schedule ]]; then
+            channel=nightly
+            ref=refs/remotes/origin/main
+          fi
+          if [[ "$EVENT" == push ]]; then
+            tag="$GITHUB_REF_NAME"
+          elif [[ "$channel" == stable ]]; then
+            tag="$INPUT_REF"
+          fi
+          if [[ "$channel" == stable ]]; then
+            [[ "$tag" =~ ^v[0-9][A-Za-z0-9._-]*$ ]] || { echo 'Stable dispatch requires an existing v tag in ref.' >&2; exit 1; }
+            sha=$(git rev-parse --verify "refs/tags/$tag^{commit}")
+            if [[ "$EVENT" == push ]]; then
+              [[ "$sha" == "$(git rev-parse --verify "$GITHUB_SHA^{commit}")" ]]
+            fi
+          else
+            [[ "$channel" == nightly ]]
+            sha=$(git rev-parse --verify --end-of-options "$ref^{commit}")
+            tag="nightly-$(date -u +%Y%m%d)-${sha:0:12}"
+          fi
+          build=true
+          # Compare the last published nightly's exact metadata, not a mutable tag.
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" > releases.json
+          latest=$(jq -rs '[.[][] | select(.draft == false and .prerelease == true and (.tag_name | startswith("nightly-")))] | sort_by(.published_at) | reverse | .[0].tag_name // empty' releases.json)
+          if [[ "$EVENT" == schedule && -n "$latest" ]]; then
+            gh release download "$latest" --pattern release.json --dir previous
+            [[ "$(jq -er .commit previous/release.json)" != "$sha" ]] || build=false
+          fi
+          if jq -es --arg tag "$tag" 'any(.[][]; .tag_name == $tag and .draft == false)' releases.json >/dev/null; then
+            build=false
+          fi
+          # Never reuse an existing nightly tag or overwrite a stranded draft.
+          if [[ "$build" == true ]]; then
+            if jq -es --arg tag "$tag" 'any(.[][]; .tag_name == $tag)' releases.json >/dev/null; then
+              echo "A draft already exists for $tag. Review it before retrying." >&2
+              exit 1
+            fi
+            if [[ "$channel" == nightly ]] && git show-ref --verify --quiet "refs/tags/$tag"; then
+              echo "Nightly tag already exists: $tag" >&2
+              exit 1
+            fi
+          fi
+          printf 'sha=%s\ntag=%s\nchannel=%s\nbuild=%s\n' "$sha" "$tag" "$channel" "$build" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: ubuntu-24.04
             artifact: risulta-sprout-linux-x64
+            target: default
+            machine: Advanced Micro Devices X86-64
           - runner: ubuntu-24.04-arm
             artifact: risulta-sprout-linux-arm64
+            target: host
+            machine: AArch64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.1
+      - run: bun run check:lock
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run test
-      - name: Build ${{ matrix.artifact }}
+      - run: bun run check
+      - name: Prepare native ARM musl compiler
+        if: matrix.target == 'host'
         run: |
-          bunx sproutboat build --standalone
-          mv dist/risulta-sprout "${{ matrix.artifact }}"
-      - name: Create checksum
-        run: sha256sum ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
-      - uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: ${{ matrix.artifact }}
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          printf '#!/bin/sh\nexec musl-gcc -static "$@"\n' > "$RUNNER_TEMP/risulta-cc"
+          chmod +x "$RUNNER_TEMP/risulta-cc"
+          echo "CC=$RUNNER_TEMP/risulta-cc" >> "$GITHUB_ENV"
+      - name: Build and verify exact artifact
+        env:
+          ARTIFACT: ${{ matrix.artifact }}
+          BUILD_TARGET: ${{ matrix.target }}
+          ELF_MACHINE: ${{ matrix.machine }}
+        run: |
+          set -euo pipefail
+          if [ "$BUILD_TARGET" = host ]; then
+            bun run build --target host
+          else
+            bun run build
+          fi
+          mv dist/risulta-sprout "$ARTIFACT"
+          readelf -h "$ARTIFACT" | grep -F "$ELF_MACHINE"
+          if readelf -l "$ARTIFACT" | grep -q INTERP; then
+            echo 'Release binaries must be statically linked.' >&2
+            exit 1
+          fi
+          sh scripts/verify-binary.sh "$ARTIFACT"
+          sh -n deploy/install.sh
+          jq -n --arg bun "$(bun --version)" \
+            --arg sproutboat "$(bunx --no-install sproutboat --version)" \
+            --arg runner "$RUNNER_OS/$RUNNER_ARCH" \
+            '{bun: $bun, sproutboat: $sproutboat, runner: $runner}' > "$ARTIFACT.toolchain.json"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: |
             ${{ matrix.artifact }}
-            ${{ matrix.artifact }}.sha256
+            ${{ matrix.artifact }}.toolchain.json
           if-no-files-found: error
+          retention-days: 7
 
   publish:
-    needs: build
+    needs: [resolve, build]
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+      CHANNEL: ${{ needs.resolve.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          path: dist
+          pattern: risulta-sprout-linux-*
+          path: release-assets
           merge-multiple: true
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Package verified assets and metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n deploy/install.sh
+          cp deploy/install.sh release-assets/install.sh
+          cd release-assets
+          test -s risulta-sprout-linux-x64
+          test -s risulta-sprout-linux-arm64
+          jq -n --arg tag "$RELEASE_TAG" --arg commit "$RELEASE_SHA" \
+            --arg channel "$CHANNEL" --arg repository "$GH_REPO" \
+            --slurpfile x64 risulta-sprout-linux-x64.toolchain.json \
+            --slurpfile arm64 risulta-sprout-linux-arm64.toolchain.json \
+            '{tag: $tag, commit: $commit, channel: $channel, repository: $repository,
+              toolchain: {"linux-x64": $x64[0], "linux-arm64": $arm64[0]}}' > release.json
+          rm -- *.toolchain.json
+          for asset in risulta-sprout-linux-x64 risulta-sprout-linux-arm64 install.sh release.json; do
+            sha256sum "$asset" > "$asset.sha256"
+          done
+          sha256sum -c ./*.sha256
+      - uses: actions/attest-build-provenance@v2
         with:
-          generate_release_notes: true
-          files: dist/*
+          subject-path: |
+            release-assets/risulta-sprout-linux-x64
+            release-assets/risulta-sprout-linux-arm64
+            release-assets/install.sh
+            release-assets/release.json
+      - name: Publish complete draft atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$CHANNEL" == stable ]]; then
+            [[ "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" == "$RELEASE_SHA" ]]
+            flags=(--verify-tag --latest)
+          else
+            # A nightly never becomes the stable latest release.
+            flags=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --draft --target "$RELEASE_SHA" --title "$RELEASE_TAG" \
+            --generate-notes "${flags[@]}"
+          # Upload failures leave only a private draft. No asset replacement on retries.
+          gh release view "$RELEASE_TAG" --json assets \
+            --jq '[.assets[].name] | sort' > uploaded.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          expected = sorted(p.name for p in Path("release-assets").iterdir())
+          assert json.loads(Path("uploaded.json").read_text()) == expected, "Incomplete draft assets"
+          PY
+          if [[ "$CHANNEL" == stable ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --latest=false
+          fi
