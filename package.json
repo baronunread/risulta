@@ -16,8 +16,8 @@
     "types": "sproutboat types"
   },
   "devDependencies": {
-    "@oxlint/plugins": "1.80.0",
-    "oxlint": "1.80.0",
+    "@oxlint/plugins": "1.87.0",
+    "oxlint": "1.87.0",
     "sproutboat": "^0.15.0",
     "style-doctor": "^0.3.0",
     "typescript": "^7.0.2"
