@@ -1,3 +1,4 @@
+import { siteSlug } from "./sites.js";
 import { escapeHtml, fmtInt } from "./util.js";
 
 function visitorSparkline(site) {
@@ -37,7 +38,7 @@ export function homeCards(sites) {
   if (!sites.length) return "";
 
   return '<ol class="home-sites">' + sites.map(function (site) {
-    return '<li><a class="home-site-card" href="/sites/' + escapeHtml(site.id) + '">' +
+    return '<li><a class="home-site-card" href="/sites/' + escapeHtml(siteSlug(site)) + '">' +
       '<span class="home-site-identity"><strong class="home-site-name" title="' + escapeHtml(site.name) + '">' + escapeHtml(site.name) + '</strong>' +
       '<span class="home-site-domain" title="' + escapeHtml(site.domain) + '">' + escapeHtml(site.domain) + '</span></span>' +
       '<span class="home-site-arrow" aria-hidden="true">&rarr;</span>' +

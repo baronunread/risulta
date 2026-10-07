@@ -1,3 +1,4 @@
+import { ensureSiteSlugs } from "./sites.js";
 import { READ_KEYS_SCHEMA } from "./read-api.js";
 // D1 repository: schema, site scoping, visitor identities, analytics.
 // Single logical D1 instead of one SQLite file per site: every site-owned
@@ -59,6 +60,7 @@ async function ensureSchema(db) {
       "CREATE TABLE IF NOT EXISTS site_users (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('viewer')), PRIMARY KEY (user_id, site_id));" +
       "CREATE TABLE IF NOT EXISTS site_salts (site_id INTEGER NOT NULL, day TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (site_id, day));",
   );
+  ensureSiteSlugs(db);
   db.exec(READ_KEYS_SCHEMA);
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts ON events(site_id, ts);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts_visitor ON events(site_id, ts, visitor);");
@@ -117,9 +119,10 @@ export function removeUser(db, userId) {
 }
 
 export function getSiteForUser(db, siteId, user) {
-  if (user.role === "admin") return db.prepare("SELECT * FROM sites WHERE id = ?").bind(siteId).first() || null;
+  const column = /^[0-9]+$/.test(String(siteId)) ? "id" : "slug";
+  if (user.role === "admin") return db.prepare("SELECT * FROM sites WHERE " + column + " = ?").bind(siteId).first() || null;
   return db.prepare(
-    "SELECT sites.* FROM sites JOIN site_users ON site_users.site_id = sites.id WHERE sites.id = ? AND site_users.user_id = ?",
+    "SELECT sites.* FROM sites JOIN site_users ON site_users.site_id = sites.id WHERE sites." + column + " = ? AND site_users.user_id = ?",
   ).bind(siteId, user.user_id).first() || null;
 }
 
@@ -219,7 +222,7 @@ export function homeOverviews(db, user, now) {
       overview.visitors += visitors;
       overview.pageviews += pageviews;
     }
-    result.push({ id: site.id, name: site.name, domain: site.domain, overview });
+    result.push({ id: site.id, slug: site.slug, name: site.name, domain: site.domain, overview });
   }
   return result;
 }

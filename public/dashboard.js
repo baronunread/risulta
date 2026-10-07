@@ -34,16 +34,18 @@
     }, 2400);
   }
 
-  // Tracker copy buttons (static install card; never swapped).
-  document.querySelectorAll("[data-copy-code]").forEach(function (button) {
-    button.addEventListener("click", function () {
+  // Tracker copy buttons are outside the live refresh region.
+  document.body.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-copy-code]");
+      if (!button) return;
       var region = button.parentElement.querySelector(".snippet code");
+      var code = button.getAttribute("data-copy-value") || (region && region.textContent);
       var done = function (ok) {
         showToast(ok ? "Copied to clipboard." : "Copy failed.");
       };
-      if (!region) return done(false);
+      if (!code) return done(false);
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(region.textContent).then(function () {
+        navigator.clipboard.writeText(code).then(function () {
           done(true);
         }, function () {
           done(false);
@@ -51,7 +53,6 @@
       } else {
         done(false);
       }
-    });
   });
 
   // Flash messages rendered once after a redirect (e.g. "Profile updated.").
@@ -112,12 +113,17 @@
   // Preserve expanded dashboard sections across live refreshes.
   var disclosures = {};
   document.body.addEventListener("htmx:before:swap", function (event) {
-    if (!event.target || event.target.id !== "live-stats") return;
+    if (!event.target) return;
+    if (event.target.id !== "live-stats") return;
     document.querySelectorAll("#live-stats details[data-disclosure]").forEach(function (detail) {
       disclosures[detail.getAttribute("data-disclosure")] = detail.open;
     });
   });
   document.body.addEventListener("htmx:after:swap", function (event) {
+    if (event.target && event.target.id === "main") {
+      var activeTab = document.querySelector(".site-tabs [aria-current]");
+      if (activeTab) activeTab.focus({ preventScroll: true });
+    }
     if (!event.target || event.target.id !== "live-stats") return;
     document.querySelectorAll("#live-stats details[data-disclosure]").forEach(function (detail) {
       detail.open = disclosures[detail.getAttribute("data-disclosure")] === true;

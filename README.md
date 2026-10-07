@@ -40,6 +40,24 @@ The first admin account comes from `RISULTA_ADMIN_EMAIL` /
 `RISULTA_ADMIN_PASSWORD` in the environment, read once while the user table
 is empty. Open the printed address and sign in.
 
+## Website navigation
+
+Sites have stable, readable dashboard URLs such as `/sites/shop`. The slug is
+assigned from the domain when a site is created or an existing database is
+upgraded. Collisions receive a short suffix (`shop-2`); later display-name or
+domain changes do not rename existing slugs. Numeric dashboard bookmarks
+redirect to the canonical slug. API routes continue to use numeric site IDs.
+
+The site tabs are Overview, Reports, Journeys, Goals and Funnels. Tracker code
+copies directly to the clipboard from the button beside the Overview title. Goals and Funnels each show their
+results and, for administrators, a creation form. Previous settings and
+conversions bookmarks redirect to Goals (funnel validation errors redirect to
+Funnels). Date ranges and visitor filters carry between tabs and form returns.
+
+The schema upgrade adds nullable `sites.slug`, backfills existing sites and
+creates the unique `idx_sites_slug` index. Existing event data, site IDs and
+tracker keys remain unchanged.
+
 ## Read API keys
 
 An administrator can create a read-only key for a site with
