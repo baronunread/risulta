@@ -1,5 +1,5 @@
-import { migrateSchema } from "./migrations.js";
-import { rollupBoundary, rollupTraffic, rollupTop, rollupReport } from "./rollups.js";
+import { migrateSchema } from "./migrations.ts";
+import { rollupBoundary, rollupTraffic, rollupTop, rollupReport } from "./rollups.ts";
 import { READ_KEYS_SCHEMA } from "./read-api.js";
 // D1 repository: schema, site scoping, visitor identities, analytics.
 // Single logical D1 instead of one SQLite file per site: every site-owned

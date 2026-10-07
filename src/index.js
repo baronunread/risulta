@@ -1,5 +1,5 @@
-import { SCHEMA_VERSION } from "./migrations.js";
-import { siteSlug, availableSiteSlug } from "./sites.js";
+import { SCHEMA_VERSION } from "./migrations.ts";
+import { siteSlug, availableSiteSlug } from "./sites.ts";
 import { reportAnalytics, journeyAnalytics, overviewAnalytics, overviewComparison, invalidateOverview, measurementAnalytics } from "./overview.js";
 import { createReadKey, readKeySite } from "./read-api.js";
 import { ensureBackupSchema, backupSettings, backupHistory, backupInput, saveBackupSettings, recordBackup } from "./backups.js";
@@ -76,7 +76,7 @@ import {
 } from "./views.js";
 import { journeyInput, siteJourneys } from "./journeys.js";
 import { avatarFor } from "./avatar.js";
-import { GoalSchema, ProfileSchema, SiteSchema, validate } from "./validation.js";
+import { GoalSchema, ProfileSchema, SiteSchema, validate } from "./validation.ts";
 
 function json(data, status, headers) {
   const responseHeaders = { "content-type": "application/json" };

@@ -4,8 +4,8 @@ import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { migrateSchema } from '../src/migrations.js';
-import { ROLLUP_SCHEMA, rollupBoundary } from '../src/rollups.js';
+import { migrateSchema } from '../src/migrations.ts';
+import { ROLLUP_SCHEMA, rollupBoundary } from '../src/rollups.ts';
 import { dashboardTraffic, dashboardSummary, siteAnalytics, siteSummary, dashboardReport, siteReport } from '../src/store.js';
 
 function adapter(sqlite) {

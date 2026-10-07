@@ -98,3 +98,5 @@ Daily rollups accelerate unfiltered Overview and Reports. Schema upgrades run
 automatically, and releases that include the worker enable its timer through
 the installer. Uncovered or changed days fall back to raw events during
 backfill. See [upgrade and recovery details](docs/migrations-and-rollups.md).
+
+TypeScript migration and validation commands: [docs/typescript.md](docs/typescript.md).

@@ -24,7 +24,11 @@ export const ProfileSchema = v.object({
   email: v.pipe(v.string(), v.check((value) => value.includes("@"), "email-invalid")),
 });
 
-export function validate(schema, input) {
+type ValidationResult<T extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>> =
+  { ok: true; value: v.InferOutput<T> } | { ok: false; code: string };
+
+// eslint-disable-next-line anti-slop/no-unknown-parameters -- This is the schema boundary that parses untrusted input.
+export function validate<T extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(schema: T, input: unknown): ValidationResult<T> {
   const result = v.safeParse(schema, input);
   if (result.success) return { ok: true, value: result.output };
   return { ok: false, code: result.issues[0].message };

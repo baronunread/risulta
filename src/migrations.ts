@@ -1,18 +1,20 @@
-import { ensureSiteSlugs } from "./sites.js";
-import { ROLLUP_SCHEMA } from "./rollups.js";
+import type { Database } from "./types.ts";
+
+import { ensureSiteSlugs } from "./sites.ts";
+import { ROLLUP_SCHEMA } from "./rollups.ts";
 
 export const SCHEMA_VERSION = 2;
 
 // Adopt legacy databases without renumbering sites or rewriting raw events.
-export function migrateSchema(db) {
+export function migrateSchema(db: Database): void {
   db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL);");
-  const latest = Number(db.prepare("SELECT coalesce(max(version), 0) AS version FROM schema_migrations").first().version);
+  const latest = Number(db.prepare("SELECT coalesce(max(version), 0) AS version FROM schema_migrations").first<{ version: number }>()!.version);
   if (latest > SCHEMA_VERSION) throw new Error("This database requires a newer Risulta version.");
   applyMigration(db, 1, "stable site slugs", () => ensureSiteSlugs(db));
   applyMigration(db, 2, "daily analytics rollups", () => db.exec(ROLLUP_SCHEMA));
 }
 
-function applyMigration(db, version, name, apply) {
+function applyMigration(db: Database, version: number, name: string, apply: () => void): void {
   db.exec("BEGIN IMMEDIATE");
   try {
     if (!db.prepare("SELECT version FROM schema_migrations WHERE version = ?").bind(version).first()) {
