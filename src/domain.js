@@ -82,3 +82,11 @@ export function rangeDays(range) {
   if (range.days) return range.days;
   return Math.max(1, Math.round((range.until - range.since) / 86400));
 }
+
+// Traffic is always included; callers can omit unused expensive sections.
+export function statsInput(params) {
+  const raw = params.get("include");
+  const names = raw === null ? ["hourly","acquisition","goals","funnels"] : raw.split(",").map((name) => name.trim());
+  for (const name of names) if (["traffic","hourly","acquisition","goals","funnels"].indexOf(name)<0) return { error: "Unknown stats section" };
+  return { hourly: names.indexOf("hourly")>=0, acquisition: names.indexOf("acquisition")>=0, goals: names.indexOf("goals")>=0, funnels: names.indexOf("funnels")>=0 };
+}

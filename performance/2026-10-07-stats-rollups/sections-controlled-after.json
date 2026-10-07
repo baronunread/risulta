@@ -1,0 +1,32 @@
+{
+  "Traffic live": {
+    "samples_ms": [
+      37.5,
+      37.8,
+      37.5,
+      38.5,
+      37.2
+    ],
+    "median_ms": 37.5
+  },
+  "Traffic closed": {
+    "samples_ms": [
+      8.3,
+      7.8,
+      7.4,
+      7.5,
+      7.2
+    ],
+    "median_ms": 7.5
+  },
+  "Traffic and hourly live": {
+    "samples_ms": [
+      70.5,
+      67.7,
+      68.4,
+      68.1,
+      67.4
+    ],
+    "median_ms": 68.1
+  }
+}

@@ -104,3 +104,5 @@ backfill. See [upgrade and recovery details](docs/migrations-and-rollups.md).
 TypeScript migration and validation commands: [docs/typescript.md](docs/typescript.md).
 
 Stats and acquisition reports cache completed historical results in SQLite for up to 24 hours, surviving restarts. Day/configuration revisions invalidate results on event or goal/funnel changes, including external imports. Live results use a five-second memory cache; current visitor counts remain fresh. Add `fresh=1` to stats/report API requests to bypass caching. See [cache and migration details](docs/migrations-and-rollups.md).
+
+Stats always include traffic totals, current visitors and daily rows. Clients can request just the optional sections they need with `include=traffic`, `include=traffic,hourly`, or a comma-separated combination of `hourly`, `acquisition`, `goals` and `funnels`. Omitting `include` retains the complete existing response. Unknown sections return 400. `fresh=1` also bypasses historical component caching.

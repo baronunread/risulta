@@ -1,5 +1,6 @@
+import { cachedAnalytics } from "./analytics-cache.js";
 import { migrateSchema } from "./migrations.ts";
-import { rollupBoundary, rollupTraffic, rollupTop, rollupReport, rollupHours, rollupGoals } from "./rollups.ts";
+import { rollupBoundary, rollupTraffic, rollupVisitors, rollupTop, rollupReport, rollupHours, rollupGoals } from "./rollups.ts";
 import { READ_KEYS_SCHEMA } from "./read-api.js";
 // D1 repository: schema, site scoping, visitor identities, analytics.
 // Single logical D1 instead of one SQLite file per site: every site-owned
@@ -298,11 +299,33 @@ export const FUNNEL_EVENT_LIMIT = 50000;
 export function siteFunnels(db, siteId, since, until) {
   const funnels = listFunnels(db, siteId);
   if (!funnels.length) return { funnels: [], truncated: false };
-  const selected = "SELECT visitor, ts, name, path FROM events WHERE site_id = ? AND ts >= ? AND ts < ? ORDER BY visitor, ts LIMIT ?";
-  // Keep event sequences inside SQLite instead of transferring the capped stream.
-  const clauses = ["selected AS MATERIALIZED (" + selected + ")", "ranked AS MATERIALIZED (SELECT visitor,name,path,row_number() OVER (ORDER BY visitor,ts) AS position FROM selected)"];
-  const args = [siteId, since, until, FUNNEL_EVENT_LIMIT];
-  const totals = ["SELECT count(*) AS conversions,-1 AS funnel,-1 AS step FROM selected"];
+  const matches = [];
+  const names = [];
+  const matchArgs = [];
+  for (const funnel of funnels) {
+    for (const goal of funnel.steps) {
+      matches.push("(name=?" + (goal.path ? " AND path=?" : "") + ")");
+      matchArgs.push(goal.event_name);
+      if (goal.path) matchArgs.push(goal.path);
+      if (names.indexOf(goal.event_name)<0) names.push(goal.event_name);
+    }
+  }
+  // One SQL snapshot chooses the fast path without racing concurrent inserts.
+  // Below the cap, filtering by indexed names keeps the complete stream.
+  // At the cap, select the ordered raw stream before pruning irrelevant events.
+  const predicate = matches.length ? matches.join(" OR ") : "0";
+  const selected = "SELECT visitor,ts,name,path FROM events WHERE site_id=? AND ts>=? AND ts<? AND (SELECT n FROM counted)<? AND name IN (" +
+    (names.length ? names.map(()=>"?").join(",") : "NULL") + ") AND (" + predicate + ") UNION ALL " +
+    "SELECT * FROM (SELECT visitor,ts,name,path FROM events WHERE site_id=? AND ts>=? AND ts<? AND (SELECT n FROM counted)>=? ORDER BY visitor,ts LIMIT ?) WHERE " + predicate;
+  const args = [siteId,since,until,FUNNEL_EVENT_LIMIT,siteId,since,until,FUNNEL_EVENT_LIMIT];
+  for (const name of names) args.push(name);
+  for (const value of matchArgs) args.push(value);
+  args.push(siteId,since,until,FUNNEL_EVENT_LIMIT,FUNNEL_EVENT_LIMIT);
+  for (const value of matchArgs) args.push(value);
+  const clauses = ["counted AS MATERIALIZED (SELECT count(*) AS n FROM (SELECT 1 FROM events WHERE site_id=? AND ts>=? AND ts<? LIMIT ?))",
+    "selected AS MATERIALIZED (" + selected + ")",
+    "ranked AS MATERIALIZED (SELECT visitor,name,path,row_number() OVER (ORDER BY visitor,ts) AS position FROM selected)"];
+  const totals = ["SELECT n AS conversions,-1 AS funnel,-1 AS step FROM counted"];
   for (let i = 0; i < funnels.length; i++) {
     for (let step = 0; step < funnels[i].steps.length; step++) {
       const goal = funnels[i].steps[step];
@@ -367,12 +390,15 @@ export function overviewGoals(db, siteId, since, until, visitors) {
   return rows.map((row) => ({ ...row, conversion_rate: visitors ? Number(row.unique_conversions) / visitors : 0 }));
 }
 
-export function dashboardTraffic(db, site, range, now) {
-  const hourly = range.days === 1 && !range.from;
+export function dashboardTraffic(db, site, range, now, skipDimensions = false, skipHours = false, fresh = false) {
+  const hourly = !skipHours && range.days === 1 && !range.from;
   const filtered = Object.keys(range.filters || {}).some((key) => range.filters[key]);
   const boundary = filtered ? 0 : rollupBoundary(db, site.id, range.since, range.until, now);
-  if (!boundary) return siteAnalytics(overviewScope(db, site.id, range.since, range.until, range.filters), site, range.since, range.until, false, false, hourly);
-  const history = rollupTraffic(db, site.id, range.since, range.until, boundary);
+  if (!boundary) return siteAnalytics(overviewScope(db, site.id, range.since, range.until, range.filters), site, range.since, range.until, false, false, hourly, skipDimensions);
+  const history = fresh ? rollupTraffic(db, site.id, range.since, range.until, boundary) :
+    cachedAnalytics(db, site.id, "traffic-history", { since: range.since, until: boundary }, null, now, false,
+      () => rollupTraffic(db, site.id, range.since, boundary, boundary));
+  if (!fresh && boundary < range.until) history.summary.visitors = rollupVisitors(db, site.id, range.since, range.until, boundary);
   const tail = boundary < range.until ? siteAnalytics(db, site, boundary, range.until, false, false, hourly, true) : {
     summary: { pageviews: 0, visits: 0 }, byDay: [], byHour: [], current: siteCurrent(db, site.id),
     hasConversions: Number(db.prepare("SELECT (SELECT count(*) FROM goals WHERE site_id = ?) + (SELECT count(*) FROM funnels WHERE site_id = ?) AS n").bind(site.id, site.id).first().n) > 0,
@@ -381,24 +407,31 @@ export function dashboardTraffic(db, site, range, now) {
   return { ...tail,
     summary: { pageviews: Number(history.summary.pageviews) + Number(tail.summary.pageviews), visitors: history.summary.visitors, visits: Number(history.summary.visits) + Number(tail.summary.visits) },
     byDay: history.byDay.concat(tail.byDay),
-    paths: rollupTop(db, site.id, range.since, range.until, boundary, "path"),
-    referrers: rollupTop(db, site.id, range.since, range.until, boundary, "source"),
-    mediums: rollupTop(db, site.id, range.since, range.until, boundary, "medium"),
-    campaigns: rollupTop(db, site.id, range.since, range.until, boundary, "campaign"),
+    paths: skipDimensions ? [] : rollupTop(db, site.id, range.since, range.until, boundary, "path"),
+    referrers: skipDimensions ? [] : rollupTop(db, site.id, range.since, range.until, boundary, "source"),
+    mediums: skipDimensions ? [] : rollupTop(db, site.id, range.since, range.until, boundary, "medium"),
+    campaigns: skipDimensions ? [] : rollupTop(db, site.id, range.since, range.until, boundary, "campaign"),
   };
 }
 
 // Fresh API reads combine completed-day facts with live events, without HTML snapshots.
-export function siteStats(db, site, range, now) {
+export function siteStats(db, site, range, now, sections = null, fresh = false) {
+  const selected = sections || { hourly: true, acquisition: true, goals: true, funnels: true };
   const boundary = rollupBoundary(db, site.id, range.since, range.until, now, true);
-  if (!boundary) return siteAnalytics(db, site, range.since, range.until);
-  const traffic = dashboardTraffic(db, site, range, now);
-  const funnels = siteFunnels(db, site.id, range.since, range.until);
-  return { ...traffic,
-    byHour: rollupHours(db, site.id, range.since, range.until, boundary),
-    goals: rollupGoals(db, site.id, range.since, range.until, boundary, Number(traffic.summary.visitors)),
-    hasConversions: false, funnels: funnels.funnels, funnelsTruncated: funnels.truncated,
-  };
+  const traffic = boundary ? dashboardTraffic(db, site, range, now, !selected.acquisition, true, fresh) :
+    siteAnalytics(db, site, range.since, range.until, false, false, selected.hourly, !selected.acquisition);
+  const result = { summary: traffic.summary, current: traffic.current, byDay: traffic.byDay, hasConversions: false };
+  if (selected.hourly) result.byHour = boundary ? rollupHours(db, site.id, range.since, range.until, boundary) : traffic.byHour;
+  if (selected.acquisition) {
+    result.paths = traffic.paths; result.referrers = traffic.referrers;
+    result.mediums = traffic.mediums; result.campaigns = traffic.campaigns;
+  }
+  if (selected.goals) result.goals = boundary ? rollupGoals(db, site.id, range.since, range.until, boundary, Number(traffic.summary.visitors)) : siteGoals(db, site.id, range.since, range.until, Number(traffic.summary.visitors));
+  if (selected.funnels) {
+    const funnels = siteFunnels(db, site.id, range.since, range.until);
+    result.funnels = funnels.funnels; result.funnelsTruncated = funnels.truncated;
+  }
+  return result;
 }
 
 export function dashboardGoals(db, site, range, now) {

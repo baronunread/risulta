@@ -31,6 +31,7 @@ import {
 import {
   cleanDomain,
   parseRange,
+  statsInput,
   rangeDays,
   referrerHost,
   splitPathAndAttribution,
@@ -876,7 +877,9 @@ app.get("/api/sites/:id{[0-9]+}/stats", (c) => {
   const now = Math.floor(Date.now() / 1000);
   const range = parseRange(url.searchParams, now);
   if (range.error) return json({ error: range.error }, 400);
-  const analytics = cachedAnalytics(env.DB, site.id, "stats", range, null, now, url.searchParams.get("fresh") === "1", () => siteStats(env.DB, site, range, now));
+  const sections = statsInput(url.searchParams);
+  if (sections.error) return json({ error: sections.error }, 400);
+  const analytics = cachedAnalytics(env.DB, site.id, "stats", range, sections, now, url.searchParams.get("fresh") === "1", () => siteStats(env.DB, site, range, now, sections, url.searchParams.get("fresh") === "1"));
   analytics.current = siteCurrent(env.DB, site.id);
   return json({ site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, ...analytics });
 });

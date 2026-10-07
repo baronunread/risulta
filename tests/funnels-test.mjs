@@ -29,7 +29,9 @@ for (const [since, until] of [[0,1500],[115,997],[1600,1800]]) {
 }
 sqlite.exec('DELETE FROM events');
 sqlite.transaction(() => { for (let i = 0; i < 50002; i++) insert.run(i + 1,1,i,'pageview','/','one'); })();
+sqlite.exec("UPDATE events SET name='signup',path='/thanks' WHERE id>50000");
 assert.equal(siteFunnels(db,1,0,50002).truncated,true);
+assert.equal(siteFunnels(db,1,0,50002).funnels[0].steps[1].conversions,0,'pruning cannot move events inside the cap');
 assert.equal(siteFunnels(db,1,0,49999).truncated,false);
 assert.deepEqual(siteFunnels(db,2,0,50002),{funnels:[],truncated:false});
 console.log('funnels OK (reference parity, repeated steps, ordering, paths, ranges, isolation and cap)');

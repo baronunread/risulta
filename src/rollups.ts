@@ -27,10 +27,14 @@ export function rollupTraffic(db: Database, siteId: number, since: number, until
     .bind(siteId, since, boundary).first<TrafficSummary>()!;
   const byDay = db.prepare("SELECT date(day, 'unixepoch') AS day, sum(pageviews) AS pageviews, count(CASE WHEN pageviews > 0 THEN 1 END) AS visitors, sum(visits) AS visits FROM analytics_rollup_visitors WHERE site_id = ? AND day >= ? AND day < ? GROUP BY day HAVING sum(pageviews) > 0 OR sum(visits) > 0 ORDER BY day")
     .bind(siteId, since, boundary).all<DailyTraffic>().results;
-  // Keep imported identities exact too, even if a hash repeats on another day.
-  summary.visitors = Number(db.prepare("SELECT count(DISTINCT visitor) AS n FROM (SELECT visitor FROM analytics_rollup_visitors WHERE site_id = ? AND day >= ? AND day < ? AND pageviews > 0 UNION ALL SELECT visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview')")
-    .bind(siteId, since, boundary, siteId, boundary, until).first<{ n: number }>()!.n);
+  summary.visitors = rollupVisitors(db, siteId, since, until, boundary);
   return { summary, byDay };
+}
+
+// Keep imported identities exact across both the historical prefix and live tail.
+export function rollupVisitors(db: Database, siteId: number, since: number, until: number, boundary: number): number {
+  return Number(db.prepare("SELECT count(DISTINCT visitor) AS n FROM (SELECT visitor FROM analytics_rollup_visitors WHERE site_id = ? AND day >= ? AND day < ? AND pageviews > 0 UNION ALL SELECT visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview')")
+    .bind(siteId, since, boundary, siteId, boundary, until).first<{ n: number }>()!.n);
 }
 
 export function rollupTop(db: Database, siteId: number, since: number, until: number, boundary: number, dimension: AcquisitionDimension): TrafficLabel[] {
@@ -66,10 +70,10 @@ export function rollupHours(db: Database, siteId: number, since: number, until: 
 
 export function rollupGoals(db: Database, siteId: number, since: number, until: number, boundary: number, visitors: number): GoalResult[] {
   const rows = db.prepare("WITH configured AS (SELECT id,name,event_name,path FROM goals WHERE site_id = ?), " +
-    "hits AS MATERIALIZED (SELECT 'pageview' AS name, label AS path, visitor, pageviews AS events, value FROM analytics_rollup_dimensions WHERE site_id = ? AND dimension = 'path' AND day >= ? AND day < ? AND 'pageview' IN (SELECT event_name FROM configured) " +
-    "UNION ALL SELECT name,path,visitor,events,value FROM analytics_rollup_events WHERE site_id = ? AND day >= ? AND day < ? AND name IN (SELECT event_name FROM configured) " +
-    "UNION ALL SELECT name,path,visitor,1 AS events,coalesce(value,0) FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name IN (SELECT event_name FROM configured)), " +
-    "totals AS (SELECT name, '' AS path, sum(events) AS conversions, count(DISTINCT visitor) AS unique_conversions, sum(value) AS value FROM hits GROUP BY name " +
+    "hits AS MATERIALIZED (SELECT 'pageview' AS name, label AS path, visitor, pageviews AS events, value FROM analytics_rollup_dimensions WHERE site_id = ? AND dimension = 'path' AND day >= ? AND day < ? AND 'pageview' IN (SELECT event_name FROM configured) AND ('' IN (SELECT path FROM configured WHERE event_name='pageview') OR label IN (SELECT path FROM configured WHERE event_name='pageview')) " +
+    "UNION ALL SELECT name,path,visitor,events,value FROM analytics_rollup_events e WHERE site_id = ? AND day >= ? AND day < ? AND name IN (SELECT event_name FROM configured) AND (name IN (SELECT event_name FROM configured WHERE path='') OR (name,path) IN (SELECT event_name,path FROM configured WHERE path!='')) " +
+    "UNION ALL SELECT name,path,visitor,1 AS events,coalesce(value,0) FROM events e WHERE site_id = ? AND ts >= ? AND ts < ? AND name IN (SELECT event_name FROM configured) AND (name IN (SELECT event_name FROM configured WHERE path='') OR (name,path) IN (SELECT event_name,path FROM configured WHERE path!=''))), " +
+    "totals AS (SELECT name, '' AS path, sum(events) AS conversions, count(DISTINCT visitor) AS unique_conversions, sum(value) AS value FROM hits WHERE name IN (SELECT event_name FROM configured WHERE path='') GROUP BY name " +
     "UNION ALL SELECT name,path,sum(events),count(DISTINCT visitor),sum(value) FROM hits WHERE path IN (SELECT path FROM configured WHERE path!='') GROUP BY name,path) " +
     "SELECT g.name,g.event_name,g.path,coalesce(t.conversions,0) AS conversions,coalesce(t.unique_conversions,0) AS unique_conversions,coalesce(t.value,0) AS value FROM configured g LEFT JOIN totals t ON t.name=g.event_name AND t.path=g.path ORDER BY g.id")
     .bind(siteId, siteId, since, boundary, siteId, since, boundary, siteId, boundary, until).all<Omit<GoalResult, 'conversion_rate'>>().results;

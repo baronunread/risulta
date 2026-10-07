@@ -177,6 +177,13 @@ _, raw_csv = request(admin, f'/api/sites/{site_id}/report?' + query + '&dimensio
 subprocess.run([sys.executable, 'deploy/rollup-runner.py', '--data-dir', str(state), '--max-days', '1000'], check=True, capture_output=True)
 rolled_stats, _ = parsed(anonymous, f'/api/sites/{site_id}/stats?' + query + '&fresh=1', headers=bearer)
 assert rolled_stats == raw_stats
+traffic_stats, _ = parsed(viewer, f'/api/sites/{site_id}/stats?' + query + '&include=traffic&fresh=1')
+assert traffic_stats['summary'] == raw_stats['summary'] and traffic_stats['byDay'] == raw_stats['byDay']
+assert not any(key in traffic_stats for key in ('byHour','paths','referrers','goals','funnels'))
+hourly_stats, _ = parsed(anonymous, f'/api/sites/{site_id}/stats?' + query + '&include=hourly&fresh=1', headers=bearer)
+assert hourly_stats['byHour'] == raw_stats['byHour']
+request(anonymous, f'/api/sites/{site_id}/stats?include=unknown', code=400, headers=bearer)
+
 for suffix, raw_report in zip(report_queries, raw_reports):
     rolled_report, _ = parsed(viewer, f'/api/sites/{site_id}/report?' + query + '&fresh=1&' + suffix)
     assert rolled_report == raw_report

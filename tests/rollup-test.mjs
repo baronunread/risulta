@@ -106,6 +106,31 @@ try {
   }
   statsParity(range); statsParity({...range,until:today}); statsParity({...range,until:start+day+2000});
   statsParity({...range,since:start+50}); statsParity(range,2);
+  // Optional sections preserve the corresponding fields and skip unused queries.
+  for (const testRange of [range,{...range,since:start+50}]) {
+    const expected = siteAnalytics(db,{id:1},testRange.since,testRange.until);
+    for (let mask=0;mask<16;mask++) {
+      const sections={hourly:!!(mask&1),acquisition:!!(mask&2),goals:!!(mask&4),funnels:!!(mask&8)};
+      const statements=[];
+      const traced={prepare(sql){statements.push(sql);return db.prepare(sql);}};
+      const result=siteStats(traced,{id:1},testRange,now,sections,true);
+      const fields=['summary','current','byDay','hasConversions'];
+      if(sections.hourly) fields.push('byHour');
+      if(sections.acquisition) fields.push('paths','referrers','mediums','campaigns');
+      if(sections.goals) fields.push('goals');
+      if(sections.funnels) fields.push('funnels','funnelsTruncated');
+      assert.deepEqual(result,Object.fromEntries(fields.map(field=>[field,expected[field]])));
+      if(!sections.funnels) assert.ok(!statements.some(sql=>sql.includes('ranked AS')));
+      if(!sections.acquisition && !sections.goals) assert.ok(!statements.some(sql=>sql.includes('analytics_rollup_dimensions')));
+    }
+  }
+  // New live traffic reuses historical totals, with exact cross-day visitor identity.
+  dashboardTraffic(db,{id:1},range,now);
+  const prefixBefore=sqlite.query("SELECT revision,created_at,payload FROM analytics_query_cache WHERE query_key LIKE '%traffic-history%' ORDER BY query_key").all();
+  insert.run(999,1,now-1,'pageview','/home','same','','','');
+  parity(range);statsParity(range);
+  assert.deepEqual(sqlite.query("SELECT revision,created_at,payload FROM analytics_query_cache WHERE query_key LIKE '%traffic-history%' ORDER BY query_key").all(),prefixBefore);
+  sqlite.exec('DELETE FROM events WHERE id=999');
   // Coverage is separate: missing new summaries fall back, without losing old daily reads.
   sqlite.exec('DELETE FROM analytics_rollup_stats_days WHERE site_id=1 AND day='+start);
   statsParity(range); assert.equal(rollupBoundary(db,1,start,now+1,now,true),0);

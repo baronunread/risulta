@@ -73,6 +73,14 @@ try {
   assert.equal((await request("/api/sites/1/stats", "GET", { authorization: "Bearer risulta_read_" + "0".repeat(64) })).status, 401);
   assert.equal((await request("/api/sites/1/stats", "GET", viewer)).status, 200);
   assert.equal((await request(keys, "GET", viewer)).status, 403);
+  const fullStats=await (await request('/api/sites/1/stats?fresh=1','GET',bearer)).json();
+  const trafficStats=await (await request('/api/sites/1/stats?include=traffic&fresh=1','GET',bearer)).json();
+  assert.deepEqual(trafficStats.summary,fullStats.summary);
+  assert.ok(!('goals' in trafficStats) && !('funnels' in trafficStats) && !('paths' in trafficStats) && !('byHour' in trafficStats));
+  const hourlyStats=await (await request('/api/sites/1/stats?include=hourly','GET',bearer)).json();
+  assert.deepEqual(hourlyStats.byHour,fullStats.byHour);
+  assert.equal((await request('/api/sites/1/stats?include=bogus','GET',bearer)).status,400);
+  assert.equal((await request('/api/sites/2/stats?include=traffic','GET',bearer)).status,401);
   const bounded = await (await request("/api/sites/1/report?limit=99999&offset=99999", "GET", bearer)).json();
   assert.equal(bounded.limit, 100);
   assert.equal(bounded.offset, 10000);
