@@ -140,7 +140,7 @@ request(viewer, f'/sites/{other_id}/conversions', code=404)
 request(anonymous, f'/sites/{site_id}/conversions', code=303, headers={'Accept':'text/html'})
 request(viewer, f'/sites/{site_id}/conversions', headers={'Accept':'text/html'})
 _,body=request(admin,f'/sites/{site_id}/reports',headers={'Accept':'text/html'})
-assert b'Visitor journeys' in body
+assert b'/reports/journeys' in body and b'Journeys</a>' in body
 
 stats, _ = parsed(admin, f'/api/sites/{site_id}/stats?period=7')
 assert stats['summary']['visits'] == 2
