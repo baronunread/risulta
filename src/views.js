@@ -1,4 +1,4 @@
-import { siteSlug } from "./sites.js";
+import { siteSlug } from "./sites.ts";
 // Server-rendered pages. Markup follows lib/views.js class names so the
 // same stylesheet renders both apps.
 import { homeCards } from "./home.js";

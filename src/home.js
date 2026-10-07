@@ -1,4 +1,4 @@
-import { siteSlug } from "./sites.js";
+import { siteSlug } from "./sites.ts";
 import { escapeHtml, fmtInt } from "./util.js";
 
 function visitorSparkline(site) {

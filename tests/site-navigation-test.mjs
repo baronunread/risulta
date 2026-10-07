@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import app from '../src/index.js';
-import { ensureSiteSlugs, availableSiteSlug } from '../src/sites.js';
+import { ensureSiteSlugs, availableSiteSlug } from '../src/sites.ts';
 import { siteGoals } from '../src/store.js';
 import { readKeyHash } from '../src/read-api.js';
 const nativeDigest = crypto.subtle.digest.bind(crypto.subtle);

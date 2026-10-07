@@ -19,6 +19,7 @@ jobs:
       - run: bun run check:lock
       - run: bun install --frozen-lockfile
       - run: bun run lint
+      - run: bun run typecheck
       - run: bun run test
       - run: bunx sproutboat check
       - run: bunx sproutboat build --standalone

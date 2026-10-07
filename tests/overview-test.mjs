@@ -1,4 +1,4 @@
-import { ROLLUP_SCHEMA } from '../src/rollups.js';
+import { ROLLUP_SCHEMA } from '../src/rollups.ts';
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { overviewScope, siteAnalytics, siteSummary, siteReport } from '../src/store.js';
