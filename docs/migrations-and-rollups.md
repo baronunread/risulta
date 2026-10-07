@@ -9,6 +9,7 @@ table creation.
 | --- | --- |
 | 1 | Stable site slugs and their unique index |
 | 2 | Completed-day summaries, coverage and invalidation triggers |
+| 3 | Hourly traffic, custom-event goal facts and separate stats coverage |
 
 Each migration and its schema_migrations marker commit atomically. Failed
 steps roll back and retry at the next start; completed steps are not replayed.
@@ -22,8 +23,12 @@ only after initialization. Backup manifests include that version and rollups.
 Unfiltered Overview totals, daily charts, comparisons and paginated Reports
 for paths, sources, mediums and campaigns read completed UTC days from
 summaries. Today's data and partial final days remain live. Filtered visitor
-cohorts, Events reports, goal/funnel calculations, journeys and API reads keep
-their raw-event queries.
+cohorts, Events reports, overview goal previews, funnels and journeys keep
+their raw-event queries. Fresh stats API traffic/hourly breakdowns and goals,
+plus unfiltered acquisition JSON/CSV reports and the dedicated Goals page,
+use clean completed-day facts with a live tail. API reads do not use HTML
+snapshots. Funnel results in the full stats response still use the ordered
+raw-event query with its existing 50,000-event cap and truncation flag.
 
 Visitor membership remains distinct across days and labels, even for imported
 hashes that do not reset daily. Visits include custom events and retain the
@@ -61,7 +66,7 @@ Inspect processing with systemctl status risulta-rollups.timer and journalctl
     python3 deploy/rollup-runner.py --data-dir /path/to/state --max-days 1000
     python3 deploy/rollup-runner.py --data-dir /path/to/state --watch
 
-The worker requires schema version 2 and refuses to rebuild another version.
+The worker requires schema version 3 and refuses to rebuild another version.
 
 ## Upgrade recovery
 
@@ -80,3 +85,24 @@ Tests cover legacy adoption, empty schemas, restart, migration rollback/retry,
 future versions, partial/failed backfills, raw parity, exact identities,
 pagination/sorting/values, site isolation, empty days, midnight, session gaps,
 custom-event-only visits, historical mutations and installer recovery.
+
+## Upgrading daily rollups from schema 2
+
+Schema 3 adds tables without rewriting events or existing daily summaries.
+The stats coverage table is separate, so old daily coverage remains available
+for Overview/Reports while hourly/event facts backfill. The new worker rebuilds
+previously covered days in the same bounded batches and publishes both coverage
+markers in the day's transaction. Existing dirty-day triggers apply to both
+read paths. Incomplete stats coverage uses the previous raw stats query.
+
+Pageview goal facts reuse the existing path summary. A new event table stores
+only non-pageview counts and values by day, name, path and visitor. Goal edits
+need no backfill: their current definitions query immutable event facts. Hour
+rows preserve exact visitor membership across dates, including imported hashes,
+and count session starts after inactivity within each UTC day. Custom events
+participate in visits, and visits-only hours stay visible.
+
+The release metadata and health header now advertise schema 3. The installer
+continues to pause old workers and verify matching health before replacing and
+resuming the worker. Previous schema-2 executables and workers reject the newer
+schema; recovery requires the saved paired database and executable.

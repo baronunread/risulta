@@ -86,7 +86,7 @@ let backups = 0;
 let failBackup = false;
 let databaseErrors = 0;
 runInNewContext(route, {
-  SCHEMA_VERSION: 2,
+  SCHEMA_VERSION: 3,
   app: { post: (_path, callback) => { handler = callback; } },
   env: { DB: {
     backup: () => { backups++; if (failBackup) throw new Error("disk"); return { path: "backups/test.sqlite", bytes: 4096 }; },
@@ -118,7 +118,7 @@ const result = await response.json();
 assert.equal(result.ok, true);
 assert.equal(result.path, "backups/test.sqlite");
 assert.equal(result.manifest.tables.users, 2);
-assert.equal(result.manifest.schema_version, 2);
+assert.equal(result.manifest.schema_version, 3);
 assert.equal(result.manifest.tables.analytics_rollup_days, 2);
 response = await post("admin", admin.csrf, true);
 assert.equal(response.status, 303);

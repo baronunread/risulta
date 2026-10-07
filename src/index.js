@@ -46,11 +46,11 @@ import {
   homeOverviews,
   removeUser,
   reportCsv,
-  siteAnalytics,
+  siteStats,
+  dashboardReport,
   overviewScope,
   siteByKey,
   siteForKey,
-  siteReport,
   updateProfile,
   visitorId,
   clientIp,
@@ -874,7 +874,7 @@ app.get("/api/sites/:id{[0-9]+}/stats", (c) => {
   const now = Math.floor(Date.now() / 1000);
   const range = parseRange(url.searchParams, now);
   if (range.error) return json({ error: range.error }, 400);
-  const analytics = siteAnalytics(env.DB, site, range.since, range.until);
+  const analytics = siteStats(env.DB, site, range, now);
   return json({ site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, ...analytics });
 });
 
@@ -889,10 +889,7 @@ app.get("/api/sites/:id{[0-9]+}/report", (c) => {
   const range = parseRange(url.searchParams, now);
   if (range.error) return json({ error: range.error }, 400);
   const input = reportInput(url.searchParams);
-  const report = siteReport(
-    url.searchParams.get("cohort") === "1" ? overviewScope(env.DB, site.id, range.since, range.until, input.filters) : env.DB, site.id, range.since, range.until,
-    input.dimension, url.searchParams.get("cohort") === "1" ? { event: input.filters.event } : input.filters, input.limit, input.offset, input.sort,
-  );
+  const report = dashboardReport(env.DB, site, range, input, url.searchParams.get("cohort") === "1", now);
   if (String(url.searchParams.get("format") || "") === "csv") {
     return new Response(reportCsv(report), {
       headers: {
@@ -981,7 +978,7 @@ app.post("/api/backup", async (c) => {
   if (!csrfValid(session, csrfValue(request, body))) return htmlForm ? redirect("/users?backup=csrf") : json({ error: "csrf mismatch" }, 403);
   try {
     const snapshot = env.DB.backup();
-    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty"];
+    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "analytics_rollup_stats_days", "analytics_rollup_hours", "analytics_rollup_events", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty"];
     const counts = {};
     for (let i = 0; i < tables.length; i++) {
       counts[tables[i]] = Number(env.DB.prepare("SELECT count(*) AS n FROM " + tables[i]).first().n);

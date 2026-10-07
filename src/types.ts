@@ -59,3 +59,17 @@ export interface RollupTraffic {
   summary: TrafficSummary;
   byDay: DailyTraffic[];
 }
+
+export interface HourlyTraffic extends TrafficSummary {
+  hour: number;
+}
+
+export interface GoalResult {
+  name: string;
+  event_name: string;
+  path: string;
+  conversions: number;
+  unique_conversions: number;
+  value: number;
+  conversion_rate: number;
+}

@@ -1,5 +1,5 @@
 import { migrateSchema } from "./migrations.ts";
-import { rollupBoundary, rollupTraffic, rollupTop, rollupReport } from "./rollups.ts";
+import { rollupBoundary, rollupTraffic, rollupTop, rollupReport, rollupHours, rollupGoals } from "./rollups.ts";
 import { READ_KEYS_SCHEMA } from "./read-api.js";
 // D1 repository: schema, site scoping, visitor identities, analytics.
 // Single logical D1 instead of one SQLite file per site: every site-owned
@@ -385,6 +385,27 @@ export function dashboardTraffic(db, site, range, now) {
     mediums: rollupTop(db, site.id, range.since, range.until, boundary, "medium"),
     campaigns: rollupTop(db, site.id, range.since, range.until, boundary, "campaign"),
   };
+}
+
+// Fresh API reads combine completed-day facts with live events, without HTML snapshots.
+export function siteStats(db, site, range, now) {
+  const boundary = rollupBoundary(db, site.id, range.since, range.until, now, true);
+  if (!boundary) return siteAnalytics(db, site, range.since, range.until);
+  const traffic = dashboardTraffic(db, site, range, now);
+  const funnels = siteFunnels(db, site.id, range.since, range.until);
+  return { ...traffic,
+    byHour: rollupHours(db, site.id, range.since, range.until, boundary),
+    goals: rollupGoals(db, site.id, range.since, range.until, boundary, Number(traffic.summary.visitors)),
+    hasConversions: false, funnels: funnels.funnels, funnelsTruncated: funnels.truncated,
+  };
+}
+
+export function dashboardGoals(db, site, range, now) {
+  const visitors = Number(dashboardSummary(db, site, range, now).visitors);
+  const filtered = Object.keys(range.filters || {}).some((key) => range.filters[key]);
+  const boundary = filtered ? 0 : rollupBoundary(db, site.id, range.since, range.until, now, true);
+  return boundary ? rollupGoals(db, site.id, range.since, range.until, boundary, visitors) :
+    siteGoals(overviewScope(db, site.id, range.since, range.until, range.filters), site.id, range.since, range.until, visitors);
 }
 
 export function dashboardSummary(db, site, range, now) {

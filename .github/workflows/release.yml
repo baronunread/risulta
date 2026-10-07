@@ -210,7 +210,7 @@ jobs:
             --arg channel "$CHANNEL" --arg repository "$GH_REPO" \
             --slurpfile x64 risulta-sprout-linux-x64.toolchain.json \
             --slurpfile arm64 risulta-sprout-linux-arm64.toolchain.json \
-            '{tag: $tag, commit: $commit, channel: $channel, repository: $repository, rollup_schema_version: 2,
+            '{tag: $tag, commit: $commit, channel: $channel, repository: $repository, rollup_schema_version: 3,
               toolchain: {"linux-x64": $x64[0], "linux-arm64": $arm64[0]}}' > release.json
           rm -- *.toolchain.json
           for asset in risulta-sprout-linux-x64 risulta-sprout-linux-arm64 install.sh release.json rollup-runner.py risulta-rollups.service risulta-rollups.timer; do

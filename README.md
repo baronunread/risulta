@@ -94,7 +94,9 @@ The [UI stress report](performance/2026-10-06-ui-stress/README.md) covers the mi
 
 Demo websites use distinct recent traffic profiles: growth, decline, steady traffic, campaigns and recovery. To refresh an existing stress-seeded preview, run `python3 scripts/refresh-demo-trends.py --data-dir /tmp/risulta-local-preview-20261006`. This redistributes recent visitor groups while preserving event count and within-group timing. It only accepts marked disposable preview directories.
 
-Daily rollups accelerate unfiltered Overview and Reports. Schema upgrades run
+Daily and hourly rollups accelerate unfiltered Overview, Reports, Goals and
+fresh stats/acquisition API reads. Full stats still compute ordered funnels
+from raw events. Schema upgrades run
 automatically, and releases that include the worker enable its timer through
 the installer. Uncovered or changed days fall back to raw events during
 backfill. See [upgrade and recovery details](docs/migrations-and-rollups.md).

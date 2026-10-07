@@ -1,5 +1,5 @@
 import { siteJourneys } from "./journeys.js";
-import { overviewScope, overviewGoals, dashboardTraffic, dashboardSummary, dashboardReport, siteGoals, siteFunnels } from "./store.js";
+import { overviewScope, overviewGoals, dashboardTraffic, dashboardSummary, dashboardReport, dashboardGoals, siteFunnels } from "./store.js";
 
 // Bounded per-process snapshots share expensive aggregates across metric clicks
 // and open browser tabs. Authorization stays in the route before every lookup.
@@ -64,8 +64,7 @@ export function measurementAnalytics(db, site, range, kind, now) {
   if (!entry[key] || !fresh(entry[key + "At"], now, 15000)) {
     const scoped = overviewScope(db, site.id, range.since, range.until, range.filters);
     if (kind === "goals") {
-      const visitors = scoped.prepare("SELECT count(DISTINCT visitor) AS n FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'").bind(site.id, range.since, range.until).first().n;
-      entry[key] = { goals: siteGoals(scoped, site.id, range.since, range.until, Number(visitors)) };
+      entry[key] = { goals: dashboardGoals(db, site, range, Math.floor(now / 1000)) };
     } else entry[key] = siteFunnels(scoped, site.id, range.since, range.until);
     entry[key + "At"] = now;
   }

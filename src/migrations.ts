@@ -1,9 +1,9 @@
 import type { Database } from "./types.ts";
 
 import { ensureSiteSlugs } from "./sites.ts";
-import { ROLLUP_SCHEMA } from "./rollups.ts";
+import { ROLLUP_SCHEMA, STATS_ROLLUP_SCHEMA } from "./rollups.ts";
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 // Adopt legacy databases without renumbering sites or rewriting raw events.
 export function migrateSchema(db: Database): void {
@@ -12,6 +12,7 @@ export function migrateSchema(db: Database): void {
   if (latest > SCHEMA_VERSION) throw new Error("This database requires a newer Risulta version.");
   applyMigration(db, 1, "stable site slugs", () => ensureSiteSlugs(db));
   applyMigration(db, 2, "daily analytics rollups", () => db.exec(ROLLUP_SCHEMA));
+  applyMigration(db, 3, "hourly traffic and goal rollups", () => db.exec(STATS_ROLLUP_SCHEMA));
 }
 
 function applyMigration(db: Database, version: number, name: string, apply: () => void): void {
