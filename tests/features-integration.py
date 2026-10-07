@@ -52,6 +52,7 @@ csrf = {'X-CSRF-Token': session['csrf']}
 site, _ = parsed(admin, '/api/sites', code=201, method='POST', payload={'name':'Feature test','domain':'features.example.com'}, headers=csrf)
 other, _ = parsed(admin, '/api/sites', code=201, method='POST', payload={'name':'Other','domain':'other.example.com'}, headers=csrf)
 site_id, other_id = site['id'], other['id']
+site_slug = site['slug']
 request(admin, '/api/users', code=201, method='POST', payload={'email':'feature-viewer@example.com','password':'feature-viewer-password-0001','role':'viewer','siteIds':[site_id]},headers=csrf)
 request(viewer, '/login', method='POST', payload={'email':'feature-viewer@example.com','password':'feature-viewer-password-0001'})
 vs,_ = parsed(viewer, '/api/session')
@@ -134,19 +135,19 @@ assert '/private' not in json.dumps(report)
 request(admin,journeys+'?visitor=invalid',code=400)
 report,_=parsed(admin,journeys+'?limit=99999&offset=99999')
 assert report['limit']==100 and report['offset']==10000
-_,body=request(viewer,f'/sites/{site_id}/reports/journeys?period=7&visitor='+visitor,headers={'Accept':'text/html'})
+_,body=request(viewer,f'/sites/{site_slug}/reports/journeys?period=7&visitor='+visitor,headers={'Accept':'text/html'})
 assert b'/first' in body and b'/fourth' in body and b'/private' not in body
 request(viewer, f'/sites/{other_id}/conversions', code=404)
-request(anonymous, f'/sites/{site_id}/conversions', code=303, headers={'Accept':'text/html'})
-request(viewer, f'/sites/{site_id}/conversions', headers={'Accept':'text/html'})
-_,body=request(admin,f'/sites/{site_id}/reports',headers={'Accept':'text/html'})
+request(anonymous, f'/sites/{site_slug}/conversions', code=303, headers={'Accept':'text/html'})
+request(viewer, f'/sites/{site_slug}/conversions', headers={'Accept':'text/html'})
+_,body=request(admin,f'/sites/{site_slug}/reports',headers={'Accept':'text/html'})
 assert b'/reports/journeys' in body and b'Journeys</a>' in body
 
 stats, _ = parsed(admin, f'/api/sites/{site_id}/stats?period=7')
 assert stats['summary']['visits'] == 2
 assert sum(row['visits'] for row in stats['byDay']) == stats['summary']['visits']
 assert sum(row['visits'] for row in stats['byHour']) == stats['summary']['visits']
-_, body = request(admin, f'/sites/{site_id}?period=7&metric=visits', headers={'Accept':'text/html'})
+_, body = request(admin, f'/sites/{site_slug}?period=7&metric=visits', headers={'Accept':'text/html'})
 assert b'Visits over time' in body and b'Unique visitor-days' not in body
 
 revoke=keys+'/'+str(key['id'])+'/revoke'
