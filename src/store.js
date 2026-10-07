@@ -63,7 +63,8 @@ async function ensureSchema(db) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts ON events(site_id, ts);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts_visitor ON events(site_id, ts, visitor);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_visitor_ts ON events(site_id, visitor, ts);");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_name_ts ON events(site_id, name, ts);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_name_ts_overview ON events(site_id, name, ts, visitor, path, source, medium, campaign);");
+  db.exec("DROP INDEX IF EXISTS idx_events_site_name_ts;");
   db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);");
 
   // Bootstrap: first administrator from secrets, once. After that the
@@ -237,25 +238,17 @@ export function topList(db, siteId, since, until, select) {
 }
 
 export function siteGoals(db, siteId, since, until, visitors) {
-  const goals = db.prepare("SELECT id, name, event_name, path FROM goals WHERE site_id = ? ORDER BY id").bind(siteId).all().results;
-  const out = [];
-  for (let i = 0; i < goals.length; i++) {
-    const g = goals[i];
-    const r = db.prepare(
-      "SELECT count(*) AS conversions, count(DISTINCT visitor) AS unique_conversions, coalesce(sum(value), 0) AS value " +
-        "FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = ? AND (? = '' OR path = ?)",
-    ).bind(siteId, since, until, g.event_name, g.path, g.path).first();
-    out.push({
-      name: g.name,
-      event_name: g.event_name,
-      path: g.path,
-      conversions: r.conversions,
-      unique_conversions: r.unique_conversions,
-      value: r.value,
-      conversion_rate: visitors ? r.unique_conversions / visitors : 0,
-    });
-  }
-  return out;
+  // Aggregate each event and exact path once, even when many goals share it.
+  const rows = db.prepare(
+    "WITH configured AS (SELECT id, name, event_name, path FROM goals WHERE site_id = ?), " +
+    "hits AS MATERIALIZED (SELECT name, path, visitor, value FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name IN (SELECT event_name FROM configured)), " +
+    "totals AS (SELECT name, '' AS path, count(*) AS conversions, count(DISTINCT visitor) AS unique_conversions, coalesce(sum(value),0) AS value FROM hits GROUP BY name " +
+    "UNION ALL SELECT name, path, count(*) AS conversions, count(DISTINCT visitor) AS unique_conversions, coalesce(sum(value),0) AS value FROM hits " +
+    "WHERE path IN (SELECT path FROM configured WHERE path != '') GROUP BY name, path) " +
+    "SELECT g.name, g.event_name, g.path, coalesce(t.conversions,0) AS conversions, coalesce(t.unique_conversions,0) AS unique_conversions, coalesce(t.value,0) AS value " +
+    "FROM configured g LEFT JOIN totals t ON t.name = g.event_name AND t.path = g.path ORDER BY g.id",
+  ).bind(siteId, siteId, since, until).all().results;
+  return rows.map((row) => ({ ...row, conversion_rate: visitors ? Number(row.unique_conversions) / visitors : 0 }));
 }
 
 export function listFunnels(db, siteId) {
@@ -369,7 +362,7 @@ export function overviewGoals(db, siteId, since, until, visitors) {
   return rows.map((row) => ({ ...row, conversion_rate: visitors ? Number(row.unique_conversions) / visitors : 0 }));
 }
 
-export function siteAnalytics(db, site, since, until, includeConversions, previewGoals) {
+export function siteAnalytics(db, site, since, until, includeConversions, previewGoals, hourly) {
   const summary = db.prepare(
     "SELECT count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'",
@@ -380,7 +373,7 @@ export function siteAnalytics(db, site, since, until, includeConversions, previe
     "SELECT date(ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY day ORDER BY day",
   ).bind(site.id, since, until).all().results;
-  const byHour = db.prepare(
+  const byHour = hourly === false ? [] : db.prepare(
     "SELECT cast(strftime('%H', ts, 'unixepoch') AS INTEGER) AS hour, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY hour ORDER BY hour",
   ).bind(site.id, since, until).all().results;
@@ -392,9 +385,11 @@ export function siteAnalytics(db, site, since, until, includeConversions, previe
     const row = sessions[i];
     const visits = Number(row.visits);
     if (!days[row.day]) { days[row.day] = { day: row.day, pageviews: 0, visitors: 0, visits: 0 }; byDay.push(days[row.day]); }
-    if (!hours[row.hour]) { hours[row.hour] = { hour: Number(row.hour), pageviews: 0, visitors: 0, visits: 0 }; byHour.push(hours[row.hour]); }
+    if (hourly !== false) {
+      if (!hours[row.hour]) { hours[row.hour] = { hour: Number(row.hour), pageviews: 0, visitors: 0, visits: 0 }; byHour.push(hours[row.hour]); }
+      hours[row.hour].visits += visits;
+    }
     days[row.day].visits += visits;
-    hours[row.hour].visits += visits;
     summary.visits += visits;
   }
   byDay.sort((a, b) => a.day < b.day ? -1 : a.day > b.day ? 1 : 0);
@@ -455,10 +450,12 @@ export function siteReport(db, siteId, since, until, dimension, filters, limit, 
   const grouped =
     "SELECT " + selected.label + " AS label, count(*) AS pageviews, count(DISTINCT visitor) AS visitors, coalesce(sum(value), 0) AS value " +
     "FROM events WHERE " + where + " GROUP BY label";
-  const listed = db.prepare(grouped + " ORDER BY " + ordering + " DESC, label LIMIT ? OFFSET ?");
-  const result = listed.bind(...values, boundedLimit, boundedOffset).all().results;
-  const counted = db.prepare("SELECT count(*) AS n FROM (" + grouped + ")");
-  const total = Number(counted.bind(...values).first().n);
+  const result = db.prepare("SELECT *, count(*) OVER () AS total_rows FROM (" + grouped + ") ORDER BY " + ordering + " DESC, label LIMIT ? OFFSET ?")
+    .bind(...values, boundedLimit, boundedOffset).all().results;
+  // An offset beyond the final page still needs the exact total.
+  const total = result.length ? Number(result[0].total_rows) :
+    Number(db.prepare("SELECT count(*) AS n FROM (SELECT " + selected.label + " AS label FROM events WHERE " + where + " GROUP BY label)").bind(...values).first().n);
+  for (let i = 0; i < result.length; i++) delete result[i].total_rows;
   return { dimension: dimensions[dimension] ? dimension : "path", filters, rows: result, total, limit: boundedLimit, offset: boundedOffset, sort: ordering };
 }
 

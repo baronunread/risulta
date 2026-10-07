@@ -1,3 +1,4 @@
+import { reportAnalytics, journeyAnalytics, overviewAnalytics, overviewComparison, invalidateOverview } from "./overview.js";
 import { createReadKey, readKeySite } from "./read-api.js";
 import { ensureBackupSchema, backupSettings, backupHistory, backupInput, saveBackupSettings, recordBackup } from "./backups.js";
 // Risulta Sprout: request router. Thin by design (sproutboat-site shape):
@@ -45,11 +46,9 @@ import {
   reportCsv,
   siteAnalytics,
   overviewScope,
-  overviewGoals,
   siteByKey,
   siteForKey,
   siteReport,
-  siteSummary,
   siteGoals,
   siteFunnels,
   updateProfile,
@@ -585,13 +584,12 @@ app.get("/sites/:id{[0-9]+}", (c) => {
   range.filters = reportInput(url.searchParams).filters;
   delete range.filters.event;
   range.acquisition = ["source", "campaign", "medium"].indexOf(url.searchParams.get("acquisition")) >= 0 ? url.searchParams.get("acquisition") : "source";
-  const scopedDb = overviewScope(env.DB, site.id, range.since, range.until, range.filters);
-  const analytics = siteAnalytics(scopedDb, site, range.since, range.until, false);
+  const analytics = overviewAnalytics(env.DB, site, range, true);
   // Previous-period comparison: the summary for the immediately preceding
   // window of the same length, like the Bun app.
   let comparison = null;
   if (url.searchParams.get("compare") === "1") {
-    comparison = siteSummary(overviewScope(env.DB, site.id, range.since - days * 86400, range.since, range.filters), site.id, range.since - days * 86400, range.since);
+    comparison = overviewComparison(env.DB, site, { ...range, since: range.since - days * 86400, until: range.since });
   }
   const sites = listSitesForUser(env.DB, session);
   return new Response(sitePage(session, site, sites, analytics, range, days, metric, publicOrigin(c.req.raw, url), comparison),
@@ -706,6 +704,7 @@ app.post("/api/sites/:id{[0-9]+}/goals", async (c) => {
     if (wantsJson) return json({ error: "goal name already exists for this site" }, 409);
     return redirect("/sites/" + site.id + "/settings?error=goal-name-registered");
   }
+  invalidateOverview(env.DB, site.id);
   if (wantsJson) return json({ ok: true, name, eventName, path: goalPath }, 201);
   return redirect("/sites/" + site.id + "/settings");
 });
@@ -768,6 +767,7 @@ app.post("/api/sites/:id{[0-9]+}/funnels", async (c) => {
     if (wantsJson) return json({ error: "unable to save this funnel" }, 409);
     return redirect(settingsUrl + "?error=funnel-save-failed");
   }
+  invalidateOverview(env.DB, site.id);
   if (wantsJson) return json({ ok: true, name }, 201);
   return redirect(settingsUrl);
 });
@@ -805,11 +805,10 @@ app.get("/sites/:id{[0-9]+}/partials/live", (c) => {
   range.filters = reportInput(url.searchParams).filters;
   delete range.filters.event;
   range.acquisition = ["source", "campaign", "medium"].indexOf(url.searchParams.get("acquisition")) >= 0 ? url.searchParams.get("acquisition") : "source";
-  const scopedDb = overviewScope(env.DB, site.id, range.since, range.until, range.filters);
-  const analytics = siteAnalytics(scopedDb, site, range.since, range.until, false, false);
+  const analytics = overviewAnalytics(env.DB, site, range, false);
   let comparison = null;
   if (url.searchParams.get("compare") === "1") {
-    comparison = siteSummary(overviewScope(env.DB, site.id, range.since - days * 86400, range.since, range.filters), site.id, range.since - days * 86400, range.since);
+    comparison = overviewComparison(env.DB, site, { ...range, since: range.since - days * 86400, until: range.since });
   }
   const oobCurrent = '<strong id="live-current-value" data-current hx-swap-oob="true">' + fmtInt(analytics.current) + "</strong>";
   return new Response(oobCurrent + liveFragment(site, analytics, range, days, metric, comparison),
@@ -825,10 +824,8 @@ app.get("/sites/:id{[0-9]+}/partials/goals", (c) => {
   if (range.error) return json({ error: range.error }, 400);
   range.filters = reportInput(q).filters;
   delete range.filters.event;
-  const db = overviewScope(env.DB, site.id, range.since, range.until, range.filters);
-  const visitors = db.prepare("SELECT count(DISTINCT visitor) AS n FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'")
-    .bind(site.id, range.since, range.until).first().n;
-  return new Response(overviewGoalsFragment(site, overviewGoals(db, site.id, range.since, range.until, Number(visitors)), range, rangeDays(range)),
+  const analytics = overviewAnalytics(env.DB, site, range, true);
+  return new Response(overviewGoalsFragment(site, analytics.goals, range, rangeDays(range)),
     { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 });
 
@@ -892,10 +889,8 @@ app.get("/sites/:id{[0-9]+}/reports", (c) => {
   }
   const days = rangeDays(range);
   const input = reportInput(url.searchParams);
-  const report = siteReport(
-    url.searchParams.get("cohort") === "1" ? overviewScope(env.DB, site.id, range.since, range.until, input.filters) : env.DB, site.id, range.since, range.until,
-    input.dimension, url.searchParams.get("cohort") === "1" ? { event: input.filters.event } : input.filters, input.limit, input.offset, input.sort,
-  );
+  range.filters = input.filters;
+  const report = reportAnalytics(env.DB, site, range, input, url.searchParams.get("cohort") === "1");
   report.filters = input.filters;
   report.cohort = url.searchParams.get("cohort") === "1";
   range.filters = input.filters;
@@ -932,7 +927,7 @@ app.get("/sites/:id{[0-9]+}/reports/journeys", (c) => {
   }
   range.filters = reportInput(params).filters;
   delete range.filters.event;
-  const report = siteJourneys(overviewScope(env.DB, site.id, range.since, range.until, range.filters), site.id, range.since, range.until, input);
+  const report = journeyAnalytics(env.DB, site, range, input);
   return new Response(journeysPage(session, site, listSitesForUser(env.DB, session), report, range),
     { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 });
