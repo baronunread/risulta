@@ -12,11 +12,20 @@ function visitorSparkline(site) {
   }
 
   let path = "";
+  let previousX = 0;
+  let previousY = 0;
+  const step = days.length > 1 ? (width - inset * 2) / (days.length - 1) : 0;
+  const coordinate = (value) => Math.round(value * 10) / 10;
   for (let i = 0; i < days.length; i++) {
-    const x = inset + i * (width - inset * 2) / (days.length - 1);
+    const x = inset + i * step;
     const value = Number(days[i].visitors) || 0;
     const y = max ? height - inset - value / max * (height - inset * 2) : height - inset;
-    path += (i ? " L" : "M") + Math.round(x * 10) / 10 + " " + Math.round(y * 10) / 10;
+    // Horizontal handles join smoothly and keep each segment within its daily values.
+    path += i ? " C" + coordinate(previousX + step / 3) + " " + coordinate(previousY) +
+      " " + coordinate(x - step / 3) + " " + coordinate(y) + " " + coordinate(x) + " " + coordinate(y)
+      : "M" + coordinate(x) + " " + coordinate(y);
+    previousX = x;
+    previousY = y;
   }
 
   return '<svg class="home-sparkline" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="Visitors over the last 7 days">' +
