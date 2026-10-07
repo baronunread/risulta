@@ -28,8 +28,8 @@ assert.throws(() => migrateSchema(failingDb));
 assert.equal(failure.query('SELECT max(version) AS n FROM schema_migrations').get().n, 1);
 assert.equal(failure.query("SELECT count(*) AS n FROM sqlite_master WHERE name='analytics_rollup_days'").get().n, 0);
 failingDb.exec = exec; migrateSchema(failingDb); migrateSchema(failingDb);
-assert.equal(failure.query('SELECT count(*) AS n FROM schema_migrations').get().n, 3);
-failure.exec("INSERT INTO schema_migrations VALUES(4,'future',0)");
+assert.equal(failure.query('SELECT count(*) AS n FROM schema_migrations').get().n, 4);
+failure.exec("INSERT INTO schema_migrations VALUES(5,'future',0)");
 assert.throws(() => migrateSchema(failingDb), /newer Risulta/);
 failure.close();
 // Upgrade an already covered v2 database without replaying or discarding daily data.

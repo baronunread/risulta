@@ -10,6 +10,7 @@ table creation.
 | 1 | Stable site slugs and their unique index |
 | 2 | Completed-day summaries, coverage and invalidation triggers |
 | 3 | Hourly traffic, custom-event goal facts and separate stats coverage |
+| 4 | Persistent analytics cache and event/configuration revision triggers |
 
 Each migration and its schema_migrations marker commit atomically. Failed
 steps roll back and retry at the next start; completed steps are not replayed.
@@ -38,7 +39,7 @@ sorting, exact totals and pagination.
 Every completed day in a range must have clean coverage, otherwise the read
 falls back to raw events. HTML snapshots still expire after 15 seconds (goal
 previews after 60), so warm pages can lag mutations or completed backfill by
-that interval. API reads remain fresh.
+that interval. Stats and report result caching is described below; `fresh=1` bypasses it.
 
 ## Background processing
 
@@ -66,7 +67,7 @@ Inspect processing with systemctl status risulta-rollups.timer and journalctl
     python3 deploy/rollup-runner.py --data-dir /path/to/state --max-days 1000
     python3 deploy/rollup-runner.py --data-dir /path/to/state --watch
 
-The worker requires schema version 3 and refuses to rebuild another version.
+The worker requires schema version 4 and refuses to rebuild another version.
 
 ## Upgrade recovery
 
@@ -102,9 +103,19 @@ rows preserve exact visitor membership across dates, including imported hashes,
 and count session starts after inactivity within each UTC day. Custom events
 participate in visits, and visits-only hours stay visible.
 
-The release metadata and health header now advertise schema 3. The installer
+The release metadata and health header now advertise schema 4. The installer
 continues to pause old workers and verify matching health before replacing and
 resuming the worker. Previous schema-2 executables and workers reject the newer
 schema; recovery requires the saved paired database and executable.
 
 Migration 3 also adds `idx_events_site_ts_funnels`, a covering index on site, timestamp, visitor, event name and path. Funnel calculations keep their capped ordered raw stream inside SQLite and return aggregate step counts, preserving repeated-step behavior and the truncation flag. This index adds storage and maintenance on event writes; no raw events are removed.
+
+## Persistent result caching (schema 4)
+
+Authorized stats API and acquisition reports share calculated results. Completed historical ranges are cached in SQLite for up to 24 hours, surviving a binary restart. Live ranges use a bounded five-second process cache. Current visitor counts are read fresh, even on a historical stats cache hit. HTML acquisition reports share the same cache as their JSON/CSV counterparts. Existing Overview, Goals and Journeys snapshots retain their previous lifetimes.
+
+Every lookup checks per-day event revisions and the site's goal/funnel configuration revision. SQLite triggers track inserts, updates and deletes, including external imports and site/day moves. New traffic outside a historical range does not invalidate that range. The worker can replace rollup facts without invalidating results because raw and rolled calculations are equivalent. Authorization happens before each lookup; cached payloads contain analytics only, not sessions or bearer tokens. API responses keep `Cache-Control: no-store` for browser/proxy caches.
+
+Append `fresh=1` to stats or report API requests to bypass both caches. Cache keys include site, range, report dimension, filters, pagination, sorting and cohort selection. Persistent and memory caches each retain at most 128 entries, and payloads over 262,144 characters are not stored. Persistent eviction retains the newest calculated entries. The first uncached request still computes the query; this does not precompute arbitrary reports. Cache/revision tables are included in backups. Data is retained indefinitely; no event retention or deletion policy is introduced.
+
+Migration 4 is additive and transactional. Interrupted upgrades roll back the cache tables, triggers and migration marker together. The matching release binary and worker require schema 4; restore their paired backup to downgrade.

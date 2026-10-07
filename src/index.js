@@ -1,3 +1,4 @@
+import { cachedAnalytics } from "./analytics-cache.js";
 import { SCHEMA_VERSION } from "./migrations.ts";
 import { siteSlug, availableSiteSlug } from "./sites.ts";
 import { reportAnalytics, journeyAnalytics, overviewAnalytics, overviewComparison, invalidateOverview, measurementAnalytics } from "./overview.js";
@@ -47,6 +48,7 @@ import {
   removeUser,
   reportCsv,
   siteStats,
+  siteCurrent,
   dashboardReport,
   overviewScope,
   siteByKey,
@@ -874,7 +876,8 @@ app.get("/api/sites/:id{[0-9]+}/stats", (c) => {
   const now = Math.floor(Date.now() / 1000);
   const range = parseRange(url.searchParams, now);
   if (range.error) return json({ error: range.error }, 400);
-  const analytics = siteStats(env.DB, site, range, now);
+  const analytics = cachedAnalytics(env.DB, site.id, "stats", range, null, now, url.searchParams.get("fresh") === "1", () => siteStats(env.DB, site, range, now));
+  analytics.current = siteCurrent(env.DB, site.id);
   return json({ site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, ...analytics });
 });
 
@@ -889,7 +892,8 @@ app.get("/api/sites/:id{[0-9]+}/report", (c) => {
   const range = parseRange(url.searchParams, now);
   if (range.error) return json({ error: range.error }, 400);
   const input = reportInput(url.searchParams);
-  const report = dashboardReport(env.DB, site, range, input, url.searchParams.get("cohort") === "1", now);
+  const cohort = url.searchParams.get("cohort") === "1";
+  const report = cachedAnalytics(env.DB, site.id, "report", range, [input,cohort], now, url.searchParams.get("fresh") === "1", () => dashboardReport(env.DB, site, range, input, cohort, now));
   if (String(url.searchParams.get("format") || "") === "csv") {
     return new Response(reportCsv(report), {
       headers: {
@@ -978,7 +982,7 @@ app.post("/api/backup", async (c) => {
   if (!csrfValid(session, csrfValue(request, body))) return htmlForm ? redirect("/users?backup=csrf") : json({ error: "csrf mismatch" }, 403);
   try {
     const snapshot = env.DB.backup();
-    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "analytics_rollup_stats_days", "analytics_rollup_hours", "analytics_rollup_events", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty"];
+    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "analytics_rollup_stats_days", "analytics_rollup_hours", "analytics_rollup_events", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty", "analytics_query_cache", "analytics_cache_days", "analytics_cache_config"];
     const counts = {};
     for (let i = 0; i < tables.length; i++) {
       counts[tables[i]] = Number(env.DB.prepare("SELECT count(*) AS n FROM " + tables[i]).first().n);

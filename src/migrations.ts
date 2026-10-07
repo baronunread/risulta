@@ -1,9 +1,10 @@
 import type { Database } from "./types.ts";
 
+import { ANALYTICS_CACHE_SCHEMA } from "./analytics-cache.js";
 import { ensureSiteSlugs } from "./sites.ts";
 import { ROLLUP_SCHEMA, STATS_ROLLUP_SCHEMA } from "./rollups.ts";
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 // Adopt legacy databases without renumbering sites or rewriting raw events.
 export function migrateSchema(db: Database): void {
@@ -13,6 +14,7 @@ export function migrateSchema(db: Database): void {
   applyMigration(db, 1, "stable site slugs", () => ensureSiteSlugs(db));
   applyMigration(db, 2, "daily analytics rollups", () => db.exec(ROLLUP_SCHEMA));
   applyMigration(db, 3, "hourly traffic and goal rollups", () => db.exec(STATS_ROLLUP_SCHEMA));
+  applyMigration(db, 4, "persistent analytics cache", () => db.exec(ANALYTICS_CACHE_SCHEMA));
 }
 
 function applyMigration(db: Database, version: number, name: string, apply: () => void): void {

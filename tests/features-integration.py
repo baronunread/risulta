@@ -47,7 +47,7 @@ def parsed(*args, **kwargs):
     return json.loads(body), response
 
 response, body = request(anonymous, '/healthz')
-assert body == b'ok\n' and response.headers['x-risulta-schema-version'] == '3'
+assert body == b'ok\n' and response.headers['x-risulta-schema-version'] == '4'
 
 request(admin, '/login', method='POST', payload={'email':os.environ['ADMIN_EMAIL'], 'password':os.environ['ADMIN_PASSWORD']})
 session, _ = parsed(admin, '/api/session')
@@ -74,8 +74,8 @@ _,body=request(admin, '/users?backup=success',headers={'Accept':'text/html'})
 assert b'Database backup created' in body
 backup,_=parsed(admin, '/api/backup',method='POST',payload={},headers=csrf)
 assert backup['ok'] and backup['bytes']>0 and backup['manifest']['tables']['read_api_keys']==0
-assert backup['manifest']['schema_version'] == 3
-assert backup['manifest']['tables']['schema_migrations'] == 3
+assert backup['manifest']['schema_version'] == 4
+assert backup['manifest']['tables']['schema_migrations'] == 4
 assert backup['manifest']['tables']['analytics_rollup_days'] == 0
 
 # Preferences must be real, bounded, admin-only and protected by CSRF.
@@ -172,15 +172,15 @@ with sqlite3.connect(state / 'd1/DB.sqlite') as historical:
 query = 'from=' + time.strftime('%Y-%m-%d', time.gmtime(today - 2 * 86400)) + '&to=' + time.strftime('%Y-%m-%d', time.gmtime(today))
 raw_stats, _ = parsed(admin, f'/api/sites/{site_id}/stats?' + query)
 report_queries = ['dimension=path', 'dimension=source', 'dimension=path&sort=value&limit=1&offset=1', 'dimension=path&path=/historical', 'dimension=event']
-raw_reports = [parsed(admin, f'/api/sites/{site_id}/report?' + query + '&' + suffix)[0] for suffix in report_queries]
-_, raw_csv = request(admin, f'/api/sites/{site_id}/report?' + query + '&dimension=path&format=csv')
+raw_reports = [parsed(admin, f'/api/sites/{site_id}/report?' + query + '&fresh=1&' + suffix)[0] for suffix in report_queries]
+_, raw_csv = request(admin, f'/api/sites/{site_id}/report?' + query + '&dimension=path&format=csv&fresh=1')
 subprocess.run([sys.executable, 'deploy/rollup-runner.py', '--data-dir', str(state), '--max-days', '1000'], check=True, capture_output=True)
-rolled_stats, _ = parsed(anonymous, f'/api/sites/{site_id}/stats?' + query, headers=bearer)
+rolled_stats, _ = parsed(anonymous, f'/api/sites/{site_id}/stats?' + query + '&fresh=1', headers=bearer)
 assert rolled_stats == raw_stats
 for suffix, raw_report in zip(report_queries, raw_reports):
-    rolled_report, _ = parsed(viewer, f'/api/sites/{site_id}/report?' + query + '&' + suffix)
+    rolled_report, _ = parsed(viewer, f'/api/sites/{site_id}/report?' + query + '&fresh=1&' + suffix)
     assert rolled_report == raw_report
-_, rolled_csv = request(viewer, f'/api/sites/{site_id}/report?' + query + '&dimension=path&format=csv')
+_, rolled_csv = request(viewer, f'/api/sites/{site_id}/report?' + query + '&dimension=path&format=csv&fresh=1')
 assert rolled_csv == raw_csv
 request(anonymous, '/api/event/' + site['publicKey'], code=202, method='POST', payload={'name':'pageview','path':'/fresh','domain':'features.example.com'})
 fresh_stats, _ = parsed(admin, f'/api/sites/{site_id}/stats?' + query)
@@ -189,6 +189,16 @@ with sqlite3.connect(state / 'd1/DB.sqlite') as historical:
     historical.execute("UPDATE events SET value=4 WHERE site_id=? AND ts<? AND name='signup'", (site_id,today))
 dirty_stats, _ = parsed(admin, f'/api/sites/{site_id}/stats?' + query)
 assert next(g for g in dirty_stats['goals'] if g['name']=='Historical signup')['value'] == 8
+
+# Closed-day results persist in SQLite; external mutations invalidate immediately.
+closed_query = 'from=' + time.strftime('%Y-%m-%d', time.gmtime(today - 2 * 86400)) + '&to=' + time.strftime('%Y-%m-%d', time.gmtime(today - 86400))
+closed_stats, _ = parsed(admin, f'/api/sites/{site_id}/stats?' + closed_query)
+assert parsed(viewer, f'/api/sites/{site_id}/stats?' + closed_query)[0] == closed_stats
+with sqlite3.connect(state / 'd1/DB.sqlite') as historical:
+    assert historical.execute('SELECT count(*) FROM analytics_query_cache WHERE site_id=?', (site_id,)).fetchone()[0] > 0
+    historical.execute("UPDATE events SET value=6 WHERE site_id=? AND ts<? AND name='signup'", (site_id,today))
+assert next(g for g in parsed(admin, f'/api/sites/{site_id}/stats?' + closed_query)[0]['goals'] if g['name']=='Historical signup')['value'] == 12
+assert parsed(admin, f'/api/sites/{site_id}/stats?' + closed_query + '&fresh=1')[0] == parsed(admin, f'/api/sites/{site_id}/stats?' + closed_query)[0]
 
 revoke=keys+'/'+str(key['id'])+'/revoke'
 request(viewer,revoke,code=403,method='POST',payload={},headers=vcsrf)

@@ -58,7 +58,7 @@ if name=='curl':
  if helper:artifact=pathlib.Path('deploy',asset).read_bytes()
  tag='nightly-20261006-0123456789ab';commit='0123456789abcdef0123456789abcdef01234567'
  if '/healthz' in url:
-  if '-D' in args:pathlib.Path(args[args.index('-D')+1]).write_text('x-risulta-schema-version: '+('1' if os.environ.get('BAD_SCHEMA_VERSION') else '3')+'\r\n')
+  if '-D' in args:pathlib.Path(args[args.index('-D')+1]).write_text('x-risulta-schema-version: '+('1' if os.environ.get('BAD_SCHEMA_VERSION') else '4')+'\r\n')
   sys.exit(22 if os.environ.get('FAIL_HEALTH') else 0)
  if url.endswith('releases/latest'):data=json.dumps({'tag_name':'v0.1.6','draft':False,'prerelease':False}).encode()
  elif 'releases?per_page=' in url:
@@ -66,7 +66,7 @@ if name=='curl':
  elif url.endswith('/release.json'):
   selected=url.split('/download/')[1].split('/')[0]
   if os.environ.get('MISSING_METADATA'):sys.exit(22)
-  data=json.dumps({'tag':'wrong' if os.environ.get('BAD_METADATA') else selected,'commit':commit,'rollup_schema_version':3 if os.environ.get('ROLLUP_RELEASE') else 0}).encode()
+  data=json.dumps({'tag':'wrong' if os.environ.get('BAD_METADATA') else selected,'commit':commit,'rollup_schema_version':4 if os.environ.get('ROLLUP_RELEASE') else 0}).encode()
  elif url.endswith('.sha256'):
   data=((('0'*64) if (os.environ.get('BAD_CHECKSUM') or (helper and os.environ.get('BAD_ROLLUP_CHECKSUM'))) else hashlib.sha256(artifact).hexdigest())+'  risulta-sprout-linux-x64\n').encode()
  else:data=artifact

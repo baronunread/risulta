@@ -102,3 +102,5 @@ the installer. Uncovered or changed days fall back to raw events during
 backfill. See [upgrade and recovery details](docs/migrations-and-rollups.md).
 
 TypeScript migration and validation commands: [docs/typescript.md](docs/typescript.md).
+
+Stats and acquisition reports cache completed historical results in SQLite for up to 24 hours, surviving restarts. Day/configuration revisions invalidate results on event or goal/funnel changes, including external imports. Live results use a five-second memory cache; current visitor counts remain fresh. Add `fresh=1` to stats/report API requests to bypass caching. See [cache and migration details](docs/migrations-and-rollups.md).

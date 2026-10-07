@@ -1,0 +1,52 @@
+{
+  "Stats live": {
+    "samples_ms": [
+      1192.3,
+      2.3,
+      2.3,
+      2.0,
+      1.7
+    ],
+    "median_ms": 2.3
+  },
+  "Stats closed": {
+    "samples_ms": [
+      392.5,
+      2.7,
+      2.5,
+      2.1,
+      2.0
+    ],
+    "median_ms": 2.5
+  },
+  "Report live": {
+    "samples_ms": [
+      53.0,
+      1.2,
+      0.9,
+      1.0,
+      1.4
+    ],
+    "median_ms": 1.2
+  },
+  "Report closed": {
+    "samples_ms": [
+      34.4,
+      1.8,
+      1.6,
+      1.6,
+      1.5
+    ],
+    "median_ms": 1.6
+  },
+  "Goals": {
+    "samples_ms": [
+      153.4,
+      1.1,
+      1.0,
+      0.9,
+      1.0
+    ],
+    "median_ms": 1.0
+  }
+}

@@ -1,3 +1,4 @@
+import { cachedAnalytics } from "./analytics-cache.js";
 import { siteJourneys } from "./journeys.js";
 import { overviewScope, overviewGoals, dashboardTraffic, dashboardSummary, dashboardReport, dashboardGoals, siteFunnels } from "./store.js";
 
@@ -72,13 +73,12 @@ export function measurementAnalytics(db, site, range, kind, now) {
 }
 
 
-// Report snapshots are bounded per range as well as across sites and filters.
-// API responses continue to use fresh reads.
+// HTML and API reports share authorized, versioned analytics results.
 export function reportAnalytics(db, site, range, input, cohort, now) {
   now = now === undefined ? Date.now() : now;
-  const entry = snapshot(db, site, range, now);
-  const key = JSON.stringify([input.dimension, input.filters, input.limit, input.offset, input.sort, cohort]);
-  return cachedReport(entry, key, now, () => dashboardReport(db, site, range, input, cohort, Math.floor(now / 1000)));
+  const seconds = Math.floor(now / 1000);
+  return cachedAnalytics(db, site.id, "report", range, [input,cohort], seconds, false,
+    () => dashboardReport(db, site, range, input, cohort, seconds));
 }
 
 export function journeyAnalytics(db, site, range, input, now) {
