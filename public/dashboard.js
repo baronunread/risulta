@@ -111,14 +111,14 @@
 
   // Preserve expanded dashboard sections across live refreshes.
   var disclosures = {};
-  document.body.addEventListener("htmx:beforeSwap", function (event) {
-    if (!event.detail || event.detail.target.id !== "live-stats") return;
+  document.body.addEventListener("htmx:before:swap", function (event) {
+    if (!event.target || event.target.id !== "live-stats") return;
     document.querySelectorAll("#live-stats details[data-disclosure]").forEach(function (detail) {
       disclosures[detail.getAttribute("data-disclosure")] = detail.open;
     });
   });
-  document.body.addEventListener("htmx:afterSwap", function (event) {
-    if (!event.detail || event.detail.target.id !== "live-stats") return;
+  document.body.addEventListener("htmx:after:swap", function (event) {
+    if (!event.target || event.target.id !== "live-stats") return;
     document.querySelectorAll("#live-stats details[data-disclosure]").forEach(function (detail) {
       detail.open = disclosures[detail.getAttribute("data-disclosure")] === true;
     });
@@ -126,13 +126,13 @@
 
   // htmx poll health. The swapped fragment carries a fresh #poll-status
   // each time, so look it up on every event rather than caching it.
-  document.body.addEventListener("htmx:afterRequest", function () {
+  document.body.addEventListener("htmx:after:request", function () {
     setStatus("live", "");
   });
-  document.body.addEventListener("htmx:responseError", function (event) {
-    setStatus("error", "Update failed (" + event.detail.xhr.status + "), retrying.");
+  document.body.addEventListener("htmx:response:error", function (event) {
+    setStatus("error", "Update failed (" + event.detail.ctx.response.status + "), retrying.");
   });
-  document.body.addEventListener("htmx:sendError", function () {
+  document.body.addEventListener("htmx:error", function () {
     setStatus("error", "Update failed (network), retrying.");
   });
 })();

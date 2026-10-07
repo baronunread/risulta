@@ -125,27 +125,48 @@ export function liveFragment(site, analytics, range, days, metric, comparison) {
       fmtInt(metrics[item[0]]) + '</strong><span class="metric-description">' + item[2] + '</span>' + delta + '</a>';
   }).join("");
   const reportLink = function (dimension) {
-    return '<a class="report-link" href="/sites/' + site.id + "/reports?" + pageQuery + "&dimension=" + dimension + '">View report &rarr;</a>';
+    return '<a class="report-link" href="/sites/' + site.id + "/reports?" + pageQuery + "&cohort=1&dimension=" + dimension + '">View report &rarr;</a>';
   };
   const conversions = analytics.hasConversions
-    ? '<details class="dashboard-disclosure" data-disclosure="conversions"><summary><span>Conversions</span><span class="disclosure-description">Goals and funnels</span></summary>' +
-      '<div class="conversions-preview"><p>See which visits led to a signup, purchase or another goal.</p><a class="button secondary" href="/sites/' + site.id +
-      '/conversions?' + pageQuery + '">View conversions</a></div></details>' : "";
-  return '<section class="panel overview-panel" aria-label="Traffic overview"><nav class="metrics overview-metrics" aria-label="Select a chart metric">' + summary + '</nav>' +
+    ? '<div id="overview-goals" class="overview-goals" hx-preserve="true" hx-get="/sites/' + site.id + '/partials/goals?' +
+      liveQuery(range, days, false) + '" hx-trigger="every 60s" hx-sync="this:drop" hx-target="this" hx-swap="innerHTML">' +
+      overviewGoalsFragment(site, analytics.goals, range, days) + '</div>' : "";
+  const acquisition = range.acquisition || "source";
+  const dimensions = [["source", "Sources", analytics.referrers], ["campaign", "Campaigns", analytics.campaigns], ["medium", "Mediums", analytics.mediums]];
+  const tabs = '<nav class="acquisition-tabs" aria-label="Acquisition reports">' + dimensions.map((item) =>
+    '<a href="/sites/' + site.id + '?' + liveQuery({ ...range, acquisition: item[0] }, days, comparison) + '&metric=' + metric + '"' +
+    (acquisition === item[0] ? ' aria-current="page"' : '') + '>' + item[1] + '</a>').join('') + '</nav>';
+  const selected = dimensions[acquisition === "campaign" ? 1 : acquisition === "medium" ? 2 : 0];
+  const rowLink = function (dimension) {
+    return function (label) {
+      const filters = { ...range.filters, [dimension]: label };
+      return '/sites/' + site.id + '?' + liveQuery({ ...range, filters }, days, comparison) + '&metric=' + metric;
+    };
+  };
+  const chips = Object.keys(range.filters || {}).map((key) => {
+    const filters = { ...range.filters }; delete filters[key];
+    return '<a class="filter-chip" href="/sites/' + site.id + '?' + liveQuery({ ...range, filters }, days, comparison) + '&metric=' + metric +
+      '" aria-label="' + escapeHtml('Remove ' + key + ' filter: ' + range.filters[key]) + '">' + escapeHtml(key + ': ' + range.filters[key]) + ' &times;</a>';
+  }).join('');
+  const filterBar = chips ? '<nav class="overview-filters" aria-label="Active visitor filters">' + chips +
+    '<a class="report-link" href="/sites/' + site.id + '?' + liveQuery({ ...range, filters: {} }, days, comparison) + '&metric=' + metric + '">Clear all</a></nav>' +
+    '<p class="hint">Showing all activity from daily visitors with a pageview matching these filters.</p>' : '';
+  return filterBar + '<section class="panel overview-panel" aria-label="Traffic overview"><nav class="metrics overview-metrics" aria-label="Select a chart metric">' + summary + '</nav>' +
     (hasData ? '<div class="chart-wrap"><div class="chart-heading"><h2>' + metricLabel + ' over time</h2><span class="hint"><strong data-metric="views-per-visit">' +
       oneDecimal(viewsPerVisit) + '</strong> pages per visit</span></div>' + chart(series, metric, metricLabel) + chart(series, metric, metricLabel, true) + '</div>' :
-      '<div class="empty"><h2>Waiting for the first visitor</h2><p>Install the tracker below. New visits will appear here live.</p></div>') + '</section>' +
+      '<div class="empty"><h2>' + (Object.keys(range.filters || {}).length ? 'No matching visitors' : 'Waiting for the first visitor') + '</h2><p>' + (Object.keys(range.filters || {}).length ? 'Try another date range or remove a filter.' : 'Install the tracker below. New visits will appear here live.') + '</p></div>') + '</section>' +
     '<div class="overview-footer"><details class="metric-help" data-disclosure="metrics"><summary>What do these numbers mean?</summary><p>Visitors are counted once per day. Someone returning on another day counts again. ' +
     'A visit is a browsing session, ending after more than 30 minutes of inactivity or at UTC midnight. Pageviews count each page loaded. Dates use UTC.</p></details>' +
-    '<a class="report-link" href="/sites/' + site.id + "?" + liveQuery(range, days, !comparison) + "&metric=" + metric + '">' +
-    (comparison ? "Hide comparison" : "Compare previous period") + '</a></div>' +
+    '</div>' +
     '<p class="hint metrics-note"><span class="status" id="poll-status" data-state="live"></span></p>' +
     '<div id="dashboard-reports" class="reports overview-reports">' +
-    reportCard("Top pages", analytics.paths, "Pages will appear after the first view.", reportLink("path")) +
-    reportCard("Traffic sources", analytics.referrers, "Sources will appear after the first visit.", reportLink("source")) + '</div>' +
-    '<details class="dashboard-disclosure" data-disclosure="campaigns"><summary><span>Campaigns</span><span class="disclosure-description">Mediums and UTM campaigns</span></summary><div class="reports">' +
-    reportCard("Mediums", analytics.mediums, "No tagged traffic in this period.", reportLink("medium")) +
-    reportCard("Campaigns", analytics.campaigns, "No campaigns in this period.", reportLink("campaign")) + '</div></details>' + conversions;
+    reportCard("Acquisition", selected[2].slice(0, 5), "No matching traffic in this period.", reportLink(selected[0]), rowLink(selected[0]), tabs) +
+    reportCard("Top pages", analytics.paths.slice(0, 5), "Pages will appear after the first view.", reportLink("path"), rowLink("path")) + '</div>' + conversions;
+
+}
+
+export function overviewGoalsFragment(site, goals, range, days) {
+  return goalCard(goals) + '<a class="report-link" href="/sites/' + site.id + '/conversions?' + liveQuery(range, days, false) + '">All goals and funnels &rarr;</a>';
 }
 
 export function conversionsPage(user, site, sites, goals, funnels, truncated, range) {
@@ -156,23 +177,33 @@ export function conversionsPage(user, site, sites, goals, funnels, truncated, ra
     goalCard(goals) + '</div><div class="funnel-stack">' + funnelCard(funnels, truncated) + '</div></div></main>', site, sites);
 }
 
-function liveQuery(range, days, compare) {
-  const base = range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days;
-  return compare ? base + "&compare=1" : base;
+function filterQuery(range) {
+  let query = '';
+  for (const key of Object.keys(range.filters || {})) query += '&' + key + '=' + encodeURIComponent(range.filters[key]);
+  return query + '&acquisition=' + (range.acquisition || 'source');
 }
 
-export function reportCard(title, rows, emptyLabel, detailLinks) {
+function liveQuery(range, days, compare) {
+  const base = range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days;
+  let query = compare ? base + "&compare=1" : base;
+  const filters = range.filters || {};
+  for (const key of Object.keys(filters)) query += "&" + key + "=" + encodeURIComponent(filters[key]);
+  if (range.acquisition) query += "&acquisition=" + range.acquisition;
+  return query;
+}
+
+export function reportCard(title, rows, emptyLabel, detailLinks, rowLink, tabs) {
   let max = 1;
   for (let i = 0; i < rows.length; i++) max = Math.max(max, Number(rows[i].visitors));
   const items = rows.length
     ? "<ol>" + rows.map((row) => {
       const width = Math.max(2, (Number(row.visitors) / max) * 100).toFixed(1);
-      return '<li><div class="row-label"><span class="truncate" title="' + escapeHtml(row.label) + '">' + escapeHtml(row.label) +
-        '</span><span class="value">' + fmtInt(row.visitors) + '</span></div><div class="meter" aria-hidden="true"><span style="width:' + width + '%"></span></div></li>';
+      const label = '<span class="truncate" title="' + escapeHtml(row.label) + '">' + escapeHtml(row.label) + '</span>';
+      return '<li><div class="row-label">' + (rowLink ? '<a class="report-row-link" href="' + escapeHtml(rowLink(row.label)) + '">' + label + '</a>' : label) + '<span class="value">' + fmtInt(row.visitors) + '</span></div><div class="meter" aria-hidden="true"><span style="width:' + width + '%"></span></div></li>';
     }).join("") + "</ol>"
     : '<p class="empty-small">' + escapeHtml(emptyLabel) + "</p>";
   const id = title.toLowerCase().replace(/ /g, "-");
-  return '<section class="report" aria-labelledby="' + id + '"><div class="report-head"><h2 id="' + id + '">' + escapeHtml(title) + "</h2>" + detailLinks + '</div><p class="report-column-label">Visitors</p>' + items + "</section>";
+  return '<section class="report" aria-labelledby="' + id + '"><div class="report-head"><h2 id="' + id + '">' + escapeHtml(title) + "</h2>" + detailLinks + '</div>' + (tabs || '') + '<p class="report-column-label">Visitors</p>' + items + "</section>";
 }
 
 export function goalCard(goals) {
@@ -201,9 +232,9 @@ export function sitePage(user, site, sites, analytics, range, days, metric, orig
   const title = range.from ? range.from + " to " + range.to : days === 1 ? "Today" : "Last " + days + " days";
   const hasData = Number(analytics.summary.pageviews) > 0;
   const compareSuffix = comparison ? "&compare=1" : "";
-  const statsBase = "/sites/" + site.id + "/partials/live?" + (range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days) + "&metric=" + metric + compareSuffix;
+  const statsBase = "/sites/" + site.id + "/partials/live?" + (range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days) + "&metric=" + metric + compareSuffix + filterQuery(range);
   const periodTabs = [1, 7, 30].map((period) =>
-    '<a href="/sites/' + site.id + "?period=" + period + "&metric=" + metric + compareSuffix + '"' + (!range.from && period === days ? ' aria-current="page"' : "") + ">" +
+    '<a href="/sites/' + site.id + "?period=" + period + "&metric=" + metric + compareSuffix + filterQuery(range) + '"' + (!range.from && period === days ? ' aria-current="page"' : "") + ">" +
     (period === 1 ? "Today" : period + "d") + "</a>").join("");
   const snippet = '<script defer src="' + origin + "/js/" + site.public_key + '.js"></script>';
   const install = '<section class="card install" aria-labelledby="install-title"><h2 id="install-title">Install the tracker</h2><p>Paste this into the <code>&lt;head&gt;</code> of ' +
@@ -213,17 +244,19 @@ export function sitePage(user, site, sites, analytics, range, days, metric, orig
     site.name + " analytics",
     user,
     '<main class="shell website-dashboard" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + "</p><h1>Overview</h1><p class=\"dashboard-period\">" + escapeHtml(title) + "</p></div>" +
-      '<div class="dashboard-controls"><div id="live-current" aria-live="polite"><span class="current"><span class="site-dot" aria-hidden="true"></span><strong id="live-current-value" data-current>' +
+      '<div class="dashboard-controls"><a class="report-link comparison-control" href="/sites/' + site.id + '?' + liveQuery(range, days, !comparison) + '&metric=' + metric + '">' + (comparison ? 'Hide comparison' : 'Compare previous period') + '</a><div id="live-current" aria-live="polite"><span class="current"><span class="site-dot" aria-hidden="true"></span><strong id="live-current-value" data-current>' +
       fmtInt(analytics.current) + '</strong> online now</span></div><nav class="periods" aria-label="Date range">' + periodTabs + "</nav>" +
       '<details class="range-picker"><summary class="button secondary">Custom range</summary>' +
       '<form class="range-form" method="get" action="/sites/' + site.id + '"><input type="hidden" name="metric" value="' + escapeHtml(metric) + '">' +
+      Object.keys(range.filters || {}).map((key) => '<input type="hidden" name="' + key + '" value="' + escapeHtml(range.filters[key]) + '">').join('') +
+      '<input type="hidden" name="acquisition" value="' + (range.acquisition || 'source') + '">' +
       (comparison ? '<input type="hidden" name="compare" value="1">' : "") +
       '<label class="compact-field" for="range-from"><span>From</span><input id="range-from" name="from" type="date" required value="' + escapeHtml(range.from) + '"></label>' +
       '<label class="compact-field" for="range-to"><span>To</span><input id="range-to" name="to" type="date" required value="' + escapeHtml(range.to) + '"></label>' +
       '<button class="button secondary" type="submit">Apply</button></form></details></div></div>' +
-      '<nav class="dashboard-navigation" aria-label="Website analytics"><a href="/sites/' + site.id + '/reports">All reports</a><a href="/sites/' + site.id + '/reports/journeys?' + liveQuery(range, days, false) + '">Visitor journeys</a></nav><div id="live-stats" data-stats-url="' + statsBase + '" hx-get="' + statsBase + '" hx-trigger="every 5s" hx-sync="this:drop" hx-target="#live-stats" hx-swap="innerHTML">' +
+      '<nav class="dashboard-navigation" aria-label="Website analytics"><a href="/sites/' + site.id + '/reports?cohort=1&' + liveQuery(range, days, false) + '">All reports</a><a href="/sites/' + site.id + '/reports/journeys?' + liveQuery(range, days, false) + '">Visitor journeys</a></nav><div id="live-stats" data-stats-url="' + statsBase + '" hx-get="' + statsBase + '" hx-trigger="every 5s" hx-sync="this:drop" hx-target="#live-stats" hx-swap="innerHTML">' +
       liveFragment(site, analytics, range, days, metric, comparison) +
-      "</div>" + (hasData ? "" : install) + "</main>",
+      "</div>" + (hasData || Object.keys(range.filters || {}).length ? "" : install) + "</main>",
     site,
     sites,
   );
@@ -352,7 +385,7 @@ export function accountPage(user, options) {
 
 export function reportsPage(user, site, sites, report, range, days) {
   const dimensions = [["path", "Pages"], ["source", "Sources"], ["medium", "Mediums"], ["campaign", "Campaigns"], ["event", "Events"]];
-  const base = { dimension: report.dimension, period: String(days), limit: String(report.limit), offset: String(report.offset), sort: report.sort };
+  const base = { cohort: report.cohort ? "1" : "", dimension: report.dimension, period: String(days), limit: String(report.limit), offset: String(report.offset), sort: report.sort };
   if (range.from) {
     base.from = range.from;
     base.to = range.to;
@@ -363,7 +396,7 @@ export function reportsPage(user, site, sites, report, range, days) {
     if (report.filters[filterNames[i]]) base[filterNames[i]] = report.filters[filterNames[i]];
   }
   const tabLink = function (dimension) {
-    const params = { dimension: dimension, period: base.period, limit: base.limit, offset: "0", sort: base.sort };
+    const params = { cohort: base.cohort, dimension: dimension, period: base.period, limit: base.limit, offset: "0", sort: base.sort };
     if (base.from) {
       params.from = base.from;
       params.to = base.to;
@@ -386,6 +419,7 @@ export function reportsPage(user, site, sites, report, range, days) {
     clearParams.to = base.to;
   }
   const filterForm = '<form class="filter-grid" method="get" action="/sites/' + site.id + '/reports">' +
+    (report.cohort ? '<input type="hidden" name="cohort" value="1">' : "") +
     '<input type="hidden" name="dimension" value="' + escapeHtml(report.dimension) + '">' +
     '<input type="hidden" name="period" value="' + escapeHtml(base.period) + '">' +
     (base.from ? '<input type="hidden" name="from" value="' + escapeHtml(base.from) + '"><input type="hidden" name="to" value="' + escapeHtml(base.to) + '">' : "") +
@@ -398,7 +432,7 @@ export function reportsPage(user, site, sites, report, range, days) {
   const previous = Math.max(0, report.offset - report.limit);
   const next = report.offset + report.limit;
   const pageParams = function (offset) {
-    const params = { dimension: base.dimension, period: base.period, limit: base.limit, offset: String(offset), sort: base.sort };
+    const params = { cohort: base.cohort, dimension: base.dimension, period: base.period, limit: base.limit, offset: String(offset), sort: base.sort };
     if (base.from) {
       params.from = base.from;
       params.to = base.to;
@@ -411,7 +445,7 @@ export function reportsPage(user, site, sites, report, range, days) {
   const pageLinks = '<nav class="actions" aria-label="Report pages">' +
     (report.offset ? '<a class="button secondary" href="' + pageParams(previous) + '">Previous</a>' : "") +
     (next < report.total ? '<a class="button secondary" href="' + pageParams(next) + '">Next</a>' : "") + "</nav>";
-  const csvParams = { dimension: base.dimension, period: base.period, limit: base.limit, offset: base.offset, sort: base.sort };
+  const csvParams = { cohort: base.cohort, dimension: base.dimension, period: base.period, limit: base.limit, offset: base.offset, sort: base.sort };
   if (base.from) {
     csvParams.from = base.from;
     csvParams.to = base.to;
@@ -425,6 +459,7 @@ export function reportsPage(user, site, sites, report, range, days) {
     user,
     '<main class="shell" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + "</p><h1>Full report</h1><p class=\"dashboard-period\">" + escapeHtml(range.label) + '</p></div><a class="button secondary" href="/sites/' + site.id + '?' + liveQuery(range, days, false) + '">Back to overview</a></div>' +
       '<nav class="periods report-tabs" aria-label="Report dimension">' + tabs + '<a href="' + journeyLink + '">Visitor journeys</a></nav>' + filterForm +
+      (report.cohort ? '<p class="hint">Showing activity from daily visitors matching the selected source, page or campaign filters.</p>' : '') +
       '<section class="card report-table-card" aria-labelledby="report-title"><div class="report-titlebar"><div><h2 id="report-title">' + escapeHtml(title) + '</h2><p class="hint">' +
       fmtInt(report.total) + " row" + (report.total === 1 ? "" : "s") + "</p></div></div>" +
       (report.rows.length
@@ -438,7 +473,7 @@ export function reportsPage(user, site, sites, report, range, days) {
 }
 
 function clearJourneyRange(range, days) {
-  return range.from ? { from: range.from, to: range.to } : { period: String(days) };
+  return { ...(range.from ? { from: range.from, to: range.to } : { period: String(days) }), ...range.filters, cohort: "1" };
 }
 
 function journeyTime(ts) {
@@ -490,6 +525,7 @@ export function journeysPage(user, site, sites, report, range) {
     '<div class="journeys-toolbar"><p><strong>' + fmtInt(report.total) + (report.truncated ? "+" : "") +
     (report.total === 1 ? " visit" : " visits") + '</strong><span>' + escapeHtml(range.label) + '</span></p>' +
     (report.visitor ? '<a class="button secondary" href="' + link("", 0) + '">All visitors</a>' : "") + '</div>' +
+    (Object.keys(range.filters || {}).length ? '<p class="hint">Daily visitors matching: ' + escapeHtml(Object.keys(range.filters).map((key) => key + ': ' + range.filters[key]).join(', ')) + '</p>' : '') +
     '<details class="journeys-note"><summary>How visits are grouped</summary><p>Visitor hashes are anonymous, site-specific and reset daily. ' +
     'A new visit starts after more than 30 minutes of inactivity or at UTC midnight. All event types are included. ' +
     'Only activity within the selected range is shown.</p></details>' +
@@ -500,7 +536,7 @@ export function journeysPage(user, site, sites, report, range) {
 }
 
 function reportQuery(params) {
-  const names = ["dimension", "period", "from", "to", "limit", "offset", "sort", "path", "source", "medium", "campaign", "event"];
+  const names = ["cohort", "dimension", "period", "from", "to", "limit", "offset", "sort", "path", "source", "medium", "campaign", "event"];
   const parts = [];
   for (let i = 0; i < names.length; i++) {
     const value = params[names[i]];

@@ -73,3 +73,16 @@ Final five-request local observations after closing the automation browser are i
 The first nightly is [nightly-20261006-79e88c783332](https://github.com/baronunread/risulta/releases/tag/nightly-20261006-79e88c783332). Both static Linux x64 and ARM64 artifacts passed the native release tests. Normal CI passed as well, and GitHub's stable latest release remains v0.1.6.
 
 The published x64 artifact was downloaded, checked against its checksum and exact commit metadata, then passed 88 existing checks and 63 feature HTTP checks in each proxy mode on the VPS. A first VPS attempt exposed a false failure in the rate-limit test: 300 requests straddled a minute boundary, with 169 and 131 requests in the adjacent windows. The harness now allows 481 requests (twice the 240-request limit plus one), stopping at the first 429. The limiter itself required no change.
+
+
+### Visible overview reports (October 7)
+
+The overview now shows five acquisition rows (Sources, Campaigns, Mediums tabs), five top pages, and five configured goals without expanding disclosures. Clicking a report row selects daily visitor identities with matching pageviews; combined filters intersect those identities, so a source can be combined with a page reached later. Filters carry through chart metrics, dates, comparison, polling, full reports, CSV exports, conversions and journeys.
+
+Goal previews refresh independently every 60 seconds and remain in place during five-second traffic updates. The preview uses a bounded goal list and materialized matching events, without a full funnel scan. New overview tests cover cohort intersection, cross-site isolation, parameterized filters, zero-hit goals, session counts and journey scope. The full suite, lint, native check and host build passed. Browser checks covered login, source filtering, tabs, combined-filter comparisons, detailed report links, 320px layout, and preserving the goals node through traffic updates.
+
+On the existing 1,001,005-event disposable dataset, one Bun/SQLite sample of the selected site's seven-day window (37,877 pageviews) measured approximately 1,348ms for initial analytics including goals and 566ms for traffic-only polling. These are local database timings, not HTTP benchmarks or isolated production throughput.
+
+Screenshots: `screenshots/stress-ui/overview-visible-desktop.png` and `screenshots/stress-ui/overview-visible-mobile.png`.
+
+Browser glue now uses the bundled htmx 4 event names and response context, restoring disclosure persistence and poll status handling.

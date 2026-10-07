@@ -44,6 +44,8 @@ import {
   removeUser,
   reportCsv,
   siteAnalytics,
+  overviewScope,
+  overviewGoals,
   siteByKey,
   siteForKey,
   siteReport,
@@ -72,6 +74,7 @@ import {
   usersPage,
   backupsPage,
   conversionsPage,
+  overviewGoalsFragment,
 } from "./views.js";
 import { journeyInput, siteJourneys } from "./journeys.js";
 import { avatarFor } from "./avatar.js";
@@ -579,12 +582,16 @@ app.get("/sites/:id{[0-9]+}", (c) => {
   const days = rangeDays(range);
   const metricParam = url.searchParams.get("metric") || "visitors";
   const metric = metricParam === "visits" || metricParam === "pageviews" ? metricParam : "visitors";
-  const analytics = siteAnalytics(env.DB, site, range.since, range.until, false);
+  range.filters = reportInput(url.searchParams).filters;
+  delete range.filters.event;
+  range.acquisition = ["source", "campaign", "medium"].indexOf(url.searchParams.get("acquisition")) >= 0 ? url.searchParams.get("acquisition") : "source";
+  const scopedDb = overviewScope(env.DB, site.id, range.since, range.until, range.filters);
+  const analytics = siteAnalytics(scopedDb, site, range.since, range.until, false);
   // Previous-period comparison: the summary for the immediately preceding
   // window of the same length, like the Bun app.
   let comparison = null;
   if (url.searchParams.get("compare") === "1") {
-    comparison = siteSummary(env.DB, site.id, range.since - days * 86400, range.since);
+    comparison = siteSummary(overviewScope(env.DB, site.id, range.since - days * 86400, range.since, range.filters), site.id, range.since - days * 86400, range.since);
   }
   const sites = listSitesForUser(env.DB, session);
   return new Response(sitePage(session, site, sites, analytics, range, days, metric, publicOrigin(c.req.raw, url), comparison),
@@ -795,14 +802,34 @@ app.get("/sites/:id{[0-9]+}/partials/live", (c) => {
   const days = rangeDays(range);
   const metricParam = url.searchParams.get("metric") || "visitors";
   const metric = metricParam === "visits" || metricParam === "pageviews" ? metricParam : "visitors";
-  const analytics = siteAnalytics(env.DB, site, range.since, range.until, false);
+  range.filters = reportInput(url.searchParams).filters;
+  delete range.filters.event;
+  range.acquisition = ["source", "campaign", "medium"].indexOf(url.searchParams.get("acquisition")) >= 0 ? url.searchParams.get("acquisition") : "source";
+  const scopedDb = overviewScope(env.DB, site.id, range.since, range.until, range.filters);
+  const analytics = siteAnalytics(scopedDb, site, range.since, range.until, false, false);
   let comparison = null;
   if (url.searchParams.get("compare") === "1") {
-    comparison = siteSummary(env.DB, site.id, range.since - days * 86400, range.since);
+    comparison = siteSummary(overviewScope(env.DB, site.id, range.since - days * 86400, range.since, range.filters), site.id, range.since - days * 86400, range.since);
   }
   const oobCurrent = '<strong id="live-current-value" data-current hx-swap-oob="true">' + fmtInt(analytics.current) + "</strong>";
   return new Response(oobCurrent + liveFragment(site, analytics, range, days, metric, comparison),
     { headers: { "content-type": "text/html;charset=utf-8" } });
+});
+
+// Goal previews refresh independently from the five-second traffic poll.
+app.get("/sites/:id{[0-9]+}/partials/goals", (c) => {
+  const site = getSiteForUser(env.DB, Number(c.req.param("id")), c.get("session"));
+  if (!site) return json({ error: "unknown site" }, 404);
+  const q = new URL(c.req.url).searchParams;
+  const range = parseRange(q, Math.floor(Date.now() / 1000));
+  if (range.error) return json({ error: range.error }, 400);
+  range.filters = reportInput(q).filters;
+  delete range.filters.event;
+  const db = overviewScope(env.DB, site.id, range.since, range.until, range.filters);
+  const visitors = db.prepare("SELECT count(DISTINCT visitor) AS n FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'")
+    .bind(site.id, range.since, range.until).first().n;
+  return new Response(overviewGoalsFragment(site, overviewGoals(db, site.id, range.since, range.until, Number(visitors)), range, rangeDays(range)),
+    { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 });
 
 // Stats: D1-backed summary with 30-minute visit boundary, configured
@@ -833,8 +860,8 @@ app.get("/api/sites/:id{[0-9]+}/report", (c) => {
   if (range.error) return json({ error: range.error }, 400);
   const input = reportInput(url.searchParams);
   const report = siteReport(
-    env.DB, site.id, range.since, range.until,
-    input.dimension, input.filters, input.limit, input.offset, input.sort,
+    url.searchParams.get("cohort") === "1" ? overviewScope(env.DB, site.id, range.since, range.until, input.filters) : env.DB, site.id, range.since, range.until,
+    input.dimension, url.searchParams.get("cohort") === "1" ? { event: input.filters.event } : input.filters, input.limit, input.offset, input.sort,
   );
   if (String(url.searchParams.get("format") || "") === "csv") {
     return new Response(reportCsv(report), {
@@ -866,9 +893,12 @@ app.get("/sites/:id{[0-9]+}/reports", (c) => {
   const days = rangeDays(range);
   const input = reportInput(url.searchParams);
   const report = siteReport(
-    env.DB, site.id, range.since, range.until,
-    input.dimension, input.filters, input.limit, input.offset, input.sort,
+    url.searchParams.get("cohort") === "1" ? overviewScope(env.DB, site.id, range.since, range.until, input.filters) : env.DB, site.id, range.since, range.until,
+    input.dimension, url.searchParams.get("cohort") === "1" ? { event: input.filters.event } : input.filters, input.limit, input.offset, input.sort,
   );
+  report.filters = input.filters;
+  report.cohort = url.searchParams.get("cohort") === "1";
+  range.filters = input.filters;
   const sites = listSitesForUser(env.DB, session);
   return new Response(reportsPage(session, site, sites, report, range, days),
     { headers: { "content-type": "text/html;charset=utf-8" } });
@@ -884,7 +914,7 @@ app.get("/api/sites/:id{[0-9]+}/journeys", (c) => {
   const input = journeyInput(params);
   if (range.error || input.error) return json({ error: range.error || input.error }, 400);
   return json({ site: { id: site.id, name: site.name, domain: site.domain }, range,
-    ...siteJourneys(env.DB, site.id, range.since, range.until, input) }, 200, { "cache-control": "no-store" });
+    ...siteJourneys(overviewScope(env.DB, site.id, range.since, range.until, reportInput(params).filters), site.id, range.since, range.until, input) }, 200, { "cache-control": "no-store" });
 });
 
 app.get("/sites/:id{[0-9]+}/reports/journeys", (c) => {
@@ -900,7 +930,9 @@ app.get("/sites/:id{[0-9]+}/reports/journeys", (c) => {
       '<main class="shell" id="main"><h1>' + escapeHtml(message) + "</h1></main>", null, []),
       { status: !site ? 404 : 400, headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
   }
-  const report = siteJourneys(env.DB, site.id, range.since, range.until, input);
+  range.filters = reportInput(params).filters;
+  delete range.filters.event;
+  const report = siteJourneys(overviewScope(env.DB, site.id, range.since, range.until, range.filters), site.id, range.since, range.until, input);
   return new Response(journeysPage(session, site, listSitesForUser(env.DB, session), report, range),
     { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 });
@@ -944,11 +976,15 @@ app.get("/sites/:id{[0-9]+}/conversions", (c) => {
   const session = c.get("session");
   const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
   if (!site) return new Response("Unknown site", { status: 404 });
-  const range = parseRange(new URL(c.req.url).searchParams, Math.floor(Date.now() / 1000));
+  const q = new URL(c.req.url).searchParams;
+  const range = parseRange(q, Math.floor(Date.now() / 1000));
   if (range.error) return new Response(range.error, { status: 400 });
-  const summary = siteSummary(env.DB, site.id, range.since, range.until);
-  const goals = siteGoals(env.DB, site.id, range.since, range.until, Number(summary.visitors));
-  const result = siteFunnels(env.DB, site.id, range.since, range.until);
+  range.filters = reportInput(q).filters;
+  delete range.filters.event;
+  const scopedDb = overviewScope(env.DB, site.id, range.since, range.until, range.filters);
+  const summary = siteSummary(scopedDb, site.id, range.since, range.until);
+  const goals = siteGoals(scopedDb, site.id, range.since, range.until, Number(summary.visitors));
+  const result = siteFunnels(scopedDb, site.id, range.since, range.until);
   return new Response(conversionsPage(session, site, listSitesForUser(env.DB, session), goals, result.funnels, result.truncated, range),
     { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 });

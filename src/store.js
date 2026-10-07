@@ -336,7 +336,40 @@ export function siteFunnels(db, siteId, since, until) {
   return { funnels: out, truncated };
 }
 
-export function siteAnalytics(db, site, since, until, includeConversions) {
+// Overview filters select daily visitor identities with a matching pageview.
+// All their events remain available so source/page filters can explain goals.
+export function overviewScope(db, siteId, since, until, filters) {
+  const clauses = [];
+  const values = [];
+  const columns = [["path", "path"], ["source", "coalesce(nullif(source,''),'Direct / None')"],
+    ["medium", "coalesce(nullif(medium,''),'None')"], ["campaign", "coalesce(nullif(campaign,''),'None')"]];
+  for (let i = 0; i < columns.length; i++) {
+    const value = filters && filters[columns[i][0]];
+    if (value) { clauses.push("visitor IN (SELECT visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' AND " + columns[i][1] + " = ?)"); values.push(siteId, since, until, value); }
+  }
+  if (!clauses.length) return db;
+  const prefix = "WITH overview_events AS (SELECT * FROM events WHERE site_id = ? AND ts >= ? - 1800 AND ts < ? AND " + clauses.join(" AND ") + ") ";
+  // Only event reads are scoped. Configuration and access checks use the original DB.
+  return { prepare(sql) {
+    if (sql.indexOf("FROM events") === -1) return db.prepare(sql);
+    const scoped = sql.replace(/FROM events/g, "FROM overview_events");
+    const query = db.prepare(prefix + (scoped.indexOf("WITH ") === 0 ? ", " + scoped.slice(5) : scoped));
+    return { bind(...args) { return query.bind(siteId, since, until, ...values, ...args); } };
+  } };
+}
+
+// One aggregate query previews five goals, including configured goals with no hits.
+export function overviewGoals(db, siteId, since, until, visitors) {
+  const rows = db.prepare("WITH preview AS (SELECT * FROM goals WHERE site_id = ? ORDER BY id LIMIT 5), " +
+    "eligible AS MATERIALIZED (SELECT DISTINCT visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'), " +
+    "hits AS MATERIALIZED (SELECT id, name, path, visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name IN (SELECT event_name FROM preview)) " +
+    "SELECT g.name, count(e.id) AS conversions, count(DISTINCT CASE WHEN e.visitor IN (SELECT visitor FROM eligible) THEN e.visitor END) AS unique_conversions " +
+    "FROM preview g LEFT JOIN hits e ON e.name = g.event_name AND (g.path = '' OR e.path = g.path) GROUP BY g.id ORDER BY g.id")
+    .bind(siteId, siteId, since, until, siteId, since, until).all().results;
+  return rows.map((row) => ({ ...row, conversion_rate: visitors ? Number(row.unique_conversions) / visitors : 0 }));
+}
+
+export function siteAnalytics(db, site, since, until, includeConversions, previewGoals) {
   const summary = db.prepare(
     "SELECT count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'",
@@ -377,7 +410,7 @@ export function siteAnalytics(db, site, since, until, includeConversions) {
     referrers: topList(db, site.id, since, until, "coalesce(nullif(source,''),'Direct / None')"),
     mediums: topList(db, site.id, since, until, "coalesce(nullif(medium,''),'None')"),
     campaigns: topList(db, site.id, since, until, "coalesce(nullif(campaign,''),'None')"),
-    goals: includeConversions === false ? [] : siteGoals(db, site.id, since, until, visitors),
+    goals: includeConversions === false ? (previewGoals === false ? [] : overviewGoals(db, site.id, since, until, visitors)) : siteGoals(db, site.id, since, until, visitors),
     hasConversions: includeConversions === false ? Number(db.prepare(
       "SELECT (SELECT count(*) FROM goals WHERE site_id = ?) + (SELECT count(*) FROM funnels WHERE site_id = ?) AS n",
     ).bind(site.id, site.id).first().n) > 0 : false,
