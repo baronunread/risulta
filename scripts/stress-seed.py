@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
+from demo_traffic import profile_for
 
 DEFAULT_EVENTS = 250_000
 MAX_EVENTS = 1_000_000
@@ -152,6 +153,7 @@ def event_rows(sites, count):
     for weight in weights:
         total_weight += weight
         cumulative.append(total_weight)
+    day_weights = [[1] * 83 + list(profile_for(i)) for i in range(len(sites))]
     rows = []
     sequence = 0
     visitor_number = [0] * len(sites)
@@ -162,9 +164,8 @@ def event_rows(sites, count):
         session_length = min(rng.randint(2, 6), count - sequence)
         visitor_no = visitor_number[site_index]
         visitor_number[site_index] += 1
-        # Most sessions fall across the 90-day range, with frequent traffic
-        # today so current dashboards and same-day journey filters are useful.
-        day_offset = 89 if rng.random() < 0.18 else rng.randrange(89)
+        # Give each website its own recent pattern, rather than a shared today spike.
+        day_offset = rng.choices(range(90), weights=day_weights[site_index], k=1)[0]
         day_start = start + day_offset * 86400
         if day_offset == 89:
             anchor = max(day_start, now - rng.randint(20 * 60, 5 * 3600))
