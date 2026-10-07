@@ -177,6 +177,17 @@ _, raw_csv = request(admin, f'/api/sites/{site_id}/report?' + query + '&dimensio
 subprocess.run([sys.executable, 'deploy/rollup-runner.py', '--data-dir', str(state), '--max-days', '1000'], check=True, capture_output=True)
 rolled_stats, _ = parsed(anonymous, f'/api/sites/{site_id}/stats?' + query + '&fresh=1', headers=bearer)
 assert rolled_stats == raw_stats
+trace_stats, trace_response = parsed(admin, f'/api/sites/{site_id}/stats?' + query + '&trace=1')
+trace = trace_stats.pop('trace')
+assert trace_stats == raw_stats and trace['spans']
+assert 'db;dur=' in trace_response.headers['server-timing']
+assert any(span['plan'] for span in trace['spans'])
+request(viewer, f'/api/sites/{site_id}/stats?trace=1', code=403)
+request(anonymous, f'/api/sites/{site_id}/stats?trace=1', code=403, headers=bearer)
+trace_report, _ = parsed(admin, f'/api/sites/{site_id}/report?' + query + '&dimension=path&trace=1')
+assert trace_report.pop('trace')['spans']
+assert trace_report == raw_reports[0]
+
 traffic_stats, _ = parsed(viewer, f'/api/sites/{site_id}/stats?' + query + '&include=traffic&fresh=1')
 assert traffic_stats['summary'] == raw_stats['summary'] and traffic_stats['byDay'] == raw_stats['byDay']
 assert not any(key in traffic_stats for key in ('byHour','paths','referrers','goals','funnels'))
