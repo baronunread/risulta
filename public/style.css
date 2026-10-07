@@ -257,6 +257,12 @@ main{flex:1 0 auto;padding-block:56px 72px}.titlebar{display:flex;align-items:fl
 .overview-goals .hint{margin-block:8px 0}
 @media(max-width:760px){.overview-goals .report ol{grid-template-columns:1fr}.acquisition-tabs a{padding-inline:8px}}
 
+.chart-guide{opacity:0;pointer-events:none}.chart.is-inspecting .chart-guide{opacity:1}
+.chart-tooltip{position:fixed;left:0;top:0;z-index:20;pointer-events:none;max-width:calc(100vw - 16px);padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);box-shadow:0 4px 16px rgba(0,0,0,.12);font-size:13px;line-height:1.5}
+.chart-tooltip[hidden]{display:none}.chart-tooltip span,.chart-tooltip strong{display:block}.chart-tooltip span{color:var(--muted);font-size:12px}.chart-tooltip strong{font-weight:600;font-variant-numeric:tabular-nums}
+
+@media(prefers-reduced-motion:no-preference){.chart-tooltip.is-drifting{transition:transform 140ms cubic-bezier(.2,.8,.2,1)}}
+
 @media(max-width:600px){.overview-metric strong{grid-column:1/-1}.overview-metric .metric-comparison{grid-column:1/-1;grid-row:3;font-size:11px}}
 
 .site-tabs{gap:24px;border-block-end:1px solid var(--line);flex-wrap:nowrap;overflow-x:auto}.site-tabs a{min-height:44px;flex-shrink:0;white-space:nowrap}.site-tabs a[aria-current]{color:var(--fg);font-weight:500;box-shadow:inset 0 -2px var(--fg)}

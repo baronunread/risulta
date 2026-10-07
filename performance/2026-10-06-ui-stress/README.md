@@ -86,3 +86,21 @@ On the existing 1,001,005-event disposable dataset, one Bun/SQLite sample of the
 Screenshots: `screenshots/stress-ui/overview-visible-desktop.png` and `screenshots/stress-ui/overview-visible-mobile.png`.
 
 Browser glue now uses the bundled htmx 4 event names and response context, restoring disclosure persistence and poll status handling.
+
+### Overview interaction follow-up (2026-10-07)
+
+Acquisition reports now switch locally using their already-loaded rows. Browser verification measured a 2.2 ms switch without replacing the document; Back restored the previous tab. Selection survives traffic refreshes. JavaScript-disabled links still navigate normally.
+
+A covering event index replaces the narrower site/name/time index, avoiding repeated event-table lookups for overview aggregates. On the same million-event local database, before/after samples were 714/362 ms for initial overview queries and 718/227 ms for traffic-only queries. An empty source cohort was 1186/100 ms initially; a one-visitor path cohort was 1452/99 ms. These are database samples, not production HTTP benchmarks. The larger index adds storage and write work; it is created before the old index is removed.
+
+Full overview polling now runs every 30 seconds, while goal previews retain their independent 60-second refresh. This reduces recurring aggregation load sixfold per open overview.
+
+### Shared overview snapshots (2026-10-07)
+
+Native HTTP measurements on the same dataset identified repeated aggregation as the remaining interaction cost: an overview response took 388 ms, a metric switch 346 ms, a Google-filtered overview 533 ms, and its traffic fragment 199 ms. Each request rebuilt essentially identical aggregates.
+
+Overview routes now share bounded process-local snapshots (32 ranges/filters across DBs and sites). Traffic expires after 15 seconds and goal previews after 60 seconds. Authorization runs before every cache lookup. Goal/funnel creation invalidates the site's entries. Fixed date ranges and live ranges remain distinct; comparison queries are cached separately. Multi-day overviews skip unused hourly aggregation. Read APIs retain their existing fresh query behavior.
+
+After rebuilding, native HTTP samples were: cold seven-day overview 348 ms; subsequent Visits/Pageviews changes 4/3 ms; cold Google-filtered overview 322 ms; filtered metric change 2 ms; warmed traffic and goal fragments 2 ms each. These are local sequential samples, not production concurrency guarantees. Cold aggregation still scales with the selected events.
+
+Tests cover reuse, traffic and goal expiry, filter/site/database separation, bounded eviction, settings invalidation, retained hourly charts for Today, and goal preview preservation across traffic polling. Browser checks confirm filtered metrics of 1,793 visitors, 1,904 visits and 4,799 pageviews and prevent unauthenticated access to warmed snapshots.
