@@ -139,7 +139,9 @@ _,body=request(viewer,f'/sites/{site_slug}/reports/journeys?period=7&visitor='+v
 assert b'/first' in body and b'/fourth' in body and b'/private' not in body
 request(viewer, f'/sites/{other_id}/conversions', code=404)
 request(anonymous, f'/sites/{site_slug}/conversions', code=303, headers={'Accept':'text/html'})
-request(viewer, f'/sites/{site_slug}/conversions', headers={'Accept':'text/html'})
+response,_ = request(viewer, f'/sites/{site_slug}/conversions', code=308, headers={'Accept':'text/html'})
+assert response.headers['Location'].startswith(f'/sites/{site_slug}/goals')
+request(viewer, f'/sites/{site_slug}/goals', headers={'Accept':'text/html'})
 _,body=request(admin,f'/sites/{site_slug}/reports',headers={'Accept':'text/html'})
 assert b'/reports/journeys' in body and b'Journeys</a>' in body
 
