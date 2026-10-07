@@ -106,3 +106,5 @@ The release metadata and health header now advertise schema 3. The installer
 continues to pause old workers and verify matching health before replacing and
 resuming the worker. Previous schema-2 executables and workers reject the newer
 schema; recovery requires the saved paired database and executable.
+
+Migration 3 also adds `idx_events_site_ts_funnels`, a covering index on site, timestamp, visitor, event name and path. Funnel calculations keep their capped ordered raw stream inside SQLite and return aggregate step counts, preserving repeated-step behavior and the truncation flag. This index adds storage and maintenance on event writes; no raw events are removed.

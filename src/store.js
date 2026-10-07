@@ -298,28 +298,29 @@ export const FUNNEL_EVENT_LIMIT = 50000;
 export function siteFunnels(db, siteId, since, until) {
   const funnels = listFunnels(db, siteId);
   if (!funnels.length) return { funnels: [], truncated: false };
-  const events = db.prepare(
-    "SELECT visitor, ts, name, path FROM events WHERE site_id = ? AND ts >= ? AND ts < ? ORDER BY visitor, ts LIMIT ?",
-  ).bind(siteId, since, until, FUNNEL_EVENT_LIMIT).all().results;
-  const truncated = events.length >= FUNNEL_EVENT_LIMIT;
+  const selected = "SELECT visitor, ts, name, path FROM events WHERE site_id = ? AND ts >= ? AND ts < ? ORDER BY visitor, ts LIMIT ?";
+  // Keep event sequences inside SQLite instead of transferring the capped stream.
+  const clauses = ["selected AS MATERIALIZED (" + selected + ")", "ranked AS MATERIALIZED (SELECT visitor,name,path,row_number() OVER (ORDER BY visitor,ts) AS position FROM selected)"];
+  const args = [siteId, since, until, FUNNEL_EVENT_LIMIT];
+  const totals = ["SELECT count(*) AS conversions,-1 AS funnel,-1 AS step FROM selected"];
+  for (let i = 0; i < funnels.length; i++) {
+    for (let step = 0; step < funnels[i].steps.length; step++) {
+      const goal = funnels[i].steps[step];
+      const prefix = "f" + i + "step";
+      clauses.push(prefix + step + " AS (SELECT e.visitor,min(e.position) AS position FROM ranked e" +
+        (step ? " JOIN " + prefix + (step - 1) + " p ON p.visitor=e.visitor AND e.position>p.position" : "") +
+        " WHERE e.name=?" + (goal.path ? " AND e.path=?" : "") + " GROUP BY e.visitor)");
+      args.push(goal.event_name);
+      if (goal.path) args.push(goal.path);
+      totals.push("SELECT count(*) AS conversions," + i + " AS funnel," + step + " AS step FROM " + prefix + step);
+    }
+  }
+  const rows = db.prepare("WITH " + clauses.join(",") + " " + totals.join(" UNION ALL ") + " ORDER BY funnel,step").bind(...args).all().results;
+  const truncated = Number(rows[0].conversions) >= FUNNEL_EVENT_LIMIT;
   const out = [];
   for (let i = 0; i < funnels.length; i++) {
     const funnel = funnels[i];
-    // Plain objects stand in for Sets (visitor identity per step); the
-    // runtime subset is safer without Set.
-    const completed = [];
-    for (let s = 0; s < funnel.steps.length; s++) completed.push({});
-    const positions = {};
-    for (let e = 0; e < events.length; e++) {
-      const event = events[e];
-      const position = positions[event.visitor] || 0;
-      const step = funnel.steps[position];
-      if (!step || event.name !== step.event_name || (step.path && event.path !== step.path)) continue;
-      completed[position][event.visitor] = 1;
-      positions[event.visitor] = position + 1;
-    }
-    const counts = [];
-    for (let s = 0; s < completed.length; s++) counts.push(Object.keys(completed[s]).length);
+    const counts = rows.filter((row) => Number(row.funnel) === i).map((row) => Number(row.conversions));
     out.push({
       id: funnel.id,
       name: funnel.name,

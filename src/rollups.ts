@@ -51,6 +51,7 @@ export function rollupReport(db: Database, siteId: number, since: number, until:
 
 // Separate coverage keeps existing daily reads available during a v2 upgrade.
 export const STATS_ROLLUP_SCHEMA =
+  "CREATE INDEX IF NOT EXISTS idx_events_site_ts_funnels ON events(site_id,ts,visitor,name,path);" +
   "CREATE TABLE IF NOT EXISTS analytics_rollup_stats_days (site_id INTEGER NOT NULL, day INTEGER NOT NULL, built_at INTEGER NOT NULL, PRIMARY KEY (site_id, day)) WITHOUT ROWID;" +
   "CREATE TABLE IF NOT EXISTS analytics_rollup_hours (site_id INTEGER NOT NULL, day INTEGER NOT NULL, hour INTEGER NOT NULL, visitor TEXT NOT NULL, pageviews INTEGER NOT NULL, visits INTEGER NOT NULL, PRIMARY KEY (site_id, day, hour, visitor)) WITHOUT ROWID;" +
   "CREATE TABLE IF NOT EXISTS analytics_rollup_events (site_id INTEGER NOT NULL, day INTEGER NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL, visitor TEXT NOT NULL, events INTEGER NOT NULL, value REAL NOT NULL, PRIMARY KEY (site_id, day, name, path, visitor)) WITHOUT ROWID;";
