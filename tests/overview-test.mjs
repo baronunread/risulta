@@ -1,3 +1,4 @@
+import { ROLLUP_SCHEMA } from '../src/rollups.js';
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { overviewScope, siteAnalytics, siteSummary, siteReport } from '../src/store.js';
@@ -8,6 +9,7 @@ const sqlite = new Database(':memory:');
 sqlite.exec(`CREATE TABLE events(id INTEGER PRIMARY KEY,site_id INTEGER,ts INTEGER,name TEXT,path TEXT,visitor TEXT,source TEXT,medium TEXT,campaign TEXT,value REAL);
 CREATE TABLE goals(id INTEGER PRIMARY KEY,site_id INTEGER,name TEXT,event_name TEXT,path TEXT);
 CREATE TABLE funnels(id INTEGER PRIMARY KEY,site_id INTEGER,name TEXT);`);
+sqlite.exec(ROLLUP_SCHEMA);
 const db = { prepare(sql) { return { bind(...args) { return { first() { return sqlite.query(sql).get(...args); }, all() { return { results: sqlite.query(sql).all(...args) }; } }; } }; } };
 const insert = sqlite.query('INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?)');
 insert.run(1,1,100,'pageview','/landing','a','Google','organic','launch',null);

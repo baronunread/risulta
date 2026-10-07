@@ -93,3 +93,8 @@ Administrators can open `/backups` to create snapshots, choose a manual/daily/we
 The [UI stress report](performance/2026-10-06-ui-stress/README.md) covers the million-event local dataset, before/after screenshots, backup restoration and remaining performance limits. To generate disposable preview traffic, use `python3 scripts/stress-seed.py --data-dir /tmp/risulta-stress-your-preview --events 1000000` after initializing a standalone demo instance. The script refuses production directories and repeat runs.
 
 Demo websites use distinct recent traffic profiles: growth, decline, steady traffic, campaigns and recovery. To refresh an existing stress-seeded preview, run `python3 scripts/refresh-demo-trends.py --data-dir /tmp/risulta-local-preview-20261006`. This redistributes recent visitor groups while preserving event count and within-group timing. It only accepts marked disposable preview directories.
+
+Daily rollups accelerate unfiltered Overview and Reports. Schema upgrades run
+automatically, and releases that include the worker enable its timer through
+the installer. Uncovered or changed days fall back to raw events during
+backfill. See [upgrade and recovery details](docs/migrations-and-rollups.md).

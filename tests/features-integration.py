@@ -46,6 +46,9 @@ def parsed(*args, **kwargs):
     response, body = request(*args, **kwargs)
     return json.loads(body), response
 
+response, body = request(anonymous, '/healthz')
+assert body == b'ok\n' and response.headers['x-risulta-schema-version'] == '2'
+
 request(admin, '/login', method='POST', payload={'email':os.environ['ADMIN_EMAIL'], 'password':os.environ['ADMIN_PASSWORD']})
 session, _ = parsed(admin, '/api/session')
 csrf = {'X-CSRF-Token': session['csrf']}
@@ -71,6 +74,9 @@ _,body=request(admin, '/users?backup=success',headers={'Accept':'text/html'})
 assert b'Database backup created' in body
 backup,_=parsed(admin, '/api/backup',method='POST',payload={},headers=csrf)
 assert backup['ok'] and backup['bytes']>0 and backup['manifest']['tables']['read_api_keys']==0
+assert backup['manifest']['schema_version'] == 2
+assert backup['manifest']['tables']['schema_migrations'] == 2
+assert backup['manifest']['tables']['analytics_rollup_days'] == 0
 
 # Preferences must be real, bounded, admin-only and protected by CSRF.
 settings_path = '/api/backup/settings'

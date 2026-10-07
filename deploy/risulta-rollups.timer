@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Risulta daily analytics rollups
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+Unit=risulta-rollups.service
+
+[Install]
+WantedBy=timers.target

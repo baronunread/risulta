@@ -3,6 +3,9 @@ set -eu
 
 REPOSITORY="${RISULTA_REPOSITORY:-baronunread/risulta}"
 INSTALL_PATH="/usr/local/bin/risulta-sprout"
+ROLLUP_LIB_DIR="/usr/local/lib/risulta-sprout"
+ROLLUP_SERVICE_FILE="/etc/systemd/system/risulta-rollups.service"
+ROLLUP_TIMER_FILE="/etc/systemd/system/risulta-rollups.timer"
 ENV_DIR="/etc/risulta-sprout"
 ENV_FILE="$ENV_DIR/risulta-sprout.env"
 DATA_DIR="/var/lib/risulta-sprout"
@@ -107,7 +110,10 @@ save_release_state() {
 wait_healthy() {
   attempt=0
   while [ "$attempt" -lt 30 ]; do
-    if systemctl is-active --quiet risulta-sprout && curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then return 0; fi
+    if systemctl is-active --quiet risulta-sprout && curl -fsS -D "$tmp_dir/health.headers" "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
+      healthy_schema="$(awk 'tolower($1) == "x-risulta-schema-version:" { gsub("\r", "", $2); print $2 }' "$tmp_dir/health.headers")"
+      if [ "${rollup_schema_version:-0}" -eq 0 ] || [ "$healthy_schema" = "$rollup_schema_version" ]; then return 0; fi
+    fi
     attempt=$((attempt + 1))
     sleep 1
   done
@@ -187,6 +193,23 @@ policy_created=0
 service_stopped=0
 binary_replaced=0
 backup_target=""
+rollups_timer_paused=0
+rollups_service_paused=0
+pause_rollups() {
+  if systemctl is-active --quiet risulta-rollups.timer 2>/dev/null; then
+    systemctl stop risulta-rollups.timer
+    rollups_timer_paused=1
+  fi
+  if systemctl is-active --quiet risulta-rollups.service 2>/dev/null; then
+    systemctl stop risulta-rollups.service
+    rollups_service_paused=1
+  fi
+}
+backup_rollup_files() {
+  if [ -r "$ROLLUP_LIB_DIR/rollup-runner.py" ]; then install -m 0600 "$ROLLUP_LIB_DIR/rollup-runner.py" "$backup_target/rollup-runner.py"; fi
+  if [ -r "$ROLLUP_SERVICE_FILE" ]; then install -m 0600 "$ROLLUP_SERVICE_FILE" "$backup_target/risulta-rollups.service"; fi
+  if [ -r "$ROLLUP_TIMER_FILE" ]; then install -m 0600 "$ROLLUP_TIMER_FILE" "$backup_target/risulta-rollups.timer"; fi
+}
 cleanup() {
   code=$?
   if [ "$code" -ne 0 ] && [ "$service_stopped" -eq 1 ]; then
@@ -194,9 +217,17 @@ cleanup() {
       systemctl start risulta-sprout || true
     else
       systemctl stop risulta-sprout || true
+      systemctl stop risulta-rollups.timer || true
+      systemctl stop risulta-rollups.service || true
       say "Update failed. Recovery files: $backup_target" >&2
       say "Keep the database backup paired with its previous executable when restoring." >&2
     fi
+  fi
+  # Resume jobs only after success, or before any executable replacement.
+  # A failed schema upgrade must keep all writers stopped for paired recovery.
+  if [ "$code" -eq 0 ] || [ "$binary_replaced" -eq 0 ]; then
+    if [ "$rollups_timer_paused" -eq 1 ]; then systemctl start risulta-rollups.timer || true; fi
+    if [ "$rollups_service_paused" -eq 1 ] && [ "$rollups_timer_paused" -eq 0 ]; then systemctl start risulta-rollups.service || true; fi
   fi
   if [ "$policy_created" -eq 1 ]; then rm -f /usr/sbin/policy-rc.d; fi
   rm -rf "$tmp_dir"
@@ -224,9 +255,11 @@ fi
 case "$release_tag" in ""|*[!A-Za-z0-9._-]*) fail "No valid release found for $selected_channel." ;; esac
 download_base="https://github.com/$REPOSITORY/releases/download/$release_tag"
 release_commit="unknown"
+rollup_schema_version=0
 if curl --proto '=https' --tlsv1.2 -fsSL "$download_base/release.json" -o "$tmp_dir/release.json" 2>/dev/null; then
   metadata_tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag"])' "$tmp_dir/release.json")"
   release_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$tmp_dir/release.json")"
+  rollup_schema_version="$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])).get("rollup_schema_version",0); assert isinstance(v,int) and 0<=v<=100000; print(v)' "$tmp_dir/release.json")"
   [ "$metadata_tag" = "$release_tag" ] || fail "Release metadata tag mismatch."
   case "$release_commit" in ""|*[!a-f0-9]*) fail "Invalid release commit." ;; esac
   [ "${#release_commit}" -eq 40 ] || fail "Invalid release commit length."
@@ -249,7 +282,41 @@ if [ -x "$INSTALL_PATH" ]; then
     installed_hash="$(shasum -a 256 "$INSTALL_PATH" | awk '{print $1}')"
   fi
 fi
+download_rollups() {
+  [ "$rollup_schema_version" -gt 0 ] || return 0
+  for helper in rollup-runner.py risulta-rollups.service risulta-rollups.timer; do
+    step "Downloading $helper" curl --proto '=https' --tlsv1.2 -fsSL "$download_base/$helper" -o "$tmp_dir/$helper"
+    step "Downloading $helper checksum" curl --proto '=https' --tlsv1.2 -fsSL "$download_base/$helper.sha256" -o "$tmp_dir/$helper.sha256"
+    helper_expected="$(awk '{print $1}' "$tmp_dir/$helper.sha256")"
+    case "$helper_expected" in ""|*[!a-fA-F0-9]*) fail "The $helper checksum is invalid." ;; esac
+    [ "${#helper_expected}" -eq 64 ] || fail "The $helper checksum is invalid."
+    if command -v sha256sum >/dev/null 2>&1; then
+      helper_actual="$(sha256sum "$tmp_dir/$helper" | awk '{print $1}')"
+    else
+      helper_actual="$(shasum -a 256 "$tmp_dir/$helper" | awk '{print $1}')"
+    fi
+    [ "$helper_actual" = "$helper_expected" ] || fail "The $helper download failed checksum verification."
+  done
+}
+install_rollups() {
+  [ "$rollup_schema_version" -gt 0 ] || return 0
+  wait_healthy || fail "The upgraded database schema is not ready for rollups."
+  install -d -m 0755 "$ROLLUP_LIB_DIR"
+  install -m 0755 "$tmp_dir/rollup-runner.py" "$ROLLUP_LIB_DIR/rollup-runner.py.new"
+  mv -f "$ROLLUP_LIB_DIR/rollup-runner.py.new" "$ROLLUP_LIB_DIR/rollup-runner.py"
+  install -m 0644 "$tmp_dir/risulta-rollups.service" "$ROLLUP_SERVICE_FILE"
+  install -m 0644 "$tmp_dir/risulta-rollups.timer" "$ROLLUP_TIMER_FILE"
+  systemctl daemon-reload
+  systemctl enable --now risulta-rollups.timer
+  say "Daily rollups enabled. Historical backfill runs in bounded batches."
+}
+download_rollups
+
 if [ -n "$installed_hash" ] && [ "$installed_hash" = "$expected_hash" ]; then
+  if [ "$rollup_schema_version" -gt 0 ]; then
+    wait_healthy || fail "Start Risulta before enabling rollups."
+    install_rollups
+  fi
   save_release_state
   say "Risulta is up to date."
   exit 0
@@ -277,11 +344,13 @@ if [ "$update_only" -eq 1 ]; then
   if [ -r "$STATE_FILE" ]; then install -m 0600 "$STATE_FILE" "$backup_target/release.env"; fi
   # Stage on the destination filesystem for an atomic executable replacement.
   install -m 0755 "$tmp_dir/$artifact" "$INSTALL_PATH.new"
+  pause_rollups
   if systemctl is-active --quiet risulta-sprout; then
     step "Stopping Risulta for a safety backup" systemctl stop risulta-sprout
     service_stopped=1
   fi
   step "Creating safety backup" cp -a "$DATA_DIR" "$backup_target/data"
+  backup_rollup_files
   say "Recovery files: $backup_target"
   mv -f "$INSTALL_PATH.new" "$INSTALL_PATH"
   binary_replaced=1
@@ -291,6 +360,7 @@ if [ "$update_only" -eq 1 ]; then
     systemctl status risulta-sprout --no-pager >&2 || true
     fail "Risulta did not become healthy. Review: journalctl -u risulta-sprout"
   fi
+  install_rollups
   save_release_state
   service_stopped=0
   say "Updated to $release_tag. Dashboard: $(saved_setting RISULTA_BASE_URL)"
@@ -380,11 +450,13 @@ download_binary
 if [ "$fresh_install" -eq 0 ]; then
   install -d -m 0750 "$BACKUP_ROOT"
   backup_target="$BACKUP_ROOT/pre-update-$(date +%F-%H%M%S)"
+  pause_rollups
   if systemctl is-active --quiet risulta-sprout 2>/dev/null; then
     step "Stopping Risulta for a safety backup" systemctl stop risulta-sprout
     service_stopped=1
   fi
   step "Creating safety backup" cp -r "$DATA_DIR" "$backup_target"
+  backup_rollup_files
   if [ -x "$INSTALL_PATH" ]; then install -m 0755 "$INSTALL_PATH" "$backup_target/previous-executable"; fi
   say "Safety backup at $backup_target"
 fi
@@ -521,6 +593,7 @@ fi
 
 say ""
 say "Risulta is ready."
+install_rollups
 save_release_state
 service_stopped=0
 say "Dashboard: $base_url"

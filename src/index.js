@@ -1,3 +1,4 @@
+import { SCHEMA_VERSION } from "./migrations.js";
 import { siteSlug, availableSiteSlug } from "./sites.js";
 import { reportAnalytics, journeyAnalytics, overviewAnalytics, overviewComparison, invalidateOverview, measurementAnalytics } from "./overview.js";
 import { createReadKey, readKeySite } from "./read-api.js";
@@ -229,7 +230,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/healthz", () => new Response("ok\n"));
+app.get("/healthz", () => new Response("ok\n", { headers: { "x-risulta-schema-version": String(SCHEMA_VERSION) } }));
 app.get("/favicon.ico", () => new Response("", { status: 204 }));
 
 app.get("/avatar.svg", (c) => {
@@ -980,7 +981,7 @@ app.post("/api/backup", async (c) => {
   if (!csrfValid(session, csrfValue(request, body))) return htmlForm ? redirect("/users?backup=csrf") : json({ error: "csrf mismatch" }, 403);
   try {
     const snapshot = env.DB.backup();
-    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history"];
+    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty"];
     const counts = {};
     for (let i = 0; i < tables.length; i++) {
       counts[tables[i]] = Number(env.DB.prepare("SELECT count(*) AS n FROM " + tables[i]).first().n);
@@ -991,7 +992,7 @@ app.post("/api/backup", async (c) => {
       ok: true,
       path: snapshot.path,
       bytes: snapshot.bytes,
-      manifest: { app: "risulta-sprout", created_at: Math.floor(Date.now() / 1000), tables: counts },
+      manifest: { app: "risulta-sprout", schema_version: SCHEMA_VERSION, created_at: Math.floor(Date.now() / 1000), tables: counts },
     });
   } catch {
     incrementCounter("database_errors_total");

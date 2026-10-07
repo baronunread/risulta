@@ -1,5 +1,5 @@
 import { siteJourneys } from "./journeys.js";
-import { overviewScope, overviewGoals, siteAnalytics, siteSummary, siteGoals, siteFunnels, siteReport } from "./store.js";
+import { overviewScope, overviewGoals, dashboardTraffic, dashboardSummary, dashboardReport, siteGoals, siteFunnels } from "./store.js";
 
 // Bounded per-process snapshots share expensive aggregates across metric clicks
 // and open browser tabs. Authorization stays in the route before every lookup.
@@ -36,7 +36,7 @@ export function overviewAnalytics(db, site, range, includeGoals, now) {
   now = now === undefined ? Date.now() : now;
   const entry = snapshot(db, site, range, now);
   if (!entry.traffic || !fresh(entry.trafficAt, now, 15000)) {
-    entry.traffic = siteAnalytics(overviewScope(db, site.id, range.since, range.until, range.filters), site, range.since, range.until, false, false, range.days === 1 && !range.from);
+    entry.traffic = dashboardTraffic(db, site, range, Math.floor(now / 1000));
     entry.trafficAt = now;
   }
   if (includeGoals && (!entry.goals || !fresh(entry.goalsAt, now, 60000))) {
@@ -51,7 +51,7 @@ export function overviewComparison(db, site, range, now) {
   now = now === undefined ? Date.now() : now;
   const entry = snapshot(db, site, range, now);
   if (!entry.comparison || !fresh(entry.comparisonAt, now, 15000)) {
-    entry.comparison = siteSummary(overviewScope(db, site.id, range.since, range.until, range.filters), site.id, range.since, range.until);
+    entry.comparison = dashboardSummary(db, site, range, Math.floor(now / 1000));
     entry.comparisonAt = now;
   }
   return entry.comparison;
@@ -79,11 +79,7 @@ export function reportAnalytics(db, site, range, input, cohort, now) {
   now = now === undefined ? Date.now() : now;
   const entry = snapshot(db, site, range, now);
   const key = JSON.stringify([input.dimension, input.filters, input.limit, input.offset, input.sort, cohort]);
-  return cachedReport(entry, key, now, () => siteReport(
-    cohort ? overviewScope(db, site.id, range.since, range.until, input.filters) : db,
-    site.id, range.since, range.until, input.dimension,
-    cohort ? { event: input.filters.event } : input.filters, input.limit, input.offset, input.sort,
-  ));
+  return cachedReport(entry, key, now, () => dashboardReport(db, site, range, input, cohort, Math.floor(now / 1000)));
 }
 
 export function journeyAnalytics(db, site, range, input, now) {

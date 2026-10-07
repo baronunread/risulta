@@ -200,6 +200,8 @@ jobs:
           set -euo pipefail
           sh -n deploy/install.sh
           cp deploy/install.sh release-assets/install.sh
+          python3 -m py_compile deploy/rollup-runner.py
+          cp deploy/rollup-runner.py deploy/risulta-rollups.service deploy/risulta-rollups.timer release-assets/
           cd release-assets
           test -s risulta-sprout-linux-x64
           test -s risulta-sprout-linux-arm64
@@ -207,10 +209,10 @@ jobs:
             --arg channel "$CHANNEL" --arg repository "$GH_REPO" \
             --slurpfile x64 risulta-sprout-linux-x64.toolchain.json \
             --slurpfile arm64 risulta-sprout-linux-arm64.toolchain.json \
-            '{tag: $tag, commit: $commit, channel: $channel, repository: $repository,
+            '{tag: $tag, commit: $commit, channel: $channel, repository: $repository, rollup_schema_version: 2,
               toolchain: {"linux-x64": $x64[0], "linux-arm64": $arm64[0]}}' > release.json
           rm -- *.toolchain.json
-          for asset in risulta-sprout-linux-x64 risulta-sprout-linux-arm64 install.sh release.json; do
+          for asset in risulta-sprout-linux-x64 risulta-sprout-linux-arm64 install.sh release.json rollup-runner.py risulta-rollups.service risulta-rollups.timer; do
             sha256sum "$asset" > "$asset.sha256"
           done
           sha256sum -c ./*.sha256
@@ -221,6 +223,9 @@ jobs:
             release-assets/risulta-sprout-linux-arm64
             release-assets/install.sh
             release-assets/release.json
+            release-assets/rollup-runner.py
+            release-assets/risulta-rollups.service
+            release-assets/risulta-rollups.timer
       - name: Publish complete draft atomically
         shell: bash
         run: |

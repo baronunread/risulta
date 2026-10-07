@@ -36,7 +36,8 @@ before extending rollups to arbitrary filters.
    dimension totals for paths, sources, mediums and campaigns.
 2. Keep daily visitors distinct within each dimension label. Never sum the
    counts of different labels to derive the site's visitor count. Visitor
-   hashes reset daily, so completed-day visitor totals can be summed over days.
+   hashes usually reset daily, but imported hashes can span dates. Preserve exact
+   distinct membership across days rather than summing daily uniques.
 3. Build visits with the existing 30-minute gap and UTC midnight rules, including
    custom events in visit boundaries. Validate against the raw session query.
 4. Read completed days from rollups and today's data from raw events. Route
@@ -60,5 +61,6 @@ before extending rollups to arbitrary filters.
   navigation, separate acquisition cards and card-header detail links.
 - Rollups: a separate follow-up with parity and ingestion benchmarks.
 
-The current changes remain local. This document proposes review boundaries;
-it does not indicate that pull requests or rollups have been published.
+The UI review boundaries are published in PRs #55 through #58. The rollup
+follow-up implements this proposal with exact visitor membership; see
+[rollup results](rollup-results.md) and the linked migration instructions.

@@ -24,6 +24,12 @@ if name=='uname': print('Linux' if args==['-s'] else 'x86_64');sys.exit(0)
 if name=='sleep': sys.exit(0)
 if name=='flock': sys.exit(1 if os.environ.get('LOCK_BUSY') else 0)
 if name=='systemctl':
+ if args[-1] in ['risulta-rollups.timer','risulta-rollups.service']:
+  marker=root/('rollups-timer-active' if args[-1].endswith('timer') else 'rollups-service-active')
+  if args[0]=='is-active':sys.exit(0 if marker.exists() else 3)
+  if args[0]=='stop':marker.unlink(missing_ok=True)
+  if args[0] in ['start','restart'] or (args[0]=='enable' and '--now' in args):marker.touch()
+  sys.exit(0)
  if args[0]=='is-active': sys.exit(0 if (root/'active').exists() else 3)
  if args[0]=='stop': (root/'active').unlink(missing_ok=True)
  if args[0] in ['restart','start']: (root/'active').touch()
@@ -47,17 +53,22 @@ if name=='curl':
  url=next(a for a in args if a.startswith('http'))
  out=pathlib.Path(args[args.index('-o')+1]) if '-o' in args else None
  artifact=b'#!/bin/sh\necho nightly-test\n'
+ asset=url.rsplit('/',1)[-1].removesuffix('.sha256')
+ helper=asset in ['rollup-runner.py','risulta-rollups.service','risulta-rollups.timer']
+ if helper:artifact=pathlib.Path('deploy',asset).read_bytes()
  tag='nightly-20261006-0123456789ab';commit='0123456789abcdef0123456789abcdef01234567'
- if '/healthz' in url:sys.exit(22 if os.environ.get('FAIL_HEALTH') else 0)
+ if '/healthz' in url:
+  if '-D' in args:pathlib.Path(args[args.index('-D')+1]).write_text('x-risulta-schema-version: '+('1' if os.environ.get('BAD_SCHEMA_VERSION') else '2')+'\r\n')
+  sys.exit(22 if os.environ.get('FAIL_HEALTH') else 0)
  if url.endswith('releases/latest'):data=json.dumps({'tag_name':'v0.1.6','draft':False,'prerelease':False}).encode()
  elif 'releases?per_page=' in url:
   data=json.dumps([{'tag_name':'nightly-ignored','draft':True,'prerelease':True,'published_at':'2099'}, {'tag_name':'v0.1.6','prerelease':False,'published_at':'2026'}, {'tag_name':tag,'draft':False,'prerelease':True,'published_at':'2026-10-06T00:00:00Z'}]).encode()
  elif url.endswith('/release.json'):
   selected=url.split('/download/')[1].split('/')[0]
   if os.environ.get('MISSING_METADATA'):sys.exit(22)
-  data=json.dumps({'tag':'wrong' if os.environ.get('BAD_METADATA') else selected,'commit':commit}).encode()
+  data=json.dumps({'tag':'wrong' if os.environ.get('BAD_METADATA') else selected,'commit':commit,'rollup_schema_version':2 if os.environ.get('ROLLUP_RELEASE') else 0}).encode()
  elif url.endswith('.sha256'):
-  data=((('0'*64) if os.environ.get('BAD_CHECKSUM') else hashlib.sha256(artifact).hexdigest())+'  risulta-sprout-linux-x64\n').encode()
+  data=((('0'*64) if (os.environ.get('BAD_CHECKSUM') or (helper and os.environ.get('BAD_ROLLUP_CHECKSUM'))) else hashlib.sha256(artifact).hexdigest())+'  risulta-sprout-linux-x64\n').encode()
  else:data=artifact
  if out:out.write_bytes(data)
  else:sys.stdout.buffer.write(data)
@@ -73,7 +84,10 @@ def scenario(options, channel=None, installed=OLD, flags=None, existing=True):
              '/etc/risulta-sprout': root/'etc/risulta-sprout',
              '/var/lib/risulta-sprout': root/'data',
              '/etc/systemd/system/risulta-sprout.service': root/'service',
-             '/var/backups/risulta-sprout': root/'backups'}
+             '/var/backups/risulta-sprout': root/'backups',
+             '/usr/local/lib/risulta-sprout': root/'lib',
+             '/etc/systemd/system/risulta-rollups.service': root/'rollups.service',
+             '/etc/systemd/system/risulta-rollups.timer': root/'rollups.timer'}
     source=SOURCE
     for old,new in paths.items():source=source.replace(old,str(new))
     script=root/'install.sh';script.write_text(source)
@@ -88,6 +102,9 @@ def scenario(options, channel=None, installed=OLD, flags=None, existing=True):
         (root/'service').write_text('service unchanged')
     if channel:(envdir/'release.env').write_text(f'CHANNEL="{channel}"\nTAG="previous"\nCOMMIT="unknown"\n')
     (root/'active').touch()
+    if (flags or {}).get('ROLLUPS_ACTIVE'):
+        (root/'rollups-timer-active').touch()
+        (root/'rollups-service-active').touch()
     mocks=root/'mocks';mocks.mkdir()
     for name in ['id','uname','sleep','systemctl','curl','install','cp','flock']:
         p=mocks/name;p.write_text('#!'+sys.executable+'\n'+MOCK);p.chmod(0o755)
@@ -155,4 +172,33 @@ with scratch:
     assert result.returncode!=0
     assert not (root/'calls').exists() or 'curl' not in (root/'calls').read_text()
     count+=1
+for failure in ['', 'FAIL_BACKUP', 'FAIL_HEALTH']:
+    flags={'ROLLUPS_ACTIVE':'1'}
+    if failure:flags[failure]='1'
+    scratch,root,result,_=scenario(['--update','--channel','nightly'],flags=flags)
+    with scratch:
+        assert result.returncode == (0 if not failure else 1)
+        calls=(root/'calls').read_text()
+        stop_timer=calls.index('systemctl ["stop", "risulta-rollups.timer"]')
+        stop_job=calls.index('systemctl ["stop", "risulta-rollups.service"]')
+        backup=calls.index('cp ')
+        assert stop_timer < backup and stop_job < backup
+        assert (root/'rollups-timer-active').exists() == (failure != 'FAIL_HEALTH')
+        assert not (root/'rollups-service-active').exists()
+        count+=1
+for installed,extra in [(OLD,{}),(BINARY,{}),(OLD,{'BAD_ROLLUP_CHECKSUM':'1'}),(OLD,{'FAIL_HEALTH':'1'}),(OLD,{'BAD_SCHEMA_VERSION':'1'})]:
+    flags={'ROLLUP_RELEASE':'1',**extra}
+    scratch,root,result,_=scenario(['--update','--channel','nightly'],installed=installed,flags=flags)
+    with scratch:
+        assert result.returncode == (1 if extra else 0),(result.stdout,result.stderr)
+        if not extra:
+            assert (root/'lib/rollup-runner.py').read_bytes()==Path('deploy/rollup-runner.py').read_bytes()
+            assert (root/'rollups.timer').read_bytes()==Path('deploy/risulta-rollups.timer').read_bytes()
+            assert (root/'rollups-timer-active').exists()
+            calls=(root/'calls').read_text()
+            assert calls.index('/healthz') < calls.index('systemctl ["enable", "--now", "risulta-rollups.timer"]')
+        else:
+            assert not (root/'lib/rollup-runner.py').exists()
+            assert not (root/'rollups-timer-active').exists()
+        count+=1
 print(f'installer OK ({count} transaction scenarios)')

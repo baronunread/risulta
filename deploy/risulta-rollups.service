@@ -1,0 +1,13 @@
+[Unit]
+Description=Risulta completed-day analytics rollups
+After=risulta-sprout.service
+
+[Service]
+Type=oneshot
+User=risulta-sprout
+Group=risulta-sprout
+UMask=0077
+EnvironmentFile=/etc/risulta-sprout/risulta-sprout.env
+ExecStart=/usr/bin/python3 /usr/local/lib/risulta-sprout/rollup-runner.py --data-dir ${SB_DATA_DIR} --max-days 4
+WorkingDirectory=/var/lib/risulta-sprout
+Nice=10

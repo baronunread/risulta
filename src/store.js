@@ -1,4 +1,5 @@
-import { ensureSiteSlugs } from "./sites.js";
+import { migrateSchema } from "./migrations.js";
+import { rollupBoundary, rollupTraffic, rollupTop, rollupReport } from "./rollups.js";
 import { READ_KEYS_SCHEMA } from "./read-api.js";
 // D1 repository: schema, site scoping, visitor identities, analytics.
 // Single logical D1 instead of one SQLite file per site: every site-owned
@@ -60,7 +61,7 @@ async function ensureSchema(db) {
       "CREATE TABLE IF NOT EXISTS site_users (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('viewer')), PRIMARY KEY (user_id, site_id));" +
       "CREATE TABLE IF NOT EXISTS site_salts (site_id INTEGER NOT NULL, day TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (site_id, day));",
   );
-  ensureSiteSlugs(db);
+  migrateSchema(db);
   db.exec(READ_KEYS_SCHEMA);
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts ON events(site_id, ts);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts_visitor ON events(site_id, ts, visitor);");
@@ -365,7 +366,37 @@ export function overviewGoals(db, siteId, since, until, visitors) {
   return rows.map((row) => ({ ...row, conversion_rate: visitors ? Number(row.unique_conversions) / visitors : 0 }));
 }
 
-export function siteAnalytics(db, site, since, until, includeConversions, previewGoals, hourly) {
+export function dashboardTraffic(db, site, range, now) {
+  const hourly = range.days === 1 && !range.from;
+  const filtered = Object.keys(range.filters || {}).some((key) => range.filters[key]);
+  const boundary = filtered ? 0 : rollupBoundary(db, site.id, range.since, range.until, now);
+  if (!boundary) return siteAnalytics(overviewScope(db, site.id, range.since, range.until, range.filters), site, range.since, range.until, false, false, hourly);
+  const history = rollupTraffic(db, site.id, range.since, range.until, boundary);
+  const tail = boundary < range.until ? siteAnalytics(db, site, boundary, range.until, false, false, hourly, true) : {
+    summary: { pageviews: 0, visits: 0 }, byDay: [], byHour: [], current: siteCurrent(db, site.id),
+    hasConversions: Number(db.prepare("SELECT (SELECT count(*) FROM goals WHERE site_id = ?) + (SELECT count(*) FROM funnels WHERE site_id = ?) AS n").bind(site.id, site.id).first().n) > 0,
+    goals: [], funnels: [], funnelsTruncated: false,
+  };
+  return { ...tail,
+    summary: { pageviews: Number(history.summary.pageviews) + Number(tail.summary.pageviews), visitors: history.summary.visitors, visits: Number(history.summary.visits) + Number(tail.summary.visits) },
+    byDay: history.byDay.concat(tail.byDay),
+    paths: rollupTop(db, site.id, range.since, range.until, boundary, "path"),
+    referrers: rollupTop(db, site.id, range.since, range.until, boundary, "source"),
+    mediums: rollupTop(db, site.id, range.since, range.until, boundary, "medium"),
+    campaigns: rollupTop(db, site.id, range.since, range.until, boundary, "campaign"),
+  };
+}
+
+export function dashboardSummary(db, site, range, now) {
+  const filtered = Object.keys(range.filters || {}).some((key) => range.filters[key]);
+  const boundary = filtered ? 0 : rollupBoundary(db, site.id, range.since, range.until, now);
+  if (!boundary) return siteSummary(overviewScope(db, site.id, range.since, range.until, range.filters), site.id, range.since, range.until);
+  const history = rollupTraffic(db, site.id, range.since, range.until, boundary);
+  const tail = boundary < range.until ? siteSummary(db, site.id, boundary, range.until) : { pageviews: 0, visits: 0 };
+  return { pageviews: Number(history.summary.pageviews) + Number(tail.pageviews), visitors: history.summary.visitors, visits: Number(history.summary.visits) + Number(tail.visits) };
+}
+
+export function siteAnalytics(db, site, since, until, includeConversions, previewGoals, hourly, skipDimensions) {
   const summary = db.prepare(
     "SELECT count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'",
@@ -404,10 +435,10 @@ export function siteAnalytics(db, site, since, until, includeConversions, previe
     current: siteCurrent(db, site.id),
     byDay,
     byHour,
-    paths: topList(db, site.id, since, until, "path"),
-    referrers: topList(db, site.id, since, until, "coalesce(nullif(source,''),'Direct / None')"),
-    mediums: topList(db, site.id, since, until, "coalesce(nullif(medium,''),'None')"),
-    campaigns: topList(db, site.id, since, until, "coalesce(nullif(campaign,''),'None')"),
+    paths: skipDimensions ? [] : topList(db, site.id, since, until, "path"),
+    referrers: skipDimensions ? [] : topList(db, site.id, since, until, "coalesce(nullif(source,''),'Direct / None')"),
+    mediums: skipDimensions ? [] : topList(db, site.id, since, until, "coalesce(nullif(medium,''),'None')"),
+    campaigns: skipDimensions ? [] : topList(db, site.id, since, until, "coalesce(nullif(campaign,''),'None')"),
     goals: includeConversions === false ? (previewGoals === false ? [] : overviewGoals(db, site.id, since, until, visitors)) : siteGoals(db, site.id, since, until, visitors),
     hasConversions: includeConversions === false ? Number(db.prepare(
       "SELECT (SELECT count(*) FROM goals WHERE site_id = ?) + (SELECT count(*) FROM funnels WHERE site_id = ?) AS n",
@@ -460,6 +491,18 @@ export function siteReport(db, siteId, since, until, dimension, filters, limit, 
     Number(db.prepare("SELECT count(*) AS n FROM (SELECT " + selected.label + " AS label FROM events WHERE " + where + " GROUP BY label)").bind(...values).first().n);
   for (let i = 0; i < result.length; i++) delete result[i].total_rows;
   return { dimension: dimensions[dimension] ? dimension : "path", filters, rows: result, total, limit: boundedLimit, offset: boundedOffset, sort: ordering };
+}
+
+export function dashboardReport(db, site, range, input, cohort, now) {
+  const filtered = Object.keys(input.filters).some((key) => input.filters[key]);
+  const boundary = filtered || input.dimension === "event" ? 0 : rollupBoundary(db, site.id, range.since, range.until, now);
+  if (boundary) {
+    const dimension = ["path", "source", "medium", "campaign"].indexOf(input.dimension) >= 0 ? input.dimension : "path";
+    const bounds = { limit: Math.max(1, Math.min(100, Math.floor(Number(input.limit)) || 50)), offset: Math.max(0, Math.min(10000, Math.floor(Number(input.offset)) || 0)), sort: input.sort === "pageviews" || input.sort === "value" ? input.sort : "visitors" };
+    return rollupReport(db, site.id, range.since, range.until, boundary, dimension, bounds);
+  }
+  return siteReport(cohort ? overviewScope(db, site.id, range.since, range.until, input.filters) : db, site.id, range.since, range.until,
+    input.dimension, cohort ? { event: input.filters.event } : input.filters, input.limit, input.offset, input.sort);
 }
 
 export function csvEscape(value) {
