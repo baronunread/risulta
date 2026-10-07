@@ -290,10 +290,7 @@ export function createFunnel(db, siteId, name, goalIds) {
   }
 }
 
-// Funnel conversions, computed in JS over one ordered event scan like the
-// Bun app. Bounded: at most FUNNEL_EVENT_LIMIT rows are scanned, and the
-// result says when the cap bit so funnels on huge ranges read as the
-// approximation they are.
+// Ordered funnel conversions retain the bounded event stream and report truncation.
 export const FUNNEL_EVENT_LIMIT = 50000;
 
 export function siteFunnels(db, siteId, since, until) {
@@ -314,13 +311,15 @@ export function siteFunnels(db, siteId, since, until) {
   // Below the cap, filtering by indexed names keeps the complete stream.
   // At the cap, select the ordered raw stream before pruning irrelevant events.
   const predicate = matches.length ? matches.join(" OR ") : "0";
+  // Unary + prevents the timestamp range index from forcing a full-range sort.
+  // The capped branch can walk the existing visitor/time index and stop at the cap.
   const selected = "SELECT visitor,ts,name,path FROM events WHERE site_id=? AND ts>=? AND ts<? AND (SELECT n FROM counted)<? AND name IN (" +
     (names.length ? names.map(()=>"?").join(",") : "NULL") + ") AND (" + predicate + ") UNION ALL " +
-    "SELECT * FROM (SELECT visitor,ts,name,path FROM events WHERE site_id=? AND ts>=? AND ts<? AND (SELECT n FROM counted)>=? ORDER BY visitor,ts LIMIT ?) WHERE " + predicate;
+    "SELECT * FROM (SELECT visitor,ts,name,path FROM events WHERE site_id=CASE WHEN (SELECT n FROM counted)>=? THEN ? END AND +ts>=? AND +ts<? ORDER BY visitor,ts LIMIT ?) WHERE " + predicate;
   const args = [siteId,since,until,FUNNEL_EVENT_LIMIT,siteId,since,until,FUNNEL_EVENT_LIMIT];
   for (const name of names) args.push(name);
   for (const value of matchArgs) args.push(value);
-  args.push(siteId,since,until,FUNNEL_EVENT_LIMIT,FUNNEL_EVENT_LIMIT);
+  args.push(FUNNEL_EVENT_LIMIT,siteId,since,until,FUNNEL_EVENT_LIMIT);
   for (const value of matchArgs) args.push(value);
   const clauses = ["counted AS MATERIALIZED (SELECT count(*) AS n FROM (SELECT 1 FROM events WHERE site_id=? AND ts>=? AND ts<? LIMIT ?))",
     "selected AS MATERIALIZED (" + selected + ")",

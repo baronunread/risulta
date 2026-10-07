@@ -73,8 +73,8 @@ def run(data_dir, now=None, max_days=4):
             return 0
         with closing(sqlite3.connect(database, timeout=5)) as db:
             version = db.execute('SELECT max(version) FROM schema_migrations').fetchone()[0]
-            if version != 4:
-                raise RuntimeError('This rollup runner requires schema version 4.')
+            if version != 5:
+                raise RuntimeError('This rollup runner requires schema version 5.')
             sites = db.execute('SELECT id, (SELECT min(ts) FROM events WHERE site_id=sites.id) FROM sites ORDER BY id').fetchall()
             built = 0
             queues = []

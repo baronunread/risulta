@@ -67,7 +67,7 @@ Inspect processing with systemctl status risulta-rollups.timer and journalctl
     python3 deploy/rollup-runner.py --data-dir /path/to/state --max-days 1000
     python3 deploy/rollup-runner.py --data-dir /path/to/state --watch
 
-The worker requires schema version 4 and refuses to rebuild another version.
+The worker requires schema version 5 and refuses to rebuild another version.
 
 ## Upgrade recovery
 
@@ -103,7 +103,7 @@ rows preserve exact visitor membership across dates, including imported hashes,
 and count session starts after inactivity within each UTC day. Custom events
 participate in visits, and visits-only hours stay visible.
 
-The release metadata and health header now advertise schema 4. The installer
+The release metadata and health header now advertise schema 5. The installer
 continues to pause old workers and verify matching health before replacing and
 resuming the worker. Previous schema-2 executables and workers reject the newer
 schema; recovery requires the saved paired database and executable.
@@ -125,3 +125,9 @@ Historical traffic totals and daily rows are also cached as a separate component
 Stats requests may select optional `hourly`, `acquisition`, `goals` and `funnels` sections via `include`; traffic is always present, and omitting the parameter preserves the complete default response. Cache keys include this selection. `fresh=1` bypasses both the full-result and component caches. Funnel queries use a single SQLite snapshot to count the capped stream and choose between indexed name filtering below the cap and ordered capped selection before filtering at the cap. Pruned events still count toward truncation.
 
 Administrator stats/report requests support `trace=1`. This bypasses full-result and component caches and returns request-local query timings and bounded SQLite query-plan trees, with no bound values in trace records. Normal requests retain the same contract. See [native query tracing](../performance/2026-10-07-query-tracing/README.md). No additional migration is needed.
+
+## Ordered funnel index (schema 5)
+
+Migration 5 adds `idx_events_site_visitor_ts_funnels` on site, visitor, timestamp, event name and path. Large funnel ranges read the existing 50,000-event cap in visitor/time order directly from the covering index, avoiding a full-range sort and event-table lookups. Small ranges retain the event-name/date index path. Funnel order, repeated steps and truncation are preserved.
+
+The index is built transactionally during startup. This adds startup time, storage and index maintenance on ingestion; no events or rollup tables are removed. An interrupted build rolls back its migration marker and retries on restart. The release metadata, binary health header and worker require schema 5. Downgrades require restoring the paired pre-upgrade database, binary and worker backup.

@@ -6,6 +6,7 @@ const sqlite = new Database(':memory:');
 sqlite.exec("CREATE TABLE events(id INTEGER PRIMARY KEY,site_id INTEGER,ts INTEGER,name TEXT,path TEXT,visitor TEXT);CREATE TABLE goals(id INTEGER PRIMARY KEY,site_id INTEGER,name TEXT,event_name TEXT,path TEXT);CREATE TABLE funnels(id INTEGER PRIMARY KEY,site_id INTEGER,name TEXT);CREATE TABLE funnel_steps(funnel_id INTEGER,position INTEGER,goal_id INTEGER);");
 const db = { prepare(sql) { const q = sqlite.query(sql); let args = []; return { bind(...values) { args = values; return this; }, first() { return q.get(...args); }, all() { return { results: q.all(...args) }; } }; } };
 sqlite.exec("INSERT INTO goals VALUES(1,1,'View','pageview',''),(2,1,'Signup','signup','/thanks'),(3,1,'Purchase','purchase','');INSERT INTO funnels VALUES(1,1,'Conversion'),(2,1,'Repeated views'),(3,1,'Empty');INSERT INTO funnel_steps VALUES(1,0,1),(1,1,2),(1,2,3),(2,0,1),(2,1,1);");
+sqlite.exec('CREATE INDEX idx_events_site_visitor_ts ON events(site_id,visitor,ts); CREATE INDEX idx_events_site_visitor_ts_funnels ON events(site_id,visitor,ts,name,path)');
 const insert = sqlite.query('INSERT INTO events VALUES(?,?,?,?,?,?)');
 const names = ['purchase','pageview','signup','pageview','signup'];
 sqlite.transaction(() => { for (let i = 0; i < 1500; i++) insert.run(i + 1, i % 11 ? 1 : 2, i, names[i % names.length], i % 3 ? '/thanks' : '/wrong', i % 13 ? 'visitor' + (i % 23) : ''); })();
@@ -34,5 +35,13 @@ assert.equal(siteFunnels(db,1,0,50002).truncated,true);
 assert.equal(siteFunnels(db,1,0,50002).funnels[0].steps[1].conversions,0,'pruning cannot move events inside the cap');
 assert.equal(siteFunnels(db,1,0,49999).truncated,false);
 assert.deepEqual(siteFunnels(db,2,0,50002),{funnels:[],truncated:false});
+sqlite.exec('DELETE FROM events');
+sqlite.transaction(() => { for (let i = 0; i < 70000; i++) insert.run(i + 1,i % 19 ? 1 : 2,Math.floor(i / 3),names[i % names.length],i % 3 ? '/thanks' : '/wrong','visitor' + (i % 103)); })();
+for (const [since,until] of [[0,24000],[3000,24000],[12000,24000]]) {
+  const result = siteFunnels(db,1,since,until);
+  assert.deepEqual(result.funnels[0].steps.map((step) => step.conversions),expected([{name:'pageview',path:''},{name:'signup',path:'/thanks'},{name:'purchase',path:''}],since,until));
+  assert.deepEqual(result.funnels[1].steps.map((step) => step.conversions),expected([{name:'pageview',path:''},{name:'pageview',path:''}],since,until));
+}
+
 console.log('funnels OK (reference parity, repeated steps, ordering, paths, ranges, isolation and cap)');
 sqlite.close();
