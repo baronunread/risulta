@@ -1,0 +1,52 @@
+{
+  "Stats live": {
+    "samples_ms": [
+      992.9,
+      606.2,
+      761.8,
+      609.3,
+      629.3
+    ],
+    "median_ms": 629.3
+  },
+  "Stats closed": {
+    "samples_ms": [
+      554.9,
+      417.9,
+      396.6,
+      371.9,
+      377.2
+    ],
+    "median_ms": 396.6
+  },
+  "Report live": {
+    "samples_ms": [
+      55.6,
+      55.0,
+      57.0,
+      53.4,
+      55.3
+    ],
+    "median_ms": 55.3
+  },
+  "Report closed": {
+    "samples_ms": [
+      35.0,
+      32.9,
+      157.8,
+      40.3,
+      32.0
+    ],
+    "median_ms": 35.0
+  },
+  "Goals": {
+    "samples_ms": [
+      453.6,
+      2.2,
+      2.3,
+      1.8,
+      1.4
+    ],
+    "median_ms": 2.2
+  }
+}

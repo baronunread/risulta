@@ -1,0 +1,92 @@
+[
+  {
+    "profile": "native-stats",
+    "since": 1790812800,
+    "until": 1791387285,
+    "traffic": 157,
+    "funnels": 295,
+    "hours": 36,
+    "goals": 535
+  },
+  {
+    "profile": "native-stats",
+    "since": 1790812800,
+    "until": 1791387286,
+    "traffic": 115,
+    "funnels": 291,
+    "hours": 68,
+    "goals": 185
+  },
+  {
+    "profile": "native-stats",
+    "since": 1790812800,
+    "until": 1791387287,
+    "traffic": 115,
+    "funnels": 258,
+    "hours": 29,
+    "goals": 123
+  },
+  {
+    "profile": "native-stats",
+    "since": 1790812800,
+    "until": 1791387288,
+    "traffic": 116,
+    "funnels": 311,
+    "hours": 34,
+    "goals": 128
+  },
+  {
+    "profile": "native-stats",
+    "since": 1790812800,
+    "until": 1791387288,
+    "traffic": 114,
+    "funnels": 305,
+    "hours": 31,
+    "goals": 136
+  },
+  {
+    "profile": "native-stats",
+    "since": 1790726400,
+    "until": 1791331200,
+    "traffic": 66,
+    "funnels": 323,
+    "hours": 14,
+    "goals": 79
+  },
+  {
+    "profile": "native-stats",
+    "since": 1790726400,
+    "until": 1791331200,
+    "traffic": 55,
+    "funnels": 198,
+    "hours": 9,
+    "goals": 82
+  },
+  {
+    "profile": "native-stats",
+    "since": 1790726400,
+    "until": 1791331200,
+    "traffic": 57,
+    "funnels": 202,
+    "hours": 8,
+    "goals": 79
+  },
+  {
+    "profile": "native-stats",
+    "since": 1790726400,
+    "until": 1791331200,
+    "traffic": 58,
+    "funnels": 211,
+    "hours": 9,
+    "goals": 90
+  },
+  {
+    "profile": "native-stats",
+    "since": 1790726400,
+    "until": 1791331200,
+    "traffic": 59,
+    "funnels": 225,
+    "hours": 8,
+    "goals": 90
+  }
+]

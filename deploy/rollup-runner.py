@@ -19,6 +19,8 @@ def build_day(db, site_id, day, now):
     db.execute('BEGIN IMMEDIATE')
     try:
         db.execute('DELETE FROM analytics_rollup_visitors WHERE site_id=? AND day=?', (site_id, day))
+        db.execute('DELETE FROM analytics_rollup_hours WHERE site_id=? AND day=?', (site_id, day))
+        db.execute('DELETE FROM analytics_rollup_events WHERE site_id=? AND day=?', (site_id, day))
         for dimension, _ in DIMENSIONS:
             db.execute('DELETE FROM analytics_rollup_dimensions WHERE site_id=? AND dimension=? AND day=?', (site_id, dimension, day))
         db.execute('''INSERT INTO analytics_rollup_visitors
@@ -28,12 +30,25 @@ def build_day(db, site_id, day, now):
             SELECT ?, ?, visitor, sum(name='pageview'),
                 sum(CASE WHEN visitor!='' AND (previous IS NULL OR ts-previous>1800) THEN 1 ELSE 0 END)
             FROM marked GROUP BY visitor''', (site_id, day, day + DAY, site_id, day))
+        db.execute("""INSERT INTO analytics_rollup_hours
+            WITH marked AS (SELECT ts, visitor, name,
+                lag(ts) OVER (PARTITION BY visitor ORDER BY ts,id) AS previous
+                FROM events WHERE site_id=? AND ts>=? AND ts<?)
+            SELECT ?, ?, cast(strftime('%H',ts,'unixepoch') AS INTEGER), visitor,
+                sum(name='pageview'), sum(CASE WHEN visitor!='' AND (previous IS NULL OR ts-previous>1800) THEN 1 ELSE 0 END)
+            FROM marked GROUP BY 3, visitor""", (site_id, day, day + DAY, site_id, day))
+        # Pageview goal facts already live in the path dimension summary.
+        db.execute("""INSERT INTO analytics_rollup_events
+            SELECT ?, ?, name, path, visitor, count(*), coalesce(sum(value),0)
+            FROM events WHERE site_id=? AND ts>=? AND ts<? AND name!='pageview'
+            GROUP BY name,path,visitor""", (site_id, day, site_id, day, day + DAY))
         for dimension, expression in DIMENSIONS:
             db.execute('''INSERT INTO analytics_rollup_dimensions
                 SELECT ?, ?, ?, ''' + expression + ''', visitor, count(*), coalesce(sum(value),0) FROM events
                 WHERE site_id=? AND ts>=? AND ts<? AND name='pageview'
                 GROUP BY ''' + expression + ', visitor', (site_id, day, dimension, site_id, day, day + DAY))
         db.execute('INSERT INTO analytics_rollup_days VALUES (?,?,?) ON CONFLICT(site_id,day) DO UPDATE SET built_at=excluded.built_at', (site_id, day, now))
+        db.execute('INSERT INTO analytics_rollup_stats_days VALUES (?,?,?) ON CONFLICT(site_id,day) DO UPDATE SET built_at=excluded.built_at', (site_id, day, now))
         db.execute('DELETE FROM analytics_rollup_dirty WHERE site_id=? AND day=?', (site_id, day))
         db.commit()
     except BaseException:
@@ -58,13 +73,13 @@ def run(data_dir, now=None, max_days=4):
             return 0
         with closing(sqlite3.connect(database, timeout=5)) as db:
             version = db.execute('SELECT max(version) FROM schema_migrations').fetchone()[0]
-            if version != 2:
-                raise RuntimeError('This rollup runner requires schema version 2.')
+            if version != 5:
+                raise RuntimeError('This rollup runner requires schema version 5.')
             sites = db.execute('SELECT id, (SELECT min(ts) FROM events WHERE site_id=sites.id) FROM sites ORDER BY id').fetchall()
             built = 0
             queues = []
             for site_id, first in sites:
-                covered = {row[0] for row in db.execute('SELECT day FROM analytics_rollup_days WHERE site_id=?', (site_id,))}
+                covered = {row[0] for row in db.execute('SELECT day FROM analytics_rollup_stats_days WHERE site_id=?', (site_id,))}
                 dirty = {row[0] for row in db.execute('SELECT day FROM analytics_rollup_dirty WHERE site_id=? AND day<?', (site_id, today))}
                 missing = [] if first is None else range((first // DAY) * DAY, today, DAY)
                 # Dirty days come first, including dates whose last event was deleted.

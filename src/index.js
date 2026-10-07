@@ -1,3 +1,5 @@
+import { analyticsTrace, tracedAnalyticsResponse } from "./analytics-trace.js";
+import { cachedAnalytics } from "./analytics-cache.js";
 import { SCHEMA_VERSION } from "./migrations.ts";
 import { siteSlug, availableSiteSlug } from "./sites.ts";
 import { reportAnalytics, journeyAnalytics, overviewAnalytics, overviewComparison, invalidateOverview, measurementAnalytics } from "./overview.js";
@@ -30,6 +32,7 @@ import {
 import {
   cleanDomain,
   parseRange,
+  statsInput,
   rangeDays,
   referrerHost,
   splitPathAndAttribution,
@@ -46,11 +49,12 @@ import {
   homeOverviews,
   removeUser,
   reportCsv,
-  siteAnalytics,
+  siteStats,
+  siteCurrent,
+  dashboardReport,
   overviewScope,
   siteByKey,
   siteForKey,
-  siteReport,
   updateProfile,
   visitorId,
   clientIp,
@@ -871,11 +875,20 @@ app.get("/api/sites/:id{[0-9]+}/stats", (c) => {
   const url = new URL(c.req.url);
   const site = c.get("readSite") || getSiteForUser(env.DB, Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
+  const tracing = url.searchParams.get("trace") === "1";
+  if (tracing && (!session || session.role !== "admin")) return json({ error: "forbidden" }, 403);
+  const trace = tracing ? analyticsTrace(env.DB) : null;
+  const db = trace ? trace.db : env.DB;
+  const fresh = tracing || url.searchParams.get("fresh") === "1";
   const now = Math.floor(Date.now() / 1000);
   const range = parseRange(url.searchParams, now);
   if (range.error) return json({ error: range.error }, 400);
-  const analytics = siteAnalytics(env.DB, site, range.since, range.until);
-  return json({ site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, ...analytics });
+  const sections = statsInput(url.searchParams);
+  if (sections.error) return json({ error: sections.error }, 400);
+  const analytics = cachedAnalytics(db, site.id, "stats", range, sections, now, fresh, () => siteStats(db, site, range, now, sections, fresh));
+  analytics.current = siteCurrent(db, site.id);
+  const payload = { site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, ...analytics };
+  return trace ? tracedAnalyticsResponse(payload, trace) : json(payload);
 });
 
 // Bounded report with exact-match filters, sortable and paginated, as JSON
@@ -885,14 +898,18 @@ app.get("/api/sites/:id{[0-9]+}/report", (c) => {
   const url = new URL(c.req.url);
   const site = c.get("readSite") || getSiteForUser(env.DB, Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
+  const tracing = url.searchParams.get("trace") === "1";
+  if (tracing && (!session || session.role !== "admin")) return json({ error: "forbidden" }, 403);
+  if (tracing && url.searchParams.get("format") === "csv") return json({ error: "Tracing requires JSON format" }, 400);
+  const trace = tracing ? analyticsTrace(env.DB) : null;
+  const db = trace ? trace.db : env.DB;
+  const fresh = tracing || url.searchParams.get("fresh") === "1";
   const now = Math.floor(Date.now() / 1000);
   const range = parseRange(url.searchParams, now);
   if (range.error) return json({ error: range.error }, 400);
   const input = reportInput(url.searchParams);
-  const report = siteReport(
-    url.searchParams.get("cohort") === "1" ? overviewScope(env.DB, site.id, range.since, range.until, input.filters) : env.DB, site.id, range.since, range.until,
-    input.dimension, url.searchParams.get("cohort") === "1" ? { event: input.filters.event } : input.filters, input.limit, input.offset, input.sort,
-  );
+  const cohort = url.searchParams.get("cohort") === "1";
+  const report = cachedAnalytics(db, site.id, "report", range, [input,cohort], now, fresh, () => dashboardReport(db, site, range, input, cohort, now));
   if (String(url.searchParams.get("format") || "") === "csv") {
     return new Response(reportCsv(report), {
       headers: {
@@ -901,7 +918,8 @@ app.get("/api/sites/:id{[0-9]+}/report", (c) => {
       },
     });
   }
-  return json({ site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, ...report });
+  const payload = { site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, ...report };
+  return trace ? tracedAnalyticsResponse(payload, trace) : json(payload);
 });
 
 // Full HTML report: dimension tabs, exact-match filters, sortable table,
@@ -981,7 +999,7 @@ app.post("/api/backup", async (c) => {
   if (!csrfValid(session, csrfValue(request, body))) return htmlForm ? redirect("/users?backup=csrf") : json({ error: "csrf mismatch" }, 403);
   try {
     const snapshot = env.DB.backup();
-    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty"];
+    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "analytics_rollup_stats_days", "analytics_rollup_hours", "analytics_rollup_events", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty", "analytics_query_cache", "analytics_cache_days", "analytics_cache_config"];
     const counts = {};
     for (let i = 0; i < tables.length; i++) {
       counts[tables[i]] = Number(env.DB.prepare("SELECT count(*) AS n FROM " + tables[i]).first().n);
