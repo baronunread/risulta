@@ -1,3 +1,4 @@
+import { siteSlug } from "./sites.js";
 // Server-rendered pages. Markup follows lib/views.js class names so the
 // same stylesheet renders both apps.
 import { homeCards } from "./home.js";
@@ -22,20 +23,14 @@ const MARK = '<svg class="mark" width="20" height="20" viewBox="0 0 32 32" aria-
   '<rect x="1" y="1" width="30" height="30" rx="8" fill="var(--bg)" stroke="var(--line)" stroke-width="2"/>' +
   '<path fill="var(--fg)" d="M9 23C10 15 16 9 25 8C22 14 15 19 9 23Z"/>' +
   '<path d="M10.5 21.3C14 17 18 13 21.8 10" fill="none" stroke="var(--bg)" stroke-width="1.3" stroke-linecap="round"/></svg>';
-// Cog6Tooth from Heroicons (MIT, Tailwind Labs) - https://heroicons.com
-const GEAR = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/><path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/></svg>';
-
 function topbar(user, site, sites) {
-  const gear = site && user.role === "admin"
-    ? '<a class="site-settings" href="/sites/' + site.id + '/settings" aria-label="Website settings" title="Website settings">' + GEAR + "</a>"
-    : "";
   const switcher = site
     ? '<div class="site-context">' + (sites.length > 1
       ? '<details class="site-switcher"><summary class="site-switcher-trigger"><span>' + escapeHtml(site.name) +
         '</span><span class="select-chevron" aria-hidden="true"></span></summary><div class="site-switcher-menu">' +
-        sites.map((s) => '<a href="/sites/' + s.id + '"' + (s.id === site.id ? ' aria-current="page"' : "") + "><span>" + (s.id === site.id ? "&#10003;" : "") + "</span>" + escapeHtml(s.name) + "</a>").join("") +
+        sites.map((s) => '<a href="/sites/' + siteSlug(s) + '"' + (s.id === site.id ? ' aria-current="page"' : "") + "><span>" + (s.id === site.id ? "&#10003;" : "") + "</span>" + escapeHtml(s.name) + "</a>").join("") +
         "</div></details>"
-      : "") + gear + "</div>"
+      : "") + "</div>"
     : "";
   return '<header class="topbar"><div class="shell topbar-inner"><a class="brand" href="/" aria-label="Risulta home">' + MARK + "<span>Risulta</span></a>" + switcher +
     '<nav class="nav" aria-label="Account"><details class="account-menu"><summary aria-label="Account menu"><span class="avatar" aria-hidden="true">' + avatarFor(user.display_name || user.email) + '</span><span class="account-trigger-email">' + escapeHtml(user.email) + "</span></summary>" +
@@ -46,6 +41,7 @@ function topbar(user, site, sites) {
 }
 
 export function pageShell(title, user, body, site, sites) {
+  if (site) body = body.replace('id="main"', 'id="main" hx-history-elt');
   return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<meta name="color-scheme" content="light dark"><meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">' +
     '<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">' +
@@ -119,71 +115,100 @@ export function liveFragment(site, analytics, range, days, metric, comparison) {
     const selected = metric === item[0];
     const previous = comparison ? Number(comparison[item[0]]) : 0;
     const change = previous ? (Number(metrics[item[0]]) - previous) / previous * 100 : 0;
-    const delta = comparison ? '<span class="metric-comparison">' + (previous ? (change > 0 ? "+" : "") + oneDecimal(change) + "% vs previous period" : "No previous traffic") + '</span>' : "";
-    return '<a class="metric overview-metric" href="/sites/' + site.id + "?" + liveQuery(range, days, comparison) + "&metric=" + item[0] + '"' +
+    const percent = Math.round(change);
+    const deltaText = previous ? (percent > 0 ? "+" : "") + percent + "%" : Number(metrics[item[0]]) ? "New" : "0%";
+    const deltaLabel = previous ? deltaText + " vs previous period" : Number(metrics[item[0]]) ? "New traffic, none in the previous period" : "No traffic in either period";
+    const delta = comparison ? '<span class="metric-comparison" title="' + escapeHtml(deltaLabel) + '" aria-label="' + escapeHtml(deltaLabel) + '">' + deltaText + '</span>' : "";
+    return '<a class="metric overview-metric" href="/sites/' + siteSlug(site) + "?" + liveQuery(range, days, comparison) + "&metric=" + item[0] + '"' +
       (selected ? ' aria-current="true"' : "") + '><span class="metric-label">' + item[1] + '</span><strong data-metric="' + item[0] + '">' +
       fmtInt(metrics[item[0]]) + '</strong><span class="metric-description">' + item[2] + '</span>' + delta + '</a>';
   }).join("");
   const reportLink = function (dimension) {
-    return '<a class="report-link" href="/sites/' + site.id + "/reports?" + pageQuery + "&dimension=" + dimension + '">View report &rarr;</a>';
+    return '<a class="report-link" href="/sites/' + siteSlug(site) + "/reports?" + pageQuery + "&cohort=1&dimension=" + dimension + '">View report &rarr;</a>';
   };
   const conversions = analytics.hasConversions
-    ? '<details class="dashboard-disclosure" data-disclosure="conversions"><summary><span>Conversions</span><span class="disclosure-description">Goals and funnels</span></summary>' +
-      '<div class="conversions-preview"><p>See which visits led to a signup, purchase or another goal.</p><a class="button secondary" href="/sites/' + site.id +
-      '/conversions?' + pageQuery + '">View conversions</a></div></details>' : "";
-  return '<section class="panel overview-panel" aria-label="Traffic overview"><nav class="metrics overview-metrics" aria-label="Select a chart metric">' + summary + '</nav>' +
+    ? '<div id="overview-goals" class="overview-goals" hx-preserve="true" hx-get="/sites/' + siteSlug(site) + '/partials/goals?' +
+      liveQuery(range, days, false) + '" hx-trigger="every 60s" hx-sync="this:drop" hx-target="this" hx-swap="innerHTML">' +
+      overviewGoalsFragment(site, analytics.goals, range, days) + '</div>' : "";
+  const dimensions = [["source", "Sources", analytics.referrers], ["campaign", "Campaigns", analytics.campaigns], ["medium", "Mediums", analytics.mediums]];
+  const rowLink = function (dimension) {
+    return function (label) {
+      const filters = { ...range.filters, [dimension]: label };
+      return '/sites/' + siteSlug(site) + '?' + liveQuery({ ...range, filters }, days, comparison) + '&metric=' + metric;
+    };
+  };
+  const chips = Object.keys(range.filters || {}).map((key) => {
+    const filters = { ...range.filters }; delete filters[key];
+    return '<a class="filter-chip" href="/sites/' + siteSlug(site) + '?' + liveQuery({ ...range, filters }, days, comparison) + '&metric=' + metric +
+      '" aria-label="' + escapeHtml('Remove ' + key + ' filter: ' + range.filters[key]) + '">' + escapeHtml(key + ': ' + range.filters[key]) + ' &times;</a>';
+  }).join('');
+  const filterBar = chips ? '<nav class="overview-filters" aria-label="Active visitor filters">' + chips +
+    '<a class="report-link" href="/sites/' + siteSlug(site) + '?' + liveQuery({ ...range, filters: {} }, days, comparison) + '&metric=' + metric + '">Clear all</a></nav>' +
+    '<p class="hint">Showing all activity from daily visitors with a pageview matching these filters.</p>' : '';
+  return filterBar + '<section class="panel overview-panel" aria-label="Traffic overview"><nav class="metrics overview-metrics" aria-label="Select a chart metric">' + summary + '</nav>' +
     (hasData ? '<div class="chart-wrap"><div class="chart-heading"><h2>' + metricLabel + ' over time</h2><span class="hint"><strong data-metric="views-per-visit">' +
       oneDecimal(viewsPerVisit) + '</strong> pages per visit</span></div>' + chart(series, metric, metricLabel) + chart(series, metric, metricLabel, true) + '</div>' :
-      '<div class="empty"><h2>Waiting for the first visitor</h2><p>Install the tracker below. New visits will appear here live.</p></div>') + '</section>' +
+      '<div class="empty"><h2>' + (Object.keys(range.filters || {}).length ? 'No matching visitors' : 'Waiting for the first visitor') + '</h2><p>' + (Object.keys(range.filters || {}).length ? 'Try another date range or remove a filter.' : 'Install the tracker below. New visits will appear here live.') + '</p></div>') + '</section>' +
     '<div class="overview-footer"><details class="metric-help" data-disclosure="metrics"><summary>What do these numbers mean?</summary><p>Visitors are counted once per day. Someone returning on another day counts again. ' +
     'A visit is a browsing session, ending after more than 30 minutes of inactivity or at UTC midnight. Pageviews count each page loaded. Dates use UTC.</p></details>' +
-    '<a class="report-link" href="/sites/' + site.id + "?" + liveQuery(range, days, !comparison) + "&metric=" + metric + '">' +
-    (comparison ? "Hide comparison" : "Compare previous period") + '</a></div>' +
+    '</div>' +
     '<p class="hint metrics-note"><span class="status" id="poll-status" data-state="live"></span></p>' +
     '<div id="dashboard-reports" class="reports overview-reports">' +
-    reportCard("Top pages", analytics.paths, "Pages will appear after the first view.", reportLink("path")) +
-    reportCard("Traffic sources", analytics.referrers, "Sources will appear after the first visit.", reportLink("source")) + '</div>' +
-    '<details class="dashboard-disclosure" data-disclosure="campaigns"><summary><span>Campaigns</span><span class="disclosure-description">Mediums and UTM campaigns</span></summary><div class="reports">' +
-    reportCard("Mediums", analytics.mediums, "No tagged traffic in this period.", reportLink("medium")) +
-    reportCard("Campaigns", analytics.campaigns, "No campaigns in this period.", reportLink("campaign")) + '</div></details>' + conversions;
+    dimensions.map((item) => reportCard(item[1], item[2].slice(0, 5), "No matching traffic in this period.", reportLink(item[0]), rowLink(item[0]))).join('') +
+    reportCard("Top pages", analytics.paths.slice(0, 5), "Pages will appear after the first view.", reportLink("path"), rowLink("path")) + '</div>' + conversions;
+
+}
+
+export function overviewGoalsFragment(site, goals, range, days) {
+  return goalCard(goals, '<a class="report-link" href="/sites/' + siteSlug(site) + '/goals?' + liveQuery(range, days, false) + '">All goals &rarr;</a>');
 }
 
 export function conversionsPage(user, site, sites, goals, funnels, truncated, range) {
   return pageShell(site.name + " conversions", user,
     '<main class="shell website-dashboard" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) +
-    '</p><h1>Conversions</h1><p class="dashboard-period">' + escapeHtml(range.label) + '</p></div><a class="button secondary" href="/sites/' +
-    site.id + '?' + liveQuery(range, range.days || 7, false) + '">Back to overview</a></div><div class="conversions-workspace"><div>' +
+    '</p><h1>Conversions</h1><p class="dashboard-period">' + escapeHtml(periodLabel(range)) + '</p></div><a class="button secondary" href="/sites/' +
+    siteSlug(site) + '?' + liveQuery(range, range.days || 7, false) + '">Back to overview</a></div><div class="conversions-workspace"><div>' +
     goalCard(goals) + '</div><div class="funnel-stack">' + funnelCard(funnels, truncated) + '</div></div></main>', site, sites);
 }
 
-function liveQuery(range, days, compare) {
-  const base = range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days;
-  return compare ? base + "&compare=1" : base;
+function filterQuery(range) {
+  let query = '';
+  for (const key of Object.keys(range.filters || {})) query += '&' + key + '=' + encodeURIComponent(range.filters[key]);
+  return query + '&acquisition=' + (range.acquisition || 'source');
 }
 
-export function reportCard(title, rows, emptyLabel, detailLinks) {
+function liveQuery(range, days) {
+  const base = range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days;
+  let query = base;
+  const filters = range.filters || {};
+  for (const key of Object.keys(filters)) query += "&" + key + "=" + encodeURIComponent(filters[key]);
+  if (range.acquisition) query += "&acquisition=" + range.acquisition;
+  return query;
+}
+
+export function reportCard(title, rows, emptyLabel, detailLinks, rowLink, tabs) {
   let max = 1;
   for (let i = 0; i < rows.length; i++) max = Math.max(max, Number(rows[i].visitors));
   const items = rows.length
     ? "<ol>" + rows.map((row) => {
       const width = Math.max(2, (Number(row.visitors) / max) * 100).toFixed(1);
-      return '<li><div class="row-label"><span class="truncate" title="' + escapeHtml(row.label) + '">' + escapeHtml(row.label) +
-        '</span><span class="value">' + fmtInt(row.visitors) + '</span></div><div class="meter" aria-hidden="true"><span style="width:' + width + '%"></span></div></li>';
+      const label = '<span class="truncate" title="' + escapeHtml(row.label) + '">' + escapeHtml(row.label) + '</span>';
+      return '<li><div class="row-label">' + (rowLink ? '<a class="report-row-link" href="' + escapeHtml(rowLink(row.label)) + '">' + label + '</a>' : label) + '<span class="value">' + fmtInt(row.visitors) + '</span></div><div class="meter" aria-hidden="true"><span style="width:' + width + '%"></span></div></li>';
     }).join("") + "</ol>"
     : '<p class="empty-small">' + escapeHtml(emptyLabel) + "</p>";
   const id = title.toLowerCase().replace(/ /g, "-");
-  return '<section class="report" aria-labelledby="' + id + '"><div class="report-head"><h2 id="' + id + '">' + escapeHtml(title) + "</h2>" + detailLinks + '</div><p class="report-column-label">Visitors</p>' + items + "</section>";
+  return '<section class="report" aria-labelledby="' + id + '"><div class="report-head"><h2 id="' + id + '">' + escapeHtml(title) + "</h2>" + detailLinks + '</div>' + (tabs || '') + '<p class="report-column-label">Visitors</p>' + items + "</section>";
 }
 
-export function goalCard(goals) {
+export function goalCard(goals, detailLink) {
   if (!goals.length) return "";
   const items = goals.map((goal) => {
     let hint = fmtInt(goal.unique_conversions) + " unique, " + oneDecimal(Number(goal.conversion_rate) * 100) + "% conversion rate";
     if (Number(goal.value)) hint += ", " + fmtInt(goal.value) + " value";
     return '<li><div class="row-label"><span class="truncate">' + escapeHtml(goal.name) + '</span><span class="value">' + fmtInt(goal.conversions) +
-      '</span></div><p class="hint">' + escapeHtml(hint) + "</p></li>";
+      '</span></div>' + (goal.event_name ? '<p class="hint">' + escapeHtml(goal.event_name + (goal.path ? ' at ' + goal.path : '')) + '</p>' : '') + '<p class="hint">' + escapeHtml(hint) + "</p></li>";
   }).join("");
-  return '<section class="report" aria-labelledby="goals-title"><div class="report-head"><h2 id="goals-title">Goals</h2><span>Conversions</span></div><ol>' + items + "</ol></section>";
+  return '<section class="report" aria-labelledby="goals-title"><div class="report-head"><h2 id="goals-title">Goals</h2>' + (detailLink || '<span>Conversions</span>') + '</div>' + (detailLink ? '<p class="report-column-label">Conversions</p>' : '') + '<ol>' + items + "</ol></section>";
 }
 
 export function funnelCard(funnels, truncated) {
@@ -197,13 +222,35 @@ export function funnelCard(funnels, truncated) {
   return items + (truncated ? '<p class="hint metrics-note">Funnel counts scan up to 50,000 events, ordered by visitor and time. Larger ranges may have incomplete funnels.</p>' : "");
 }
 
+export function siteNavigation(site, range, active) {
+  const query = liveQuery(range, range.days || 7);
+  const items = [["overview", "", "Overview"], ["reports", "/reports", "Reports"], ["journeys", "/reports/journeys", "Journeys"], ["goals", "/goals", "Goals"], ["funnels", "/funnels", "Funnels"]];
+  return '<nav class="dashboard-navigation site-tabs" aria-label="Website analytics" hx-boost:inherited="swap:&quot;outerSync show:none&quot; select:#main target:#main">' + items.map((item) =>
+    '<a href="/sites/' + siteSlug(site) + item[1] + '?' + query + (item[0] === "reports" ? '&cohort=1' : '') + '"' + (active === item[0] ? ' aria-current="page"' : '') + '>' + item[2] + '</a>').join('') + '</nav>';
+}
+
+function periodLabel(range) {
+  return range.from ? range.from + " to " + range.to : range.days === 1 ? "Today" : "Last " + (range.days || 7) + " days";
+}
+
+function dateTabs(site, range, path, extra) {
+  return '<nav class="periods" aria-label="Date range">' + [1, 7, 30].map((period) =>
+    '<a href="/sites/' + siteSlug(site) + path + '?period=' + period + filterQuery(range) + (extra || '') + '"' +
+    (!range.from && period === (range.days || 7) ? ' aria-current="page"' : '') + '>' +
+    (period === 1 ? 'Today' : period + 'd') + '</a>').join('') + '</nav>';
+}
+
+function trackerButton(site, origin) {
+  const snippet = '<script defer src="' + origin + '/js/' + site.public_key + '.js"></script>';
+  return '<button class="button secondary tracker-copy" type="button" data-copy-code data-copy-value="' + escapeHtml(snippet) + '" title="Copy the script to paste into your site’s head"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="4" rx="1.5"/><path d="M8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/></svg>Copy tracker code</button>';
+}
+
 export function sitePage(user, site, sites, analytics, range, days, metric, origin, comparison) {
-  const title = range.from ? range.from + " to " + range.to : days === 1 ? "Today" : "Last " + days + " days";
+  const title = periodLabel(range);
   const hasData = Number(analytics.summary.pageviews) > 0;
-  const compareSuffix = comparison ? "&compare=1" : "";
-  const statsBase = "/sites/" + site.id + "/partials/live?" + (range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days) + "&metric=" + metric + compareSuffix;
+  const statsBase = "/sites/" + siteSlug(site) + "/partials/live?" + (range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days) + "&metric=" + metric + filterQuery(range);
   const periodTabs = [1, 7, 30].map((period) =>
-    '<a href="/sites/' + site.id + "?period=" + period + "&metric=" + metric + compareSuffix + '"' + (!range.from && period === days ? ' aria-current="page"' : "") + ">" +
+    '<a href="/sites/' + siteSlug(site) + "?period=" + period + "&metric=" + metric + filterQuery(range) + '"' + (!range.from && period === days ? ' aria-current="page"' : "") + ">" +
     (period === 1 ? "Today" : period + "d") + "</a>").join("");
   const snippet = '<script defer src="' + origin + "/js/" + site.public_key + '.js"></script>';
   const install = '<section class="card install" aria-labelledby="install-title"><h2 id="install-title">Install the tracker</h2><p>Paste this into the <code>&lt;head&gt;</code> of ' +
@@ -212,18 +259,21 @@ export function sitePage(user, site, sites, analytics, range, days, metric, orig
   return pageShell(
     site.name + " analytics",
     user,
-    '<main class="shell website-dashboard" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + "</p><h1>Overview</h1><p class=\"dashboard-period\">" + escapeHtml(title) + "</p></div>" +
-      '<div class="dashboard-controls"><div id="live-current" aria-live="polite"><span class="current"><span class="site-dot" aria-hidden="true"></span><strong id="live-current-value" data-current>' +
-      fmtInt(analytics.current) + '</strong> online now</span></div><nav class="periods" aria-label="Date range">' + periodTabs + "</nav>" +
+    '<main class="shell website-dashboard" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + "</p><div class=\"overview-title\"><h1>Overview</h1>" + trackerButton(site, origin) + "</div><p class=\"dashboard-period\">" + escapeHtml(title) + "</p></div>" +
+      '<nav class="periods" aria-label="Date range">' + periodTabs + '</nav></div>' +
+      siteNavigation(site, range, 'overview') +
+      '<div class="dashboard-toolbar"><div id="live-current" aria-live="polite"><span class="current"><span class="site-dot" aria-hidden="true"></span><strong id="live-current-value" data-current>' +
+      fmtInt(analytics.current) + '</strong> online now</span></div>' +
       '<details class="range-picker"><summary class="button secondary">Custom range</summary>' +
-      '<form class="range-form" method="get" action="/sites/' + site.id + '"><input type="hidden" name="metric" value="' + escapeHtml(metric) + '">' +
-      (comparison ? '<input type="hidden" name="compare" value="1">' : "") +
+      '<form class="range-form" method="get" action="/sites/' + siteSlug(site) + '"><input type="hidden" name="metric" value="' + escapeHtml(metric) + '">' +
+      Object.keys(range.filters || {}).map((key) => '<input type="hidden" name="' + key + '" value="' + escapeHtml(range.filters[key]) + '">').join('') +
+      '<input type="hidden" name="acquisition" value="' + (range.acquisition || 'source') + '">' +
       '<label class="compact-field" for="range-from"><span>From</span><input id="range-from" name="from" type="date" required value="' + escapeHtml(range.from) + '"></label>' +
       '<label class="compact-field" for="range-to"><span>To</span><input id="range-to" name="to" type="date" required value="' + escapeHtml(range.to) + '"></label>' +
-      '<button class="button secondary" type="submit">Apply</button></form></details></div></div>' +
-      '<nav class="dashboard-navigation" aria-label="Website analytics"><a href="/sites/' + site.id + '/reports">All reports</a><a href="/sites/' + site.id + '/reports/journeys?' + liveQuery(range, days, false) + '">Visitor journeys</a></nav><div id="live-stats" data-stats-url="' + statsBase + '" hx-get="' + statsBase + '" hx-trigger="every 5s" hx-sync="this:drop" hx-target="#live-stats" hx-swap="innerHTML">' +
+      '<button class="button secondary" type="submit">Apply</button></form></details></div>' +
+      '<div id="live-stats" data-stats-url="' + statsBase + '" hx-get="' + statsBase + '" hx-trigger="every 30s" hx-sync="this:drop" hx-target="#live-stats" hx-swap="innerHTML">' +
       liveFragment(site, analytics, range, days, metric, comparison) +
-      "</div>" + (hasData ? "" : install) + "</main>",
+      "</div>" + (hasData || Object.keys(range.filters || {}).length ? "" : install) + "</main>",
     site,
     sites,
   );
@@ -352,7 +402,7 @@ export function accountPage(user, options) {
 
 export function reportsPage(user, site, sites, report, range, days) {
   const dimensions = [["path", "Pages"], ["source", "Sources"], ["medium", "Mediums"], ["campaign", "Campaigns"], ["event", "Events"]];
-  const base = { dimension: report.dimension, period: String(days), limit: String(report.limit), offset: String(report.offset), sort: report.sort };
+  const base = { cohort: report.cohort ? "1" : "", dimension: report.dimension, period: String(days), limit: String(report.limit), offset: String(report.offset), sort: report.sort };
   if (range.from) {
     base.from = range.from;
     base.to = range.to;
@@ -363,7 +413,7 @@ export function reportsPage(user, site, sites, report, range, days) {
     if (report.filters[filterNames[i]]) base[filterNames[i]] = report.filters[filterNames[i]];
   }
   const tabLink = function (dimension) {
-    const params = { dimension: dimension, period: base.period, limit: base.limit, offset: "0", sort: base.sort };
+    const params = { cohort: base.cohort, dimension: dimension, period: base.period, limit: base.limit, offset: "0", sort: base.sort };
     if (base.from) {
       params.from = base.from;
       params.to = base.to;
@@ -371,9 +421,8 @@ export function reportsPage(user, site, sites, report, range, days) {
     for (let i = 0; i < filterNames.length; i++) {
       if (base[filterNames[i]]) params[filterNames[i]] = base[filterNames[i]];
     }
-    return "/sites/" + site.id + "/reports?" + reportQuery(params);
+    return "/sites/" + siteSlug(site) + "/reports?" + reportQuery(params);
   };
-  const journeyLink = "/sites/" + site.id + "/reports/journeys?" + reportQuery(clearJourneyRange(range, days));
   const tabs = dimensions.map(function (entry) {
     return '<a href="' + tabLink(entry[0]) + '"' + (report.dimension === entry[0] ? ' aria-current="page"' : "") + ">" + escapeHtml(entry[1]) + "</a>";
   }).join("");
@@ -385,20 +434,21 @@ export function reportsPage(user, site, sites, report, range, days) {
     clearParams.from = base.from;
     clearParams.to = base.to;
   }
-  const filterForm = '<form class="filter-grid" method="get" action="/sites/' + site.id + '/reports">' +
+  const filterForm = '<form class="filter-grid" method="get" action="/sites/' + siteSlug(site) + '/reports">' +
+    (report.cohort ? '<input type="hidden" name="cohort" value="1">' : "") +
     '<input type="hidden" name="dimension" value="' + escapeHtml(report.dimension) + '">' +
     '<input type="hidden" name="period" value="' + escapeHtml(base.period) + '">' +
     (base.from ? '<input type="hidden" name="from" value="' + escapeHtml(base.from) + '"><input type="hidden" name="to" value="' + escapeHtml(base.to) + '">' : "") +
     filterFields +
     '<button class="button secondary" type="submit">Filter</button>' +
-    '<a class="button secondary" href="/sites/' + site.id + "/reports?" + reportQuery(clearParams) + '">Clear</a></form>';
+    '<a class="button secondary" href="/sites/' + siteSlug(site) + "/reports?" + reportQuery(clearParams) + '">Clear</a></form>';
   const rows = report.rows.map(function (row) {
     return '<tr><td><details class="report-label"><summary title="' + escapeHtml(row.label) + '"><span>' + escapeHtml(row.label) + '</span></summary><p>' + escapeHtml(row.label) + '</p></details></td><td>'  + fmtInt(row.pageviews) + "</td><td>" + fmtInt(row.visitors) + "</td><td>" + fmtInt(row.value) + "</td></tr>";
   }).join("");
   const previous = Math.max(0, report.offset - report.limit);
   const next = report.offset + report.limit;
   const pageParams = function (offset) {
-    const params = { dimension: base.dimension, period: base.period, limit: base.limit, offset: String(offset), sort: base.sort };
+    const params = { cohort: base.cohort, dimension: base.dimension, period: base.period, limit: base.limit, offset: String(offset), sort: base.sort };
     if (base.from) {
       params.from = base.from;
       params.to = base.to;
@@ -406,12 +456,12 @@ export function reportsPage(user, site, sites, report, range, days) {
     for (let i = 0; i < filterNames.length; i++) {
       if (base[filterNames[i]]) params[filterNames[i]] = base[filterNames[i]];
     }
-    return "/sites/" + site.id + "/reports?" + reportQuery(params);
+    return "/sites/" + siteSlug(site) + "/reports?" + reportQuery(params);
   };
   const pageLinks = '<nav class="actions" aria-label="Report pages">' +
     (report.offset ? '<a class="button secondary" href="' + pageParams(previous) + '">Previous</a>' : "") +
     (next < report.total ? '<a class="button secondary" href="' + pageParams(next) + '">Next</a>' : "") + "</nav>";
-  const csvParams = { dimension: base.dimension, period: base.period, limit: base.limit, offset: base.offset, sort: base.sort };
+  const csvParams = { cohort: base.cohort, dimension: base.dimension, period: base.period, limit: base.limit, offset: base.offset, sort: base.sort };
   if (base.from) {
     csvParams.from = base.from;
     csvParams.to = base.to;
@@ -423,8 +473,9 @@ export function reportsPage(user, site, sites, report, range, days) {
   return pageShell(
     site.name + " report",
     user,
-    '<main class="shell" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + "</p><h1>Full report</h1><p class=\"dashboard-period\">" + escapeHtml(range.label) + '</p></div><a class="button secondary" href="/sites/' + site.id + '?' + liveQuery(range, days, false) + '">Back to overview</a></div>' +
-      '<nav class="periods report-tabs" aria-label="Report dimension">' + tabs + '<a href="' + journeyLink + '">Visitor journeys</a></nav>' + filterForm +
+    '<main class="shell website-dashboard" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + "</p><h1>Reports</h1><p class=\"dashboard-period\">" + escapeHtml(periodLabel(range)) + '</p></div>' + dateTabs(site, range, '/reports', '&cohort=' + (report.cohort ? '1' : '0') + '&dimension=' + report.dimension) + '</div>' +
+      siteNavigation(site, range, 'reports') + '<nav class="periods report-tabs" aria-label="Report dimension">' + tabs + '</nav>' + filterForm +
+      (report.cohort ? '<p class="hint">Showing activity from daily visitors matching the selected source, page or campaign filters.</p>' : '') +
       '<section class="card report-table-card" aria-labelledby="report-title"><div class="report-titlebar"><div><h2 id="report-title">' + escapeHtml(title) + '</h2><p class="hint">' +
       fmtInt(report.total) + " row" + (report.total === 1 ? "" : "s") + "</p></div></div>" +
       (report.rows.length
@@ -438,7 +489,7 @@ export function reportsPage(user, site, sites, report, range, days) {
 }
 
 function clearJourneyRange(range, days) {
-  return range.from ? { from: range.from, to: range.to } : { period: String(days) };
+  return { ...(range.from ? { from: range.from, to: range.to } : { period: String(days) }), ...range.filters, cohort: "1" };
 }
 
 function journeyTime(ts) {
@@ -457,7 +508,7 @@ function journeyDuration(seconds) {
 export function journeysPage(user, site, sites, report, range) {
   const base = clearJourneyRange(range, range.days);
   const link = function (visitor, offset) {
-    return "/sites/" + site.id + "/reports/journeys?" + reportQuery(base) +
+    return "/sites/" + siteSlug(site) + "/reports/journeys?" + reportQuery(base) +
       "&visitor=" + encodeURIComponent(visitor) + "&limit=" + report.limit + "&offset=" + offset;
   };
   const rows = report.rows.map(function (journey) {
@@ -484,12 +535,13 @@ export function journeysPage(user, site, sites, report, range) {
     (report.offset ? '<a class="button secondary" href="' + link(report.visitor, Math.max(0, report.offset - report.limit)) + '">Previous</a>' : "") +
     (next < report.total ? '<a class="button secondary" href="' + link(report.visitor, next) + '">Next</a>' : "") + "</nav>";
   return pageShell(site.name + " journeys", user,
-    '<main class="shell journeys-page" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) +
-    '</p><h1>Visitor journeys</h1><p class="journeys-intro">Follow the pages and events within each visit.</p></div><div class="actions"><a class="button secondary" href="/sites/' +
-    site.id + "/reports?" + reportQuery(base) + '">Back to reports</a></div></div>' +
-    '<div class="journeys-toolbar"><p><strong>' + fmtInt(report.total) + (report.truncated ? "+" : "") +
-    (report.total === 1 ? " visit" : " visits") + '</strong><span>' + escapeHtml(range.label) + '</span></p>' +
+    '<main class="shell website-dashboard journeys-page" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) +
+    '</p><h1>Journeys</h1><p class="dashboard-period">' + escapeHtml(periodLabel(range)) + '</p></div>' +
+    dateTabs(site, range, '/reports/journeys') + '</div>' +
+    siteNavigation(site, range, 'journeys') + '<div class="journeys-toolbar"><p><strong>' + fmtInt(report.total) + (report.truncated ? "+" : "") +
+    (report.total === 1 ? " visit" : " visits") + '</strong></p>' +
     (report.visitor ? '<a class="button secondary" href="' + link("", 0) + '">All visitors</a>' : "") + '</div>' +
+    (Object.keys(range.filters || {}).length ? '<p class="hint">Daily visitors matching: ' + escapeHtml(Object.keys(range.filters).map((key) => key + ': ' + range.filters[key]).join(', ')) + '</p>' : '') +
     '<details class="journeys-note"><summary>How visits are grouped</summary><p>Visitor hashes are anonymous, site-specific and reset daily. ' +
     'A new visit starts after more than 30 minutes of inactivity or at UTC midnight. All event types are included. ' +
     'Only activity within the selected range is shown.</p></details>' +
@@ -500,7 +552,7 @@ export function journeysPage(user, site, sites, report, range) {
 }
 
 function reportQuery(params) {
-  const names = ["dimension", "period", "from", "to", "limit", "offset", "sort", "path", "source", "medium", "campaign", "event"];
+  const names = ["cohort", "dimension", "period", "from", "to", "limit", "offset", "sort", "path", "source", "medium", "campaign", "event"];
   const parts = [];
   for (let i = 0; i < names.length; i++) {
     const value = params[names[i]];
@@ -509,7 +561,7 @@ function reportQuery(params) {
   return parts.join("&");
 }
 
-export function settingsPage(session, site, sites, goals, funnels, error, origin) {
+export function measurementPage(session, site, sites, goals, goalResults, funnelResults, truncated, range, kind, error) {
   const errorMessages = {
     "goal-name-required": "Enter a goal name.",
     "goal-event-invalid": "Use a valid event name.",
@@ -519,41 +571,36 @@ export function settingsPage(session, site, sites, goals, funnels, error, origin
     "funnel-steps-invalid": "Select at least two distinct goals of this site.",
     "funnel-save-failed": "Unable to save this funnel.",
   };
-  const snippet = '<script defer src="' + origin + "/js/" + site.public_key + '.js"></script>';
-  const trackerCard = '<section class="card settings-section install" aria-labelledby="tracker-title"><h2 id="tracker-title">Tracker code</h2>' +
-    "<p>Paste this into the <code>&lt;head&gt;</code> of " + escapeHtml(site.domain) + ".</p>" +
-    '<div class="snippet" role="region" tabindex="0" aria-label="Tracker installation code"><code>' + escapeHtml(snippet) + "</code></div>" +
-    '<button class="button secondary" type="button" data-copy-code>Copy code</button></section>';
-  const goalItems = goals.map((g) => "<li><strong>" + escapeHtml(g.name) + "</strong><span>" + escapeHtml(g.event_name) + (g.path ? " at " + escapeHtml(g.path) : "") + "</span></li>").join("");
-  const goalCard = session.role === "admin"
-    ? '<section class="card settings-section" aria-labelledby="goals-settings-title"><h2 id="goals-settings-title">Goals</h2><p class="hint">Track a custom event or a pageview at one exact path.</p>' +
-      '<form class="form" method="post" action="/api/sites/' + site.id + '/goals"><input type="hidden" name="csrf" value="' + session.csrf + '">' +
+  const goalForm = session.role === "admin"
+    ? '<section class="card settings-section" aria-labelledby="goals-settings-title"><h2 id="goals-settings-title">Create a goal</h2><p class="hint">Track a custom event or a pageview at one exact path.</p>' +
+      '<form class="form" method="post" action="/api/sites/' + site.id + '/goals"><input type="hidden" name="csrf" value="' + session.csrf + '"><input type="hidden" name="return_query" value="' + escapeHtml(liveQuery(range, range.days || 7)) + '">' +
       '<div class="field"><label for="goal-name">Goal name</label><input id="goal-name" name="name" required maxlength="80" placeholder="Signup"></div>' +
       '<div class="field"><label for="goal-event">Event name</label><input id="goal-event" name="event_name" required maxlength="64" placeholder="signup or pageview"></div>' +
       '<div class="field"><label for="goal-path">Exact page path (optional)</label><input id="goal-path" name="path" maxlength="2048" placeholder="/pricing"></div>' +
       '<div class="actions"><button class="button" type="submit">Add goal</button></div></form>' +
-      (goalItems ? '<details class="settings-items"><summary>' + goals.length + ' configured goals</summary><ol class="settings-list">' + goalItems + '</ol></details>' : "") + "</section>"
+      "</section>"
     : "";
   const funnelOptions = goals.map((g) => '<option value="' + g.id + '">' + escapeHtml(g.name) + "</option>").join("");
-  const funnelItems = funnels.map((f) => "<li><strong>" + escapeHtml(f.name) + "</strong><span>" + f.steps.map((s) => escapeHtml(s.name)).join(" &rarr; ") + "</span></li>").join("");
-  const funnelCard = session.role === "admin" && goals.length >= 2
-    ? '<section class="card settings-section" aria-labelledby="funnels-settings-title"><h2 id="funnels-settings-title">Funnels</h2><p class="hint">Select goals in the order visitors should complete them.</p>' +
-      '<form class="form" method="post" action="/api/sites/' + site.id + '/funnels"><input type="hidden" name="csrf" value="' + session.csrf + '">' +
+  const funnelForm = session.role === "admin" && goals.length >= 2
+    ? '<section class="card settings-section" aria-labelledby="funnels-settings-title"><h2 id="funnels-settings-title">Create a funnel</h2><p class="hint">Select goals in the order visitors should complete them.</p>' +
+      '<form class="form" method="post" action="/api/sites/' + site.id + '/funnels"><input type="hidden" name="csrf" value="' + session.csrf + '"><input type="hidden" name="return_query" value="' + escapeHtml(liveQuery(range, range.days || 7)) + '">' +
       '<div class="field"><label for="funnel-name">Funnel name</label><input id="funnel-name" name="name" required maxlength="100"></div>' +
       '<div class="field"><label for="funnel-goal-1">Step 1</label><select id="funnel-goal-1" name="goal" required><option value="">Select a goal</option>' + funnelOptions + "</select></div>" +
       '<div class="field"><label for="funnel-goal-2">Step 2</label><select id="funnel-goal-2" name="goal" required><option value="">Select a goal</option>' + funnelOptions + "</select></div>" +
       '<div class="field"><label for="funnel-goal-3">Step 3 (optional)</label><select id="funnel-goal-3" name="goal"><option value="">No third step</option>' + funnelOptions + "</select></div>" +
       '<div class="actions"><button class="button" type="submit">Add funnel</button></div></form>' +
-      (funnelItems ? '<details class="settings-items"><summary>' + funnels.length + ' configured funnels</summary><ol class="settings-list">' + funnelItems + '</ol></details>' : "") + "</section>"
+      "</section>"
     : "";
   const errorMessage = errorMessages[error] || "";
-  return pageShell(
-    site.name + " settings",
-    session,
-    '<main class="shell" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + "</p><h1>Website settings</h1></div></div>" +
-      (errorMessage ? '<p class="error" role="alert">' + escapeHtml(errorMessage) + "</p>" : "") +
-      '<div class="settings-workspace">' + trackerCard + goalCard + funnelCard + '</div></main>',
-    site,
-    sites,
-  );
+  const title = kind === "goals" ? "Goals" : "Funnels";
+  const days = range.days || 7;
+  const ranges = [1, 7, 30].map((period) => '<a href="/sites/' + siteSlug(site) + '/' + kind + '?period=' + period + filterQuery(range) + '"' + (!range.from && period === days ? ' aria-current="page"' : '') + '>' + (period === 1 ? 'Today' : period + 'd') + '</a>').join('');
+  const results = kind === "goals" ? goalCard(goalResults) : funnelCard(funnelResults, truncated);
+  const empty = '<section class="card empty-card"><h2>No ' + title.toLowerCase() + ' yet</h2><p>' + (kind === "goals" ? 'Define an event or page to measure the actions that matter.' : 'Connect two or more goals to see where visitors drop off.') + '</p></section>';
+  const form = kind === "goals" ? goalForm : funnelForm || (session.role === "admin" ? '<section class="card measurement-create"><h2>Create a funnel</h2><p class="hint">Add at least two goals before building a funnel.</p><a class="button secondary" href="/sites/' + siteSlug(site) + '/goals?' + liveQuery(range, days) + '">Create goals</a></section>' : '');
+  return pageShell(site.name + " " + title.toLowerCase(), session,
+    '<main class="shell website-dashboard measurement-page" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + '</p><h1>' + title + '</h1><p class="dashboard-period">' + escapeHtml(periodLabel(range)) + '</p></div><nav class="periods" aria-label="Date range">' + ranges + '</nav></div>' +
+    siteNavigation(site, range, kind) + (errorMessage ? '<p class="error" role="alert">' + escapeHtml(errorMessage) + '</p>' : '') +
+    (Object.keys(range.filters || {}).length ? '<p class="hint measurement-context">Daily visitors matching: ' + escapeHtml(Object.keys(range.filters).map((key) => key + ': ' + range.filters[key]).join(', ')) + '</p>' : '') +
+    '<div class="measurement-workspace' + (form ? '' : ' measurement-readonly') + '"><div class="measurement-results">' + (results || empty) + '</div>' + (form ? '<aside class="measurement-create" aria-label="Create ' + (kind === 'goals' ? 'a goal' : 'a funnel') + '">' + form + '</aside>' : '') + '</div></main>', site, sites);
 }

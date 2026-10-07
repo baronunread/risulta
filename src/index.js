@@ -1,3 +1,6 @@
+import { SCHEMA_VERSION } from "./migrations.js";
+import { siteSlug, availableSiteSlug } from "./sites.js";
+import { reportAnalytics, journeyAnalytics, overviewAnalytics, overviewComparison, invalidateOverview, measurementAnalytics } from "./overview.js";
 import { createReadKey, readKeySite } from "./read-api.js";
 import { ensureBackupSchema, backupSettings, backupHistory, backupInput, saveBackupSettings, recordBackup } from "./backups.js";
 // Risulta Sprout: request router. Thin by design (sproutboat-site shape):
@@ -44,12 +47,10 @@ import {
   removeUser,
   reportCsv,
   siteAnalytics,
+  overviewScope,
   siteByKey,
   siteForKey,
   siteReport,
-  siteSummary,
-  siteGoals,
-  siteFunnels,
   updateProfile,
   visitorId,
   clientIp,
@@ -66,12 +67,12 @@ import {
   pageShell,
   reportsPage,
   journeysPage,
-  settingsPage,
+  measurementPage,
   sitePage,
   trackerFor,
   usersPage,
   backupsPage,
-  conversionsPage,
+  overviewGoalsFragment,
 } from "./views.js";
 import { journeyInput, siteJourneys } from "./journeys.js";
 import { avatarFor } from "./avatar.js";
@@ -229,7 +230,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/healthz", () => new Response("ok\n"));
+app.get("/healthz", () => new Response("ok\n", { headers: { "x-risulta-schema-version": String(SCHEMA_VERSION) } }));
 app.get("/favicon.ico", () => new Response("", { status: 204 }));
 
 app.get("/avatar.svg", (c) => {
@@ -562,10 +563,24 @@ app.post("/api/users/:id{[0-9]+}/delete", async (c) => {
   return redirect("/users");
 });
 
-app.get("/sites/:id{[0-9]+}", (c) => {
+app.use("/sites/*", async (c, next) => {
+  const url = new URL(c.req.url);
+  const match = /^\/sites\/([0-9]+)(\/.*)?$/.exec(url.pathname);
+  if (match && c.req.method === "GET") {
+    const site = getSiteForUser(env.DB, Number(match[1]), c.get("session"));
+    if (site && site.slug) {
+      let suffix = match[2] || "";
+      if (suffix === "/settings" || suffix === "/conversions") suffix = (url.searchParams.get("error") || "").indexOf("funnel-") === 0 ? "/funnels" : "/goals";
+      return c.redirect("/sites/" + siteSlug(site) + suffix + url.search, 308);
+    }
+  }
+  await next();
+});
+
+app.get("/sites/:id{[a-z0-9-]+}", (c) => {
   const session = c.get("session");
   const url = new URL(c.req.url);
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = getSiteForUser(env.DB, c.req.param("id"), session);
   if (!site) {
     return new Response(pageShell("Not found", session, '<main class="shell" id="main"><h1>Unknown site</h1></main>', null, []),
       { status: 404, headers: { "content-type": "text/html;charset=utf-8" } });
@@ -579,13 +594,13 @@ app.get("/sites/:id{[0-9]+}", (c) => {
   const days = rangeDays(range);
   const metricParam = url.searchParams.get("metric") || "visitors";
   const metric = metricParam === "visits" || metricParam === "pageviews" ? metricParam : "visitors";
-  const analytics = siteAnalytics(env.DB, site, range.since, range.until, false);
+  range.filters = reportInput(url.searchParams).filters;
+  delete range.filters.event;
+  range.acquisition = ["source", "campaign", "medium"].indexOf(url.searchParams.get("acquisition")) >= 0 ? url.searchParams.get("acquisition") : "source";
+  const analytics = overviewAnalytics(env.DB, site, range, true);
   // Previous-period comparison: the summary for the immediately preceding
   // window of the same length, like the Bun app.
-  let comparison = null;
-  if (url.searchParams.get("compare") === "1") {
-    comparison = siteSummary(env.DB, site.id, range.since - days * 86400, range.since);
-  }
+  const comparison = overviewComparison(env.DB, site, { ...range, since: range.since - days * 86400, until: range.since });
   const sites = listSitesForUser(env.DB, session);
   return new Response(sitePage(session, site, sites, analytics, range, days, metric, publicOrigin(c.req.raw, url), comparison),
     { headers: { "content-type": "text/html;charset=utf-8" } });
@@ -617,13 +632,28 @@ app.post("/api/sites", async (c) => {
     return redirect("/sites/new?error=domain-registered");
   }
   const publicKey = randomHex(16);
-  const res = env.DB.prepare("INSERT INTO sites (name, domain, public_key, created_at) VALUES (?, ?, ?, ?)")
-    .bind(name, domain, publicKey, Math.floor(Date.now() / 1000))
+  const slug = availableSiteSlug(env.DB, domain);
+  const res = env.DB.prepare("INSERT INTO sites (name, domain, public_key, slug, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(name, domain, publicKey, slug, Math.floor(Date.now() / 1000))
     .run();
   siteByKey.set(publicKey, { id: Number(res.meta.last_row_id), domain });
-  if (wantsJson) return json({ id: res.meta.last_row_id, name, domain, publicKey }, 201);
-  return redirect("/sites/" + res.meta.last_row_id);
+  if (wantsJson) return json({ id: res.meta.last_row_id, name, domain, publicKey, slug }, 201);
+  return redirect("/sites/" + slug);
 });
+
+function measurementReturn(site, kind, body) {
+  const query = new URLSearchParams(new URLSearchParams(body).get("return_query") || "");
+  const names = ["period", "from", "to", "source", "path", "medium", "campaign"];
+  const parts = [];
+  for (let i = 0; i < names.length; i++) {
+    const value = query.get(names[i]);
+    if (value) parts.push(names[i] + "=" + encodeURIComponent(value.slice(0, 2048)));
+  }
+  return "/sites/" + siteSlug(site) + "/" + kind + (parts.length ? "?" + parts.join("&") : "");
+}
+function measurementError(url, error) {
+  return url + (url.indexOf("?") >= 0 ? "&" : "?") + "error=" + error;
+}
 
 // Credential management stays behind the session gate and admin boundary.
 app.get("/api/sites/:id{[0-9]+}/read-keys", (c) => {
@@ -681,6 +711,7 @@ app.post("/api/sites/:id{[0-9]+}/goals", async (c) => {
   const name = String(parsed.value.name || "").trim().slice(0, 80);
   const eventName = String(parsed.value.eventName || parsed.value.event_name || "").trim().slice(0, 64);
   const goalPath = String(parsed.value.path || "").trim().slice(0, 2048);
+  const goalUrl = measurementReturn(site, "goals", body);
   const goalCheck = validate(GoalSchema, { name, eventName, path: goalPath });
   if (!goalCheck.ok) {
     const messages = {
@@ -689,7 +720,7 @@ app.post("/api/sites/:id{[0-9]+}/goals", async (c) => {
       "goal-path-invalid": "path must start with /",
     };
     if (wantsJson) return json({ error: messages[goalCheck.code] }, 400);
-    return redirect("/sites/" + site.id + "/settings?error=" + goalCheck.code);
+    return redirect(measurementError(goalUrl, goalCheck.code));
   }
   try {
     env.DB.prepare("INSERT INTO goals (site_id, name, event_name, path, created_at) VALUES (?, ?, ?, ?, ?)")
@@ -697,10 +728,11 @@ app.post("/api/sites/:id{[0-9]+}/goals", async (c) => {
       .run();
   } catch {
     if (wantsJson) return json({ error: "goal name already exists for this site" }, 409);
-    return redirect("/sites/" + site.id + "/settings?error=goal-name-registered");
+    return redirect(measurementError(goalUrl, "goal-name-registered"));
   }
+  invalidateOverview(env.DB, site.id);
   if (wantsJson) return json({ ok: true, name, eventName, path: goalPath }, 201);
-  return redirect("/sites/" + site.id + "/settings");
+  return redirect(goalUrl);
 });
 
 // Funnels per site: ordered goal sequences with per-step conversions. Writes
@@ -733,12 +765,12 @@ app.post("/api/sites/:id{[0-9]+}/funnels", async (c) => {
   } else {
     const form = new URLSearchParams(body);
     name = String(form.get("name") || "").trim().slice(0, 100);
-    goalIds = form.getAll("goal").map(Number);
+    goalIds = form.getAll("goal").filter((value) => value !== "").map(Number);
   }
-  const settingsUrl = "/sites/" + site.id + "/settings";
+  const settingsUrl = measurementReturn(site, "funnels", body);
   if (!name) {
     if (wantsJson) return json({ error: "name is required" }, 400);
-    return redirect(settingsUrl + "?error=funnel-name-required");
+    return redirect(measurementError(settingsUrl, "funnel-name-required"));
   }
   const siteGoals = env.DB.prepare("SELECT id FROM goals WHERE site_id = ?").bind(site.id).all().results;
   const validIds = new Set(siteGoals.map((g) => g.id));
@@ -753,41 +785,52 @@ app.post("/api/sites/:id{[0-9]+}/funnels", async (c) => {
   }
   if (!stepsOk) {
     if (wantsJson) return json({ error: "select at least two distinct goals of this site" }, 400);
-    return redirect(settingsUrl + "?error=funnel-steps-invalid");
+    return redirect(measurementError(settingsUrl, "funnel-steps-invalid"));
   }
   try {
     createFunnel(env.DB, site.id, name, goalIds);
   } catch {
     if (wantsJson) return json({ error: "unable to save this funnel" }, 409);
-    return redirect(settingsUrl + "?error=funnel-save-failed");
+    return redirect(measurementError(settingsUrl, "funnel-save-failed"));
   }
+  invalidateOverview(env.DB, site.id);
   if (wantsJson) return json({ ok: true, name }, 201);
   return redirect(settingsUrl);
 });
 
-// Website settings: tracker snippet, goal list, funnel management.
-app.get("/sites/:id{[0-9]+}/settings", (c) => {
-  const session = c.get("session");
+// Legacy bookmarks lead to analysis, while tracker setup lives on overview.
+app.get("/sites/:id{[a-z0-9-]+}/settings", (c) => {
+  const site = getSiteForUser(env.DB, c.req.param("id"), c.get("session"));
+  if (!site) return new Response("Unknown site", { status: 404 });
   const url = new URL(c.req.url);
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
-  if (!site) {
-    return new Response(pageShell("Not found", session, '<main class="shell" id="main"><h1>Unknown site</h1></main>', null, []),
-      { status: 404, headers: { "content-type": "text/html;charset=utf-8" } });
-  }
-  const sites = listSitesForUser(env.DB, session);
-  const goals = env.DB.prepare("SELECT id, name, event_name, path FROM goals WHERE site_id = ? ORDER BY id").bind(site.id).all().results;
-  const funnels = listFunnels(env.DB, site.id);
-  const error = url.searchParams.get("error") || "";
-  return new Response(settingsPage(session, site, sites, goals, funnels, error, publicOrigin(c.req.raw, url)),
-    { headers: { "content-type": "text/html;charset=utf-8" } });
+  const section = (url.searchParams.get("error") || "").indexOf("funnel-") === 0 ? "funnels" : "goals";
+  return c.redirect("/sites/" + siteSlug(site) + "/" + section + url.search, 308);
 });
 
-// Live fragment for htmx polling: the same server-rendered markup as the
-// dashboard's live region, swapped in every few seconds.
-app.get("/sites/:id{[0-9]+}/partials/live", (c) => {
+function measurementRoute(c, kind) {
+  const session = c.get("session");
+  const site = getSiteForUser(env.DB, c.req.param("id"), session);
+  if (!site) return new Response("Unknown site", { status: 404 });
+  const url = new URL(c.req.url);
+  const range = parseRange(url.searchParams, Math.floor(Date.now() / 1000));
+  if (range.error) return new Response(range.error, { status: 400 });
+  range.filters = reportInput(url.searchParams).filters;
+  delete range.filters.event;
+  const configuredGoals = env.DB.prepare("SELECT id, name, event_name, path FROM goals WHERE site_id = ? ORDER BY id").bind(site.id).all().results;
+  const result = measurementAnalytics(env.DB, site, range, kind);
+  const goals = result.goals || [];
+  const funnels = result.funnels || [];
+  const truncated = result.truncated || false;
+  return new Response(measurementPage(session, site, listSitesForUser(env.DB, session), configuredGoals, goals, funnels, truncated, range, kind, url.searchParams.get("error") || ""),
+    { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
+}
+app.get("/sites/:id{[a-z0-9-]+}/goals", (c) => measurementRoute(c, "goals"));
+app.get("/sites/:id{[a-z0-9-]+}/funnels", (c) => measurementRoute(c, "funnels"));
+
+app.get("/sites/:id{[a-z0-9-]+}/partials/live", (c) => {
   const session = c.get("session");
   const url = new URL(c.req.url);
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = getSiteForUser(env.DB, c.req.param("id"), session);
   if (!site) return json({ error: "unknown site" }, 404);
   const now = Math.floor(Date.now() / 1000);
   const range = parseRange(url.searchParams, now);
@@ -795,14 +838,28 @@ app.get("/sites/:id{[0-9]+}/partials/live", (c) => {
   const days = rangeDays(range);
   const metricParam = url.searchParams.get("metric") || "visitors";
   const metric = metricParam === "visits" || metricParam === "pageviews" ? metricParam : "visitors";
-  const analytics = siteAnalytics(env.DB, site, range.since, range.until, false);
-  let comparison = null;
-  if (url.searchParams.get("compare") === "1") {
-    comparison = siteSummary(env.DB, site.id, range.since - days * 86400, range.since);
-  }
+  range.filters = reportInput(url.searchParams).filters;
+  delete range.filters.event;
+  range.acquisition = ["source", "campaign", "medium"].indexOf(url.searchParams.get("acquisition")) >= 0 ? url.searchParams.get("acquisition") : "source";
+  const analytics = overviewAnalytics(env.DB, site, range, false);
+  const comparison = overviewComparison(env.DB, site, { ...range, since: range.since - days * 86400, until: range.since });
   const oobCurrent = '<strong id="live-current-value" data-current hx-swap-oob="true">' + fmtInt(analytics.current) + "</strong>";
   return new Response(oobCurrent + liveFragment(site, analytics, range, days, metric, comparison),
     { headers: { "content-type": "text/html;charset=utf-8" } });
+});
+
+// Goal previews refresh independently from the five-second traffic poll.
+app.get("/sites/:id{[a-z0-9-]+}/partials/goals", (c) => {
+  const site = getSiteForUser(env.DB, c.req.param("id"), c.get("session"));
+  if (!site) return json({ error: "unknown site" }, 404);
+  const q = new URL(c.req.url).searchParams;
+  const range = parseRange(q, Math.floor(Date.now() / 1000));
+  if (range.error) return json({ error: range.error }, 400);
+  range.filters = reportInput(q).filters;
+  delete range.filters.event;
+  const analytics = overviewAnalytics(env.DB, site, range, true);
+  return new Response(overviewGoalsFragment(site, analytics.goals, range, rangeDays(range)),
+    { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 });
 
 // Stats: D1-backed summary with 30-minute visit boundary, configured
@@ -833,8 +890,8 @@ app.get("/api/sites/:id{[0-9]+}/report", (c) => {
   if (range.error) return json({ error: range.error }, 400);
   const input = reportInput(url.searchParams);
   const report = siteReport(
-    env.DB, site.id, range.since, range.until,
-    input.dimension, input.filters, input.limit, input.offset, input.sort,
+    url.searchParams.get("cohort") === "1" ? overviewScope(env.DB, site.id, range.since, range.until, input.filters) : env.DB, site.id, range.since, range.until,
+    input.dimension, url.searchParams.get("cohort") === "1" ? { event: input.filters.event } : input.filters, input.limit, input.offset, input.sort,
   );
   if (String(url.searchParams.get("format") || "") === "csv") {
     return new Response(reportCsv(report), {
@@ -849,10 +906,10 @@ app.get("/api/sites/:id{[0-9]+}/report", (c) => {
 
 // Full HTML report: dimension tabs, exact-match filters, sortable table,
 // pagination, CSV download. Same bounded query as the JSON report.
-app.get("/sites/:id{[0-9]+}/reports", (c) => {
+app.get("/sites/:id{[a-z0-9-]+}/reports", (c) => {
   const session = c.get("session");
   const url = new URL(c.req.url);
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = getSiteForUser(env.DB, c.req.param("id"), session);
   if (!site) {
     return new Response(pageShell("Not found", session, '<main class="shell" id="main"><h1>Unknown site</h1></main>', null, []),
       { status: 404, headers: { "content-type": "text/html;charset=utf-8" } });
@@ -865,10 +922,11 @@ app.get("/sites/:id{[0-9]+}/reports", (c) => {
   }
   const days = rangeDays(range);
   const input = reportInput(url.searchParams);
-  const report = siteReport(
-    env.DB, site.id, range.since, range.until,
-    input.dimension, input.filters, input.limit, input.offset, input.sort,
-  );
+  range.filters = input.filters;
+  const report = reportAnalytics(env.DB, site, range, input, url.searchParams.get("cohort") === "1");
+  report.filters = input.filters;
+  report.cohort = url.searchParams.get("cohort") === "1";
+  range.filters = input.filters;
   const sites = listSitesForUser(env.DB, session);
   return new Response(reportsPage(session, site, sites, report, range, days),
     { headers: { "content-type": "text/html;charset=utf-8" } });
@@ -884,12 +942,12 @@ app.get("/api/sites/:id{[0-9]+}/journeys", (c) => {
   const input = journeyInput(params);
   if (range.error || input.error) return json({ error: range.error || input.error }, 400);
   return json({ site: { id: site.id, name: site.name, domain: site.domain }, range,
-    ...siteJourneys(env.DB, site.id, range.since, range.until, input) }, 200, { "cache-control": "no-store" });
+    ...siteJourneys(overviewScope(env.DB, site.id, range.since, range.until, reportInput(params).filters), site.id, range.since, range.until, input) }, 200, { "cache-control": "no-store" });
 });
 
-app.get("/sites/:id{[0-9]+}/reports/journeys", (c) => {
+app.get("/sites/:id{[a-z0-9-]+}/reports/journeys", (c) => {
   const session = c.get("session");
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = getSiteForUser(env.DB, c.req.param("id"), session);
   const params = new URL(c.req.url).searchParams;
   const range = parseRange(params, Math.floor(Date.now() / 1000));
   const input = journeyInput(params);
@@ -900,7 +958,9 @@ app.get("/sites/:id{[0-9]+}/reports/journeys", (c) => {
       '<main class="shell" id="main"><h1>' + escapeHtml(message) + "</h1></main>", null, []),
       { status: !site ? 404 : 400, headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
   }
-  const report = siteJourneys(env.DB, site.id, range.since, range.until, input);
+  range.filters = reportInput(params).filters;
+  delete range.filters.event;
+  const report = journeyAnalytics(env.DB, site, range, input);
   return new Response(journeysPage(session, site, listSitesForUser(env.DB, session), report, range),
     { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 });
@@ -921,7 +981,7 @@ app.post("/api/backup", async (c) => {
   if (!csrfValid(session, csrfValue(request, body))) return htmlForm ? redirect("/users?backup=csrf") : json({ error: "csrf mismatch" }, 403);
   try {
     const snapshot = env.DB.backup();
-    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history"];
+    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty"];
     const counts = {};
     for (let i = 0; i < tables.length; i++) {
       counts[tables[i]] = Number(env.DB.prepare("SELECT count(*) AS n FROM " + tables[i]).first().n);
@@ -932,7 +992,7 @@ app.post("/api/backup", async (c) => {
       ok: true,
       path: snapshot.path,
       bytes: snapshot.bytes,
-      manifest: { app: "risulta-sprout", created_at: Math.floor(Date.now() / 1000), tables: counts },
+      manifest: { app: "risulta-sprout", schema_version: SCHEMA_VERSION, created_at: Math.floor(Date.now() / 1000), tables: counts },
     });
   } catch {
     incrementCounter("database_errors_total");
@@ -940,17 +1000,10 @@ app.post("/api/backup", async (c) => {
   }
 });
 
-app.get("/sites/:id{[0-9]+}/conversions", (c) => {
-  const session = c.get("session");
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
-  if (!site) return new Response("Unknown site", { status: 404 });
-  const range = parseRange(new URL(c.req.url).searchParams, Math.floor(Date.now() / 1000));
-  if (range.error) return new Response(range.error, { status: 400 });
-  const summary = siteSummary(env.DB, site.id, range.since, range.until);
-  const goals = siteGoals(env.DB, site.id, range.since, range.until, Number(summary.visitors));
-  const result = siteFunnels(env.DB, site.id, range.since, range.until);
-  return new Response(conversionsPage(session, site, listSitesForUser(env.DB, session), goals, result.funnels, result.truncated, range),
-    { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
+app.get("/sites/:id{[a-z0-9-]+}/conversions", (c) => {
+  const site = getSiteForUser(env.DB, c.req.param("id"), c.get("session"));
+  if (!site) return new Response("Unknown site", {status:404});
+  return c.redirect("/sites/" + siteSlug(site) + "/goals" + new URL(c.req.url).search, 308);
 });
 
 app.get("/backups", (c) => {

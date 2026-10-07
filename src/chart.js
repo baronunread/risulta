@@ -92,7 +92,7 @@ export function chart(series, metric, metricLabel, mobile) {
   let circles = "";
   for (let i = 0; i < series.length; i++) {
     const label = chartPointLabel(series[i]) + ": " + fmtInt(series[i][metric]) + " " + metricLabel.toLowerCase();
-    circles += '<circle class="chart-point" cx="' + xs[i] + '" cy="' + ys[i] + '" r="5" tabindex="0" data-value="' + escapeHtml(label) + '"><title>' + escapeHtml(label) + "</title></circle>";
+    circles += '<circle class="chart-point" cx="' + xs[i] + '" cy="' + ys[i] + '" r="5" tabindex="0" role="img" aria-label="' + escapeHtml(label) + '" data-date="' + escapeHtml(series[i].hour === undefined ? series[i].day + " UTC" : chartPointLabel(series[i])) + '" data-count="' + fmtInt(series[i][metric]) + '" data-metric-label="' + escapeHtml(metricLabel) + '" data-value="' + escapeHtml(label) + '"></circle>';
   }
   let tickLabels = "";
   for (let t = 0; t < ticks.length; t++) {
@@ -109,5 +109,5 @@ export function chart(series, metric, metricLabel, mobile) {
     '<g class="grid" aria-hidden="true"><path d="M0 ' + top + "H" + width + "M0 " + (height - bottom + top) / 2 + "H" + width + "M0 " + (height - bottom) + 'H' + width + '"/></g>' +
     '<path d="' + area + '" fill="url(#area' + suffix + ')" aria-hidden="true"/>' +
     '<path d="' + line + '" fill="none" stroke="currentColor" stroke-width="2" vector-effect="non-scaling-stroke" aria-hidden="true"/>' +
-    circles + tickLabels + "</svg>";
+    '<line class="chart-guide" x1="0" x2="0" y1="' + top + '" y2="' + (height - bottom) + '" vector-effect="non-scaling-stroke" aria-hidden="true"/>' + circles + tickLabels + "</svg>";
 }

@@ -1,3 +1,5 @@
+import { migrateSchema } from "./migrations.js";
+import { rollupBoundary, rollupTraffic, rollupTop, rollupReport } from "./rollups.js";
 import { READ_KEYS_SCHEMA } from "./read-api.js";
 // D1 repository: schema, site scoping, visitor identities, analytics.
 // Single logical D1 instead of one SQLite file per site: every site-owned
@@ -59,11 +61,13 @@ async function ensureSchema(db) {
       "CREATE TABLE IF NOT EXISTS site_users (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('viewer')), PRIMARY KEY (user_id, site_id));" +
       "CREATE TABLE IF NOT EXISTS site_salts (site_id INTEGER NOT NULL, day TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (site_id, day));",
   );
+  migrateSchema(db);
   db.exec(READ_KEYS_SCHEMA);
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts ON events(site_id, ts);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts_visitor ON events(site_id, ts, visitor);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_visitor_ts ON events(site_id, visitor, ts);");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_name_ts ON events(site_id, name, ts);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_name_ts_overview ON events(site_id, name, ts, visitor, path, source, medium, campaign);");
+  db.exec("DROP INDEX IF EXISTS idx_events_site_name_ts;");
   db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);");
 
   // Bootstrap: first administrator from secrets, once. After that the
@@ -116,9 +120,10 @@ export function removeUser(db, userId) {
 }
 
 export function getSiteForUser(db, siteId, user) {
-  if (user.role === "admin") return db.prepare("SELECT * FROM sites WHERE id = ?").bind(siteId).first() || null;
+  const column = /^[0-9]+$/.test(String(siteId)) ? "id" : "slug";
+  if (user.role === "admin") return db.prepare("SELECT * FROM sites WHERE " + column + " = ?").bind(siteId).first() || null;
   return db.prepare(
-    "SELECT sites.* FROM sites JOIN site_users ON site_users.site_id = sites.id WHERE sites.id = ? AND site_users.user_id = ?",
+    "SELECT sites.* FROM sites JOIN site_users ON site_users.site_id = sites.id WHERE sites." + column + " = ? AND site_users.user_id = ?",
   ).bind(siteId, user.user_id).first() || null;
 }
 
@@ -218,7 +223,7 @@ export function homeOverviews(db, user, now) {
       overview.visitors += visitors;
       overview.pageviews += pageviews;
     }
-    result.push({ id: site.id, name: site.name, domain: site.domain, overview });
+    result.push({ id: site.id, slug: site.slug, name: site.name, domain: site.domain, overview });
   }
   return result;
 }
@@ -237,25 +242,17 @@ export function topList(db, siteId, since, until, select) {
 }
 
 export function siteGoals(db, siteId, since, until, visitors) {
-  const goals = db.prepare("SELECT id, name, event_name, path FROM goals WHERE site_id = ? ORDER BY id").bind(siteId).all().results;
-  const out = [];
-  for (let i = 0; i < goals.length; i++) {
-    const g = goals[i];
-    const r = db.prepare(
-      "SELECT count(*) AS conversions, count(DISTINCT visitor) AS unique_conversions, coalesce(sum(value), 0) AS value " +
-        "FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = ? AND (? = '' OR path = ?)",
-    ).bind(siteId, since, until, g.event_name, g.path, g.path).first();
-    out.push({
-      name: g.name,
-      event_name: g.event_name,
-      path: g.path,
-      conversions: r.conversions,
-      unique_conversions: r.unique_conversions,
-      value: r.value,
-      conversion_rate: visitors ? r.unique_conversions / visitors : 0,
-    });
-  }
-  return out;
+  // Aggregate each event and exact path once, even when many goals share it.
+  const rows = db.prepare(
+    "WITH configured AS (SELECT id, name, event_name, path FROM goals WHERE site_id = ?), " +
+    "hits AS MATERIALIZED (SELECT name, path, visitor, value FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name IN (SELECT event_name FROM configured)), " +
+    "totals AS (SELECT name, '' AS path, count(*) AS conversions, count(DISTINCT visitor) AS unique_conversions, coalesce(sum(value),0) AS value FROM hits GROUP BY name " +
+    "UNION ALL SELECT name, path, count(*) AS conversions, count(DISTINCT visitor) AS unique_conversions, coalesce(sum(value),0) AS value FROM hits " +
+    "WHERE path IN (SELECT path FROM configured WHERE path != '') GROUP BY name, path) " +
+    "SELECT g.name, g.event_name, g.path, coalesce(t.conversions,0) AS conversions, coalesce(t.unique_conversions,0) AS unique_conversions, coalesce(t.value,0) AS value " +
+    "FROM configured g LEFT JOIN totals t ON t.name = g.event_name AND t.path = g.path ORDER BY g.id",
+  ).bind(siteId, siteId, since, until).all().results;
+  return rows.map((row) => ({ ...row, conversion_rate: visitors ? Number(row.unique_conversions) / visitors : 0 }));
 }
 
 export function listFunnels(db, siteId) {
@@ -336,7 +333,70 @@ export function siteFunnels(db, siteId, since, until) {
   return { funnels: out, truncated };
 }
 
-export function siteAnalytics(db, site, since, until, includeConversions) {
+// Overview filters select daily visitor identities with a matching pageview.
+// All their events remain available so source/page filters can explain goals.
+export function overviewScope(db, siteId, since, until, filters) {
+  const clauses = [];
+  const values = [];
+  const columns = [["path", "path"], ["source", "coalesce(nullif(source,''),'Direct / None')"],
+    ["medium", "coalesce(nullif(medium,''),'None')"], ["campaign", "coalesce(nullif(campaign,''),'None')"]];
+  for (let i = 0; i < columns.length; i++) {
+    const value = filters && filters[columns[i][0]];
+    if (value) { clauses.push("visitor IN (SELECT visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' AND " + columns[i][1] + " = ?)"); values.push(siteId, since, until, value); }
+  }
+  if (!clauses.length) return db;
+  const prefix = "WITH overview_events AS (SELECT * FROM events WHERE site_id = ? AND ts >= ? - 1800 AND ts < ? AND " + clauses.join(" AND ") + ") ";
+  // Only event reads are scoped. Configuration and access checks use the original DB.
+  return { prepare(sql) {
+    if (sql.indexOf("FROM events") === -1) return db.prepare(sql);
+    const scoped = sql.replace(/FROM events/g, "FROM overview_events");
+    const query = db.prepare(prefix + (scoped.indexOf("WITH ") === 0 ? ", " + scoped.slice(5) : scoped));
+    return { bind(...args) { return query.bind(siteId, since, until, ...values, ...args); } };
+  } };
+}
+
+// One aggregate query previews five goals, including configured goals with no hits.
+export function overviewGoals(db, siteId, since, until, visitors) {
+  const rows = db.prepare("WITH preview AS (SELECT * FROM goals WHERE site_id = ? ORDER BY id LIMIT 5), " +
+    "eligible AS MATERIALIZED (SELECT DISTINCT visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'), " +
+    "hits AS MATERIALIZED (SELECT id, name, path, visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name IN (SELECT event_name FROM preview)) " +
+    "SELECT g.name, count(e.id) AS conversions, count(DISTINCT CASE WHEN e.visitor IN (SELECT visitor FROM eligible) THEN e.visitor END) AS unique_conversions " +
+    "FROM preview g LEFT JOIN hits e ON e.name = g.event_name AND (g.path = '' OR e.path = g.path) GROUP BY g.id ORDER BY g.id")
+    .bind(siteId, siteId, since, until, siteId, since, until).all().results;
+  return rows.map((row) => ({ ...row, conversion_rate: visitors ? Number(row.unique_conversions) / visitors : 0 }));
+}
+
+export function dashboardTraffic(db, site, range, now) {
+  const hourly = range.days === 1 && !range.from;
+  const filtered = Object.keys(range.filters || {}).some((key) => range.filters[key]);
+  const boundary = filtered ? 0 : rollupBoundary(db, site.id, range.since, range.until, now);
+  if (!boundary) return siteAnalytics(overviewScope(db, site.id, range.since, range.until, range.filters), site, range.since, range.until, false, false, hourly);
+  const history = rollupTraffic(db, site.id, range.since, range.until, boundary);
+  const tail = boundary < range.until ? siteAnalytics(db, site, boundary, range.until, false, false, hourly, true) : {
+    summary: { pageviews: 0, visits: 0 }, byDay: [], byHour: [], current: siteCurrent(db, site.id),
+    hasConversions: Number(db.prepare("SELECT (SELECT count(*) FROM goals WHERE site_id = ?) + (SELECT count(*) FROM funnels WHERE site_id = ?) AS n").bind(site.id, site.id).first().n) > 0,
+    goals: [], funnels: [], funnelsTruncated: false,
+  };
+  return { ...tail,
+    summary: { pageviews: Number(history.summary.pageviews) + Number(tail.summary.pageviews), visitors: history.summary.visitors, visits: Number(history.summary.visits) + Number(tail.summary.visits) },
+    byDay: history.byDay.concat(tail.byDay),
+    paths: rollupTop(db, site.id, range.since, range.until, boundary, "path"),
+    referrers: rollupTop(db, site.id, range.since, range.until, boundary, "source"),
+    mediums: rollupTop(db, site.id, range.since, range.until, boundary, "medium"),
+    campaigns: rollupTop(db, site.id, range.since, range.until, boundary, "campaign"),
+  };
+}
+
+export function dashboardSummary(db, site, range, now) {
+  const filtered = Object.keys(range.filters || {}).some((key) => range.filters[key]);
+  const boundary = filtered ? 0 : rollupBoundary(db, site.id, range.since, range.until, now);
+  if (!boundary) return siteSummary(overviewScope(db, site.id, range.since, range.until, range.filters), site.id, range.since, range.until);
+  const history = rollupTraffic(db, site.id, range.since, range.until, boundary);
+  const tail = boundary < range.until ? siteSummary(db, site.id, boundary, range.until) : { pageviews: 0, visits: 0 };
+  return { pageviews: Number(history.summary.pageviews) + Number(tail.pageviews), visitors: history.summary.visitors, visits: Number(history.summary.visits) + Number(tail.visits) };
+}
+
+export function siteAnalytics(db, site, since, until, includeConversions, previewGoals, hourly, skipDimensions) {
   const summary = db.prepare(
     "SELECT count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'",
@@ -347,7 +407,7 @@ export function siteAnalytics(db, site, since, until, includeConversions) {
     "SELECT date(ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY day ORDER BY day",
   ).bind(site.id, since, until).all().results;
-  const byHour = db.prepare(
+  const byHour = hourly === false ? [] : db.prepare(
     "SELECT cast(strftime('%H', ts, 'unixepoch') AS INTEGER) AS hour, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY hour ORDER BY hour",
   ).bind(site.id, since, until).all().results;
@@ -359,9 +419,11 @@ export function siteAnalytics(db, site, since, until, includeConversions) {
     const row = sessions[i];
     const visits = Number(row.visits);
     if (!days[row.day]) { days[row.day] = { day: row.day, pageviews: 0, visitors: 0, visits: 0 }; byDay.push(days[row.day]); }
-    if (!hours[row.hour]) { hours[row.hour] = { hour: Number(row.hour), pageviews: 0, visitors: 0, visits: 0 }; byHour.push(hours[row.hour]); }
+    if (hourly !== false) {
+      if (!hours[row.hour]) { hours[row.hour] = { hour: Number(row.hour), pageviews: 0, visitors: 0, visits: 0 }; byHour.push(hours[row.hour]); }
+      hours[row.hour].visits += visits;
+    }
     days[row.day].visits += visits;
-    hours[row.hour].visits += visits;
     summary.visits += visits;
   }
   byDay.sort((a, b) => a.day < b.day ? -1 : a.day > b.day ? 1 : 0);
@@ -373,11 +435,11 @@ export function siteAnalytics(db, site, since, until, includeConversions) {
     current: siteCurrent(db, site.id),
     byDay,
     byHour,
-    paths: topList(db, site.id, since, until, "path"),
-    referrers: topList(db, site.id, since, until, "coalesce(nullif(source,''),'Direct / None')"),
-    mediums: topList(db, site.id, since, until, "coalesce(nullif(medium,''),'None')"),
-    campaigns: topList(db, site.id, since, until, "coalesce(nullif(campaign,''),'None')"),
-    goals: includeConversions === false ? [] : siteGoals(db, site.id, since, until, visitors),
+    paths: skipDimensions ? [] : topList(db, site.id, since, until, "path"),
+    referrers: skipDimensions ? [] : topList(db, site.id, since, until, "coalesce(nullif(source,''),'Direct / None')"),
+    mediums: skipDimensions ? [] : topList(db, site.id, since, until, "coalesce(nullif(medium,''),'None')"),
+    campaigns: skipDimensions ? [] : topList(db, site.id, since, until, "coalesce(nullif(campaign,''),'None')"),
+    goals: includeConversions === false ? (previewGoals === false ? [] : overviewGoals(db, site.id, since, until, visitors)) : siteGoals(db, site.id, since, until, visitors),
     hasConversions: includeConversions === false ? Number(db.prepare(
       "SELECT (SELECT count(*) FROM goals WHERE site_id = ?) + (SELECT count(*) FROM funnels WHERE site_id = ?) AS n",
     ).bind(site.id, site.id).first().n) > 0 : false,
@@ -422,11 +484,25 @@ export function siteReport(db, siteId, since, until, dimension, filters, limit, 
   const grouped =
     "SELECT " + selected.label + " AS label, count(*) AS pageviews, count(DISTINCT visitor) AS visitors, coalesce(sum(value), 0) AS value " +
     "FROM events WHERE " + where + " GROUP BY label";
-  const listed = db.prepare(grouped + " ORDER BY " + ordering + " DESC, label LIMIT ? OFFSET ?");
-  const result = listed.bind(...values, boundedLimit, boundedOffset).all().results;
-  const counted = db.prepare("SELECT count(*) AS n FROM (" + grouped + ")");
-  const total = Number(counted.bind(...values).first().n);
+  const result = db.prepare("SELECT *, count(*) OVER () AS total_rows FROM (" + grouped + ") ORDER BY " + ordering + " DESC, label LIMIT ? OFFSET ?")
+    .bind(...values, boundedLimit, boundedOffset).all().results;
+  // An offset beyond the final page still needs the exact total.
+  const total = result.length ? Number(result[0].total_rows) :
+    Number(db.prepare("SELECT count(*) AS n FROM (SELECT " + selected.label + " AS label FROM events WHERE " + where + " GROUP BY label)").bind(...values).first().n);
+  for (let i = 0; i < result.length; i++) delete result[i].total_rows;
   return { dimension: dimensions[dimension] ? dimension : "path", filters, rows: result, total, limit: boundedLimit, offset: boundedOffset, sort: ordering };
+}
+
+export function dashboardReport(db, site, range, input, cohort, now) {
+  const filtered = Object.keys(input.filters).some((key) => input.filters[key]);
+  const boundary = filtered || input.dimension === "event" ? 0 : rollupBoundary(db, site.id, range.since, range.until, now);
+  if (boundary) {
+    const dimension = ["path", "source", "medium", "campaign"].indexOf(input.dimension) >= 0 ? input.dimension : "path";
+    const bounds = { limit: Math.max(1, Math.min(100, Math.floor(Number(input.limit)) || 50)), offset: Math.max(0, Math.min(10000, Math.floor(Number(input.offset)) || 0)), sort: input.sort === "pageviews" || input.sort === "value" ? input.sort : "visitors" };
+    return rollupReport(db, site.id, range.since, range.until, boundary, dimension, bounds);
+  }
+  return siteReport(cohort ? overviewScope(db, site.id, range.since, range.until, input.filters) : db, site.id, range.since, range.until,
+    input.dimension, cohort ? { event: input.filters.event } : input.filters, input.limit, input.offset, input.sort);
 }
 
 export function csvEscape(value) {

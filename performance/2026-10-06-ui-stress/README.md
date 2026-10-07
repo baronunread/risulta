@@ -73,3 +73,34 @@ Final five-request local observations after closing the automation browser are i
 The first nightly is [nightly-20261006-79e88c783332](https://github.com/baronunread/risulta/releases/tag/nightly-20261006-79e88c783332). Both static Linux x64 and ARM64 artifacts passed the native release tests. Normal CI passed as well, and GitHub's stable latest release remains v0.1.6.
 
 The published x64 artifact was downloaded, checked against its checksum and exact commit metadata, then passed 88 existing checks and 63 feature HTTP checks in each proxy mode on the VPS. A first VPS attempt exposed a false failure in the rate-limit test: 300 requests straddled a minute boundary, with 169 and 131 requests in the adjacent windows. The harness now allows 481 requests (twice the 240-request limit plus one), stopping at the first 429. The limiter itself required no change.
+
+
+### Visible overview reports (October 7)
+
+The overview now shows five acquisition rows (Sources, Campaigns, Mediums tabs), five top pages, and five configured goals without expanding disclosures. Clicking a report row selects daily visitor identities with matching pageviews; combined filters intersect those identities, so a source can be combined with a page reached later. Filters carry through chart metrics, dates, comparison, polling, full reports, CSV exports, conversions and journeys.
+
+Goal previews refresh independently every 60 seconds and remain in place during five-second traffic updates. The preview uses a bounded goal list and materialized matching events, without a full funnel scan. New overview tests cover cohort intersection, cross-site isolation, parameterized filters, zero-hit goals, session counts and journey scope. The full suite, lint, native check and host build passed. Browser checks covered login, source filtering, tabs, combined-filter comparisons, detailed report links, 320px layout, and preserving the goals node through traffic updates.
+
+On the existing 1,001,005-event disposable dataset, one Bun/SQLite sample of the selected site's seven-day window (37,877 pageviews) measured approximately 1,348ms for initial analytics including goals and 566ms for traffic-only polling. These are local database timings, not HTTP benchmarks or isolated production throughput.
+
+Screenshots: `screenshots/stress-ui/overview-visible-desktop.png` and `screenshots/stress-ui/overview-visible-mobile.png`.
+
+Browser glue now uses the bundled htmx 4 event names and response context, restoring disclosure persistence and poll status handling.
+
+### Overview interaction follow-up (2026-10-07)
+
+Acquisition reports now switch locally using their already-loaded rows. Browser verification measured a 2.2 ms switch without replacing the document; Back restored the previous tab. Selection survives traffic refreshes. JavaScript-disabled links still navigate normally.
+
+A covering event index replaces the narrower site/name/time index, avoiding repeated event-table lookups for overview aggregates. On the same million-event local database, before/after samples were 714/362 ms for initial overview queries and 718/227 ms for traffic-only queries. An empty source cohort was 1186/100 ms initially; a one-visitor path cohort was 1452/99 ms. These are database samples, not production HTTP benchmarks. The larger index adds storage and write work; it is created before the old index is removed.
+
+Full overview polling now runs every 30 seconds, while goal previews retain their independent 60-second refresh. This reduces recurring aggregation load sixfold per open overview.
+
+### Shared overview snapshots (2026-10-07)
+
+Native HTTP measurements on the same dataset identified repeated aggregation as the remaining interaction cost: an overview response took 388 ms, a metric switch 346 ms, a Google-filtered overview 533 ms, and its traffic fragment 199 ms. Each request rebuilt essentially identical aggregates.
+
+Overview routes now share bounded process-local snapshots (32 ranges/filters across DBs and sites). Traffic expires after 15 seconds and goal previews after 60 seconds. Authorization runs before every cache lookup. Goal/funnel creation invalidates the site's entries. Fixed date ranges and live ranges remain distinct; comparison queries are cached separately. Multi-day overviews skip unused hourly aggregation. Read APIs retain their existing fresh query behavior.
+
+After rebuilding, native HTTP samples were: cold seven-day overview 348 ms; subsequent Visits/Pageviews changes 4/3 ms; cold Google-filtered overview 322 ms; filtered metric change 2 ms; warmed traffic and goal fragments 2 ms each. These are local sequential samples, not production concurrency guarantees. Cold aggregation still scales with the selected events.
+
+Tests cover reuse, traffic and goal expiry, filter/site/database separation, bounded eviction, settings invalidation, retained hourly charts for Today, and goal preview preservation across traffic polling. Browser checks confirm filtered metrics of 1,793 visitors, 1,904 visits and 4,799 pageviews and prevent unauthenticated access to warmed snapshots.

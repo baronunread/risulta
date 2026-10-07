@@ -136,31 +136,31 @@ UNI_ID=$(echo "$UNI_RESP" | python3 -c 'import sys,json; print(json.load(sys.std
 UNI_KEY=$(echo "$UNI_RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin)["publicKey"])')
 curl -s -m 10 -o /dev/null -X POST "$BASE/api/event/$UNI_KEY" -H 'content-type: text/plain' -A "unicode-ua" --data-binary "{\"name\":\"pageview\",\"path\":\"/café\",\"domain\":\"cafe-$STAMP.example.com\"}"
 expect_json "unicode label round-trip" "/api/sites/$UNI_ID/report?dimension=path" 'json.load(sys.stdin)["rows"][0]["label"]' "/café" "$JAR_A"
-curl -s -m 10 -b "$JAR_A" "$BASE/sites/$UNI_ID" | python3 -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' \
+curl -s -L -m 10 -b "$JAR_A" "$BASE/sites/$UNI_ID" | python3 -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' \
   && ok "unicode page is valid utf-8" || bad "unicode page is valid utf-8"
 curl -s -m 10 -b "$JAR_A" "$BASE/api/sites/$UNI_ID/report?dimension=path&format=csv" | python3 -c 'import sys; assert "/café" in sys.stdin.buffer.read().decode("utf-8")' \
   && ok "unicode csv bytes" || bad "unicode csv bytes"
-CMP=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID?compare=1")
+CMP=$(curl -s -L -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID?compare=1")
 case "$CMP" in
-  *"vs previous period"*|*"No previous traffic"*) ok "comparison mode" ;;
+  *"previous period"*|*"No traffic in either period"*) ok "comparison mode" ;;
   *) bad "comparison mode" ;;
 esac
-REP_PAGE=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/reports?dimension=path")
+REP_PAGE=$(curl -s -L -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/reports?dimension=path")
 case "$REP_PAGE" in
-  *"Full report"*data-table*) ok "html report page" ;;
+  *"Reports"*data-table*) ok "html report page" ;;
   *) bad "html report page" ;;
 esac
 expect_code "anonymous reports redirects" GET "/sites/$SHOP_ID/reports" "" 303
 expect_code "report unknown site" GET /sites/999999/reports "" 404 "application/json" "$JAR_A"
-SET_PAGE=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/settings")
+SET_PAGE=$(curl -s -L -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/settings")
 case "$SET_PAGE" in
-  *"Website settings"*Funnels*) ok "settings page" ;;
-  *) bad "settings page" ;;
+  *"Goals"*Funnels*) ok "legacy settings redirect" ;;
+  *) bad "legacy settings redirect" ;;
 esac
 expect_json "explicit range works" "/api/sites/$SHOP_ID/stats?from=2026-01-01&to=2026-12-31" 'json.load(sys.stdin)["summary"]["pageviews"]' 3 "$JAR_A"
 expect_code "reversed range" GET "/api/sites/$SHOP_ID/stats?from=2026-12-31&to=2026-01-01" "" 400 "application/json" "$JAR_A"
 expect_json "report total" "/api/sites/$SHOP_ID/report?dimension=path" 'json.load(sys.stdin)["total"]' 3 "$JAR_A"
-FRAG=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/partials/live?period=1")
+FRAG=$(curl -s -L -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/partials/live?period=1")
 case "$FRAG" in
   *'class="metrics overview-metrics"'*'Top pages'*) ok "live fragment (authed)" ;;
   *) bad "live fragment (authed)" ;;
@@ -168,8 +168,8 @@ esac
 # The dashboard's poller must point at the fragment route above, not the
 # /api/ namespace (a past bug served the numbers on reload, then swapped
 # in a JSON 404 on the first poll).
-POLL_URL=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID" | python3 -c 'import sys,re; m=re.search(r"data-stats-url=\"([^\"]+)\"", sys.stdin.read()); print(m.group(1) if m else "")')
-POLL_FRAG=$(curl -s -m 10 -b "$JAR_A" "$BASE$POLL_URL")
+POLL_URL=$(curl -s -L -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID" | python3 -c 'import sys,re; m=re.search(r"data-stats-url=\"([^\"]+)\"", sys.stdin.read()); print(m.group(1) if m else "")')
+POLL_FRAG=$(curl -s -L -m 10 -b "$JAR_A" "$BASE$POLL_URL")
 case "$POLL_FRAG" in
   *'class="metrics overview-metrics"'*) ok "live poll wiring" ;;
   *) bad "live poll wiring ($POLL_URL)" ;;
@@ -299,7 +299,7 @@ else
 fi
 
 # Logout kills the session; public assets never needed auth.
-DASH=$(curl -s -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID" | python3 -c 'import sys; print("live-stats" in sys.stdin.read())')
+DASH=$(curl -s -L -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID" | python3 -c 'import sys; print("live-stats" in sys.stdin.read())')
 if [ "$DASH" = True ]; then ok "site dashboard page"; else bad "site dashboard page"; fi
 expect_code "logout" POST /logout '{}' 200 "application/json" "$JAR_A" "$CSRF_A"
 expect_code "session dead after logout" GET /api/session "" 401 "application/json" "$JAR_A"

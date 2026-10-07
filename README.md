@@ -40,6 +40,24 @@ The first admin account comes from `RISULTA_ADMIN_EMAIL` /
 `RISULTA_ADMIN_PASSWORD` in the environment, read once while the user table
 is empty. Open the printed address and sign in.
 
+## Website navigation
+
+Sites have stable, readable dashboard URLs such as `/sites/shop`. The slug is
+assigned from the domain when a site is created or an existing database is
+upgraded. Collisions receive a short suffix (`shop-2`); later display-name or
+domain changes do not rename existing slugs. Numeric dashboard bookmarks
+redirect to the canonical slug. API routes continue to use numeric site IDs.
+
+The site tabs are Overview, Reports, Journeys, Goals and Funnels. Tracker code
+copies directly to the clipboard from the button beside the Overview title. Goals and Funnels each show their
+results and, for administrators, a creation form. Previous settings and
+conversions bookmarks redirect to Goals (funnel validation errors redirect to
+Funnels). Date ranges and visitor filters carry between tabs and form returns.
+
+The schema upgrade adds nullable `sites.slug`, backfills existing sites and
+creates the unique `idx_sites_slug` index. Existing event data, site IDs and
+tracker keys remain unchanged.
+
 ## Read API keys
 
 An administrator can create a read-only key for a site with
@@ -75,3 +93,8 @@ Administrators can open `/backups` to create snapshots, choose a manual/daily/we
 The [UI stress report](performance/2026-10-06-ui-stress/README.md) covers the million-event local dataset, before/after screenshots, backup restoration and remaining performance limits. To generate disposable preview traffic, use `python3 scripts/stress-seed.py --data-dir /tmp/risulta-stress-your-preview --events 1000000` after initializing a standalone demo instance. The script refuses production directories and repeat runs.
 
 Demo websites use distinct recent traffic profiles: growth, decline, steady traffic, campaigns and recovery. To refresh an existing stress-seeded preview, run `python3 scripts/refresh-demo-trends.py --data-dir /tmp/risulta-local-preview-20261006`. This redistributes recent visitor groups while preserving event count and within-group timing. It only accepts marked disposable preview directories.
+
+Daily rollups accelerate unfiltered Overview and Reports. Schema upgrades run
+automatically, and releases that include the worker enable its timer through
+the installer. Uncovered or changed days fall back to raw events during
+backfill. See [upgrade and recovery details](docs/migrations-and-rollups.md).
