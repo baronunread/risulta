@@ -224,9 +224,23 @@ export function funnelCard(funnels, truncated) {
 
 export function siteNavigation(site, range, active) {
   const query = liveQuery(range, range.days || 7);
-  const items = [["overview", "", "Overview"], ["reports", "/reports", "Reports"], ["journeys", "/reports/journeys", "Journeys"], ["goals", "/goals", "Goals"], ["funnels", "/funnels", "Funnels"]];
+  const items = [["overview", "", "Overview"], ["reports", "/reports", "Reports"], ["journeys", "/reports/journeys", "Journeys"], ["goals", "/goals", "Goals"], ["funnels", "/funnels", "Funnels"], ["settings", "/settings", "Settings"]];
   return '<nav class="dashboard-navigation site-tabs" aria-label="Website analytics" hx-boost:inherited="swap:&quot;outerSync show:none&quot; select:#main target:#main">' + items.map((item) =>
-    '<a href="/sites/' + siteSlug(site) + item[1] + '?' + query + (item[0] === "reports" ? '&cohort=1' : '') + '"' + (active === item[0] ? ' aria-current="page"' : '') + '>' + item[2] + '</a>').join('') + '</nav>';
+    '<a href="/sites/' + siteSlug(site) + item[1] + (item[0] === "settings" ? "" : '?' + query + (item[0] === "reports" ? '&cohort=1' : '')) + '"' + (active === item[0] ? ' aria-current="page"' : '') + '>' + item[2] + '</a>').join('') + '</nav>';
+}
+
+export function siteSettingsPage(session, site, sites, error, saved) {
+  const form = session.role === "admin"
+    ? '<section class="card"><h2>Tracked hostname</h2><p class="hint">Changing this keeps all existing analytics. Events from the previous hostname stop being accepted immediately. Keep the same tracker code on the new hostname.</p>' +
+      (saved ? '<p class="success" role="status">Hostname updated.</p>' : "") +
+      (error ? '<p class="error" role="alert">' + escapeHtml(error) + "</p>" : "") +
+      '<form class="form" method="post" action="/api/sites/' + site.id + '/domain"><input type="hidden" name="csrf" value="' + escapeHtml(session.csrf) + '">' +
+      '<div class="field"><label for="domain">Hostname</label><input id="domain" name="domain" type="text" inputmode="url" autocomplete="url" maxlength="253" required value="' + escapeHtml(site.domain) + '"></div>' +
+      '<div class="actions"><button class="button" type="submit">Save hostname</button></div></form></section>'
+    : '<section class="card"><h2>Tracked hostname</h2><p>' + escapeHtml(site.domain) + '</p><p class="hint">Ask an administrator to change this hostname.</p></section>';
+  return pageShell("Website settings", session,
+    '<main class="shell website-dashboard settings-page" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + '</p><h1>Settings</h1><p class="dashboard-period">Website configuration</p></div><div class="settings-header-space" aria-hidden="true"></div></div>' +
+    siteNavigation(site, { days: 7, filters: {} }, "settings") + form + '</main>', site, sites);
 }
 
 function periodLabel(range) {

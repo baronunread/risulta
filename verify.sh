@@ -154,8 +154,8 @@ expect_code "anonymous reports redirects" GET "/sites/$SHOP_ID/reports" "" 303
 expect_code "report unknown site" GET /sites/999999/reports "" 404 "application/json" "$JAR_A"
 SET_PAGE=$(curl -s -L -m 10 -b "$JAR_A" "$BASE/sites/$SHOP_ID/settings")
 case "$SET_PAGE" in
-  *"Goals"*Funnels*) ok "legacy settings redirect" ;;
-  *) bad "legacy settings redirect" ;;
+  *"Tracked hostname"*"Save hostname"*) ok "hostname settings page" ;;
+  *) bad "hostname settings page" ;;
 esac
 expect_json "explicit range works" "/api/sites/$SHOP_ID/stats?from=2026-01-01&to=2026-12-31" 'json.load(sys.stdin)["summary"]["pageviews"]' 3 "$JAR_A"
 expect_code "reversed range" GET "/api/sites/$SHOP_ID/stats?from=2026-12-31&to=2026-01-01" "" 400 "application/json" "$JAR_A"

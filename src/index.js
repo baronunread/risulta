@@ -31,6 +31,7 @@ import {
 } from "./auth.js";
 import {
   cleanDomain,
+  validDomain,
   parseRange,
   statsInput,
   rangeDays,
@@ -73,6 +74,7 @@ import {
   journeysPage,
   measurementPage,
   sitePage,
+  siteSettingsPage,
   trackerFor,
   usersPage,
   backupsPage,
@@ -574,7 +576,7 @@ app.use("/sites/*", async (c, next) => {
     const site = getSiteForUser(env.DB, Number(match[1]), c.get("session"));
     if (site && site.slug) {
       let suffix = match[2] || "";
-      if (suffix === "/settings" || suffix === "/conversions") suffix = (url.searchParams.get("error") || "").indexOf("funnel-") === 0 ? "/funnels" : "/goals";
+      if (suffix === "/conversions") suffix = (url.searchParams.get("error") || "").indexOf("funnel-") === 0 ? "/funnels" : "/goals";
       return c.redirect("/sites/" + siteSlug(site) + suffix + url.search, 308);
     }
   }
@@ -643,6 +645,34 @@ app.post("/api/sites", async (c) => {
   siteByKey.set(publicKey, { id: Number(res.meta.last_row_id), domain });
   if (wantsJson) return json({ id: res.meta.last_row_id, name, domain, publicKey, slug }, 201);
   return redirect("/sites/" + slug);
+});
+
+app.post("/api/sites/:id{[0-9]+}/domain", (c) => {
+  const session = c.get("session");
+  const request = c.req.raw;
+  const body = bodyOf(request);
+  const wantsJson = wantsJsonFrom(request);
+  if (session.role !== "admin") return json({ error: "forbidden" }, 403);
+  if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
+  const parsed = inputFrom(body, wantsJson);
+  if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
+  const id = Number(c.req.param("id"));
+  const site = env.DB.prepare("SELECT id, name, domain, public_key, slug FROM sites WHERE id = ?").bind(id).first();
+  if (!site) return json({ error: "unknown site" }, 404);
+  const domain = cleanDomain(parsed.value.domain);
+  if (!validDomain(domain)) {
+    if (wantsJson) return json({ error: "domain is invalid" }, 400);
+    return redirect("/sites/" + site.slug + "/settings?error=domain-invalid");
+  }
+  const exists = env.DB.prepare("SELECT id FROM sites WHERE domain = ? AND id <> ?").bind(domain, id).first();
+  if (exists) {
+    if (wantsJson) return json({ error: "domain already registered" }, 409);
+    return redirect("/sites/" + site.slug + "/settings?error=domain-registered");
+  }
+  env.DB.prepare("UPDATE sites SET domain = ? WHERE id = ?").bind(domain, id).run();
+  siteByKey.set(site.public_key, { id, domain });
+  if (wantsJson) return json({ id, name: site.name, domain, publicKey: site.public_key, slug: site.slug });
+  return redirect("/sites/" + site.slug + "/settings?saved=1");
 });
 
 function measurementReturn(site, kind, body) {
@@ -802,13 +832,16 @@ app.post("/api/sites/:id{[0-9]+}/funnels", async (c) => {
   return redirect(settingsUrl);
 });
 
-// Legacy bookmarks lead to analysis, while tracker setup lives on overview.
+// Site configuration keeps the existing site identity and analytics.
 app.get("/sites/:id{[a-z0-9-]+}/settings", (c) => {
-  const site = getSiteForUser(env.DB, c.req.param("id"), c.get("session"));
+  const session = c.get("session");
+  const site = getSiteForUser(env.DB, c.req.param("id"), session);
   if (!site) return new Response("Unknown site", { status: 404 });
   const url = new URL(c.req.url);
-  const section = (url.searchParams.get("error") || "").indexOf("funnel-") === 0 ? "funnels" : "goals";
-  return c.redirect("/sites/" + siteSlug(site) + "/" + section + url.search, 308);
+  const error = url.searchParams.get("error") === "domain-invalid" ? "Enter a valid hostname." :
+    url.searchParams.get("error") === "domain-registered" ? "That hostname is already used by another website." : "";
+  return new Response(siteSettingsPage(session, site, listSitesForUser(env.DB, session), error, url.searchParams.has("saved")),
+    { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
 function measurementRoute(c, kind) {
