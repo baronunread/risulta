@@ -16,7 +16,6 @@ export function startMaintenanceProcess() {
   // oxlint-disable-next-line no-unused-expressions -- native code is compiled into the executable.
   Porffor.c`
     #include <sys/wait.h>
-    #include <netinet/in.h>
     extern char** environ;
     #ifdef __APPLE__
     extern int _NSGetExecutablePath(char*, uint32_t*);
@@ -36,19 +35,6 @@ export function startMaintenanceProcess() {
       ssize_t size = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
       if (size > 0) { executable[size] = 0; valid = 1; }
       #endif
-      char port_env[32];
-      if (valid) {
-        // The runtime opens a listener even for one-shot workers. Reserve a
-        // loopback port so the child never takes the web server's port.
-        int probe = socket(AF_INET, SOCK_STREAM, 0);
-        struct sockaddr_in address; memset(&address, 0, sizeof(address));
-        address.sin_family = AF_INET; address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        socklen_t address_size = sizeof(address);
-        valid = probe >= 0 && bind(probe, (struct sockaddr*)&address, sizeof(address)) == 0 &&
-          getsockname(probe, (struct sockaddr*)&address, &address_size) == 0;
-        if (valid) snprintf(port_env, sizeof(port_env), "PORT=%u", (unsigned)ntohs(address.sin_port));
-        if (probe >= 0) close(probe);
-      }
       if (valid) {
         size_t count = 0;
         while (environ[count]) count++;
@@ -59,7 +45,7 @@ export function startMaintenanceProcess() {
             child_env[used++] = environ[i];
         }
         child_env[used++] = "RISULTA_MAINTENANCE_CHILD=1";
-        child_env[used++] = port_env;
+        child_env[used++] = "PORT=0";
         child_env[used] = 0;
         char* args[] = { executable, 0 };
         pid_t pid = fork();

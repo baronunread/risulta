@@ -1118,10 +1118,11 @@ async function routeRequest(request) {
   return response;
 }
 
-async function runMaintenanceChild() {
+function runMaintenanceChild() {
   try {
+    const ledger = env.DB.prepare("SELECT max(version) AS version FROM schema_migrations").first();
+    if (!ledger || Number(ledger.version) !== SCHEMA_VERSION) throw new Error("Initialize the matching Risulta schema before maintenance.");
     ensureBackupSchema(env.DB);
-    await ensureReady(env.DB);
     const now = Math.floor(Date.now() / 1000);
     let backup = "failed";
     let days = 0;
@@ -1155,7 +1156,8 @@ try {
   maintenanceChild = false;
 }
 if (maintenanceChild) {
-  setTimeout(runMaintenanceChild, 0);
+  console.log(JSON.stringify({ type: "maintenance_start" }));
+  runMaintenanceChild();
 }
 
 export default {

@@ -12,7 +12,9 @@ implementations and does not isolate interpreter cost from SQLite changes.
 Rollup SQL and scheduled-backup policy now run from the Risulta executable.
 Every minute the server starts a fresh process of the same binary, with its
 own SQLite connections. A running child prevents another child from starting.
-This isolates snapshot I/O from the web process event loop. The child checks
+This isolates snapshot I/O from the web process event loop. The web process
+initializes schemas; a child refuses a mismatched schema and runs synchronously
+before opening an HTTP listener. The child checks
 backup preferences, then builds up to four completed site-days, and exits.
 
 Release assets contain the executable, installer and metadata. Production
