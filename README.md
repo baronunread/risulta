@@ -109,9 +109,8 @@ Stats always include traffic totals, current visitors and daily rows. Clients ca
 
 Administrators can add `trace=1` to stats or JSON report API requests for native query timings, SQLite plans and `Server-Timing` headers. Tracing bypasses caches. See [the native trace report](performance/2026-10-07-query-tracing/README.md) for measurements and usage.
 
-## Next stable release
+## Stable v0.1.7
 
-v0.1.7 was withdrawn. v0.1.6 remains the latest stable release. The next stable
-release must run supported production features, including rollups and scheduled
-backups, from the Risulta binary without external Python workers. The implementation on this branch runs maintenance from the same executable;
-see [before/after measurements](performance/2026-10-08-builtin-workers/README.md).
+v0.1.7 replaces the withdrawn build with rollups and scheduled backups running
+from the Risulta binary, without external Python workers. The installer also
+requires no Python runtime. See [before/after measurements](performance/2026-10-08-builtin-workers/README.md).
