@@ -1,3 +1,6 @@
+import { startMaintenanceProcess, exitMaintenanceProcess, isMaintenanceChild } from "./native-workers.js";
+import { runRollups, runScheduledBackup } from "./maintenance.js";
+import { backupFiles } from "./backup-files.js";
 import { analyticsTrace, tracedAnalyticsResponse } from "./analytics-trace.js";
 import { cachedAnalytics } from "./analytics-cache.js";
 import { SCHEMA_VERSION } from "./migrations.ts";
@@ -236,7 +239,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/healthz", () => new Response("ok\n", { headers: { "x-risulta-schema-version": String(SCHEMA_VERSION) } }));
+app.get("/healthz", () => new Response("ok\n", { headers: { "x-risulta-schema-version": String(SCHEMA_VERSION), "x-risulta-maintenance": "builtin" } }));
 app.get("/favicon.ico", () => new Response("", { status: 204 }));
 
 app.get("/avatar.svg", (c) => {
@@ -1115,11 +1118,62 @@ async function routeRequest(request) {
   return response;
 }
 
+function runMaintenanceChild() {
+  try {
+    const ledger = env.DB.prepare("SELECT max(version) AS version FROM schema_migrations").first();
+    if (!ledger || Number(ledger.version) !== SCHEMA_VERSION) throw new Error("Initialize the matching Risulta schema before maintenance.");
+    ensureBackupSchema(env.DB);
+    const now = Math.floor(Date.now() / 1000);
+    let backup = "failed";
+    let days = 0;
+    let failed = false;
+    try {
+      backup = runScheduledBackup(env.DB, backupFiles, now);
+    } catch (error) {
+      failed = true;
+      console.error("Scheduled backup failed: " + String(error));
+    }
+    try {
+      days = runRollups(env.DB, now);
+    } catch (error) {
+      failed = true;
+      console.error("Rollup processing failed: " + String(error));
+    }
+    console.log(JSON.stringify({ type: "maintenance", backup, days }));
+    exitMaintenanceProcess(failed ? "1" : "0");
+  } catch (error) {
+    console.error("Maintenance failed: " + String(error));
+    exitMaintenanceProcess("1");
+  }
+}
+
+// Native startup can precede env becoming visible on globalThis. Read the
+// operating system flag directly; Bun tests have no Porffor intrinsic.
+let maintenanceChild = false;
+try {
+  maintenanceChild = isMaintenanceChild();
+} catch {
+  maintenanceChild = false;
+}
+if (maintenanceChild) {
+  console.log(JSON.stringify({ type: "maintenance_start" }));
+  runMaintenanceChild();
+}
+
 export default {
+  scheduled() {
+    if (maintenanceChild) return;
+    const result = startMaintenanceProcess();
+    if (result === "error") {
+      incrementCounter("database_errors_total");
+      console.error("Unable to start built-in maintenance.");
+    }
+  },
   // The runtime resolves a returned promise directly; no .then() chaining on
   // top of it (that shape hangs). Logging and error counting live inside
   // routeRequest so this stays a direct return.
   fetch(request) {
+    if (maintenanceChild) return new Response("Maintenance process", { status: 503 });
     return routeRequest(request);
   },
 };

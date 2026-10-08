@@ -1,0 +1,115 @@
+{
+  "now": 1791511200,
+  "samples": [
+    {
+      "mode": "rollup-full",
+      "sample": 0,
+      "now": 1791511200,
+      "wall_s": 51.00608858419582,
+      "user_s": 11.3,
+      "system_s": 7.64,
+      "peak_rss_bytes": 33554432,
+      "result": 920
+    },
+    {
+      "mode": "rollup-full",
+      "sample": 1,
+      "now": 1791511200,
+      "wall_s": 20.748732541687787,
+      "user_s": 7.69,
+      "system_s": 3.9,
+      "peak_rss_bytes": 46546944,
+      "result": 920
+    },
+    {
+      "mode": "rollup-full",
+      "sample": 2,
+      "now": 1791511200,
+      "wall_s": 20.23079420765862,
+      "user_s": 7.78,
+      "system_s": 4.02,
+      "peak_rss_bytes": 44482560,
+      "result": 920
+    },
+    {
+      "mode": "rollup-bounded",
+      "sample": 0,
+      "now": 1791338400,
+      "wall_s": 0.5115717076696455,
+      "user_s": 0.14,
+      "system_s": 0.1,
+      "peak_rss_bytes": 18497536,
+      "result": 4
+    },
+    {
+      "mode": "rollup-bounded",
+      "sample": 1,
+      "now": 1791338400,
+      "wall_s": 0.6733606667257845,
+      "user_s": 0.14,
+      "system_s": 0.12,
+      "peak_rss_bytes": 20971520,
+      "result": 4
+    },
+    {
+      "mode": "rollup-bounded",
+      "sample": 2,
+      "now": 1791338400,
+      "wall_s": 0.8846262921579182,
+      "user_s": 0.15,
+      "system_s": 0.13,
+      "peak_rss_bytes": 19775488,
+      "result": 4
+    },
+    {
+      "mode": "rollup-bounded",
+      "sample": 3,
+      "now": 1791338400,
+      "wall_s": 0.9361788746900856,
+      "user_s": 0.14,
+      "system_s": 0.13,
+      "peak_rss_bytes": 19398656,
+      "result": 4
+    },
+    {
+      "mode": "rollup-bounded",
+      "sample": 4,
+      "now": 1791338400,
+      "wall_s": 0.8350801249034703,
+      "user_s": 0.14,
+      "system_s": 0.12,
+      "peak_rss_bytes": 20578304,
+      "result": 4
+    },
+    {
+      "mode": "backup",
+      "sample": 0,
+      "now": 1791511200,
+      "wall_s": 20.86251737503335,
+      "user_s": 6.15,
+      "system_s": 8.83,
+      "peak_rss_bytes": 18563072,
+      "result": "backup created"
+    },
+    {
+      "mode": "backup",
+      "sample": 1,
+      "now": 1791511200,
+      "wall_s": 19.764458416961133,
+      "user_s": 6.06,
+      "system_s": 8.64,
+      "peak_rss_bytes": 18317312,
+      "result": "backup created"
+    },
+    {
+      "mode": "backup",
+      "sample": 2,
+      "now": 1791511200,
+      "wall_s": 22.37960625020787,
+      "user_s": 6.53,
+      "system_s": 10.31,
+      "peak_rss_bytes": 18579456,
+      "result": "backup created"
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { runRollups } from '../src/maintenance.js';
 import { FUNNEL_INDEX_SCHEMA, migrateSchema } from '../src/migrations.ts';
 import { ROLLUP_SCHEMA, STATS_ROLLUP_SCHEMA, rollupBoundary } from '../src/rollups.ts';
 import { siteStats, dashboardGoals, siteGoals, dashboardTraffic, dashboardSummary, siteAnalytics, siteSummary, dashboardReport, siteReport } from '../src/store.js';
@@ -65,11 +65,8 @@ mkdirSync(join(root, 'd1'));
 const sqlite = new Database(join(root, 'd1/DB.sqlite'));
 const db = adapter(sqlite);
 const day = 86400; const start = 10 * day; const today = start + 3 * day; const now = today + 1000;
-function worker(maxDays = 100) {
-  const result = spawnSync('python3', ['-c', "import importlib.util; s=importlib.util.spec_from_file_location('rollups','deploy/rollup-runner.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.run(__import__('sys').argv[1],now=int(__import__('sys').argv[2]),max_days=int(__import__('sys').argv[3])))", root, String(now), String(maxDays)], { encoding: 'utf8' });
-  if (result.status !== 0) throw new Error(result.stderr);
-  return Number(result.stdout.trim());
-}
+function worker(maxDays = 100) { return runRollups(db, now, maxDays); }
+
 function normalized(result) {
   const fields = ['paths', 'referrers', 'mediums', 'campaigns'];
   const output = { summary: result.summary, byDay: result.byDay, byHour: result.byHour };

@@ -88,7 +88,7 @@ Server and dashboard: AGPL-3.0-or-later. The tracker script served from
 
 ### Backup scheduling and stress preview
 
-Administrators can open `/backups` to create snapshots, choose a manual/daily/weekly schedule and set UTC time and scheduled-copy retention. Automatic backups require the included [server runner and timer setup](public/backup-setup.txt); the page shows whether the runner is connected. Manual snapshots are kept separately from scheduled retention. Snapshots stay on the server, so keep an off-server copy as well.
+Administrators can open `/backups` to create snapshots, choose a manual/daily/weekly schedule and set UTC time and scheduled-copy retention. Automatic backups run from the Risulta executable every minute; the page shows scheduler status. See [backup and recovery instructions](public/backup-setup.txt). Manual snapshots are kept separately from scheduled retention. Snapshots stay on the server, so keep an off-server copy as well.
 
 The [UI stress report](performance/2026-10-06-ui-stress/README.md) covers the million-event local dataset, before/after screenshots, backup restoration and remaining performance limits. To generate disposable preview traffic, use `python3 scripts/stress-seed.py --data-dir /tmp/risulta-stress-your-preview --events 1000000` after initializing a standalone demo instance. The script refuses production directories and repeat runs.
 
@@ -97,8 +97,8 @@ Demo websites use distinct recent traffic profiles: growth, decline, steady traf
 Daily and hourly rollups accelerate unfiltered Overview, Reports, Goals and
 fresh stats/acquisition API reads. Full stats still compute ordered funnels
 from raw events. Schema upgrades run
-automatically, and releases that include the worker enable its timer through
-the installer. Uncovered or changed days fall back to raw events during
+automatically. The binary processes up to four completed days per minute in
+a separate maintenance process. Uncovered or changed days fall back to raw events during
 backfill. See [upgrade and recovery details](docs/migrations-and-rollups.md).
 
 TypeScript migration and validation commands: [docs/typescript.md](docs/typescript.md).
@@ -109,9 +109,8 @@ Stats always include traffic totals, current visitors and daily rows. Clients ca
 
 Administrators can add `trace=1` to stats or JSON report API requests for native query timings, SQLite plans and `Server-Timing` headers. Tracing bypasses caches. See [the native trace report](performance/2026-10-07-query-tracing/README.md) for measurements and usage.
 
-## Next stable release
+## Stable v0.1.7
 
-v0.1.7 was withdrawn. v0.1.6 remains the latest stable release. The next stable
-release must run supported production features, including rollups and scheduled
-backups, from the Risulta binary without external Python workers. The current
-nightly workers do not meet that release requirement.
+v0.1.7 replaces the withdrawn build with rollups and scheduled backups running
+from the Risulta binary, without external Python workers. The installer also
+requires no Python runtime. See [before/after measurements](performance/2026-10-08-builtin-workers/README.md).

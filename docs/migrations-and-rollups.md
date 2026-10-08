@@ -43,36 +43,28 @@ that interval. Stats and report result caching is described below; `fresh=1` byp
 
 ## Background processing
 
-Release metadata advertises rollup_schema_version. The installer downloads
-the worker, service and timer from the same pinned release and verifies their
-checksums before replacing the binary. After health checks confirm the new
-schema, it installs the worker in /usr/local/lib/risulta-sprout and enables
-risulta-rollups.timer. Older releases without that metadata still work.
+Release metadata advertises `rollup_schema_version` and `builtin_maintenance`.
+After matching schema and maintenance health checks, the installer disables old
+external worker timers. No Python runtime or separate worker package is needed.
 
-The timer runs once a minute and rebuilds up to four days, prioritizing recent
-dates and rotating across sites. The worker uses Python 3's standard library,
-already required by the installer. Backfill is outside startup.
+Every minute the web process starts a separate process of the same executable,
+with fresh SQLite connections. Only one maintenance child runs at a time. It
+checks the saved backup schedule and processes up to four completed site-days,
+prioritizing recent dirty days and rotating across sites. Backfill is outside
+startup. Inspect errors with `journalctl -u risulta-sprout`.
 
-A day's replacement rows and coverage marker publish in one transaction.
+A day's replacement rows and coverage markers publish in one transaction.
 Interruption retains old rows and dirty markers; retry replaces rows without
 double counting. Inserts, updates and deletes invalidate affected days,
 including site/day moves and removal of a day's last event. Raw events remain
-intact. A process lock prevents overlapping workers, and SQLite serializes
-each write transaction against collection. Large days can briefly delay
-collector writes; readers continue using the WAL.
-
-Inspect processing with systemctl status risulta-rollups.timer and journalctl
--u risulta-rollups.service. For a larger initial backfill or local preview:
-
-    python3 deploy/rollup-runner.py --data-dir /path/to/state --max-days 1000
-    python3 deploy/rollup-runner.py --data-dir /path/to/state --watch
-
-The worker requires schema version 5 and refuses to rebuild another version.
+intact. SQLite serializes writes against collection. Large days can briefly
+delay collector writes; readers continue using WAL. Backups run in the child
+so snapshot I/O does not occupy the web process event loop.
 
 ## Upgrade recovery
 
-Before backup, the installer stops an active rollup timer/worker and then the
-app. Backups retain the data directory, executable, configuration and existing
+Before backup, the installer stops active external backup and rollup timers
+and workers, then the app. Backups retain the data directory, executable, configuration and existing
 worker/unit files. They include the ledger and all rollup tables.
 
 Success resumes processing. Backup failure before executable replacement

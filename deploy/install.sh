@@ -92,6 +92,77 @@ saved_setting() {
   [ -r "$ENV_FILE" ] || return 0
   sed -n "s/^${key}=\"\(.*\)\"$/\1/p; s/^${key}=\([^\"].*\)$/\1/p" "$ENV_FILE" | tail -n 1
 }
+release_json() {
+  awk -v mode="$1" '
+# Parse release JSON using POSIX awk, with no Python or jq dependency.
+function fail() { invalid=1; exit 1 }
+function space() { while (substr(text,pos,1) ~ /[ \t\r\n]/ && pos<=length(text)) pos++ }
+function string(    out,c,e) {
+  if(substr(text,pos++,1)!="\"") fail()
+  out=""
+  while(pos<=length(text)) {
+    c=substr(text,pos++,1)
+    if(c=="\"") return out
+    if(c=="\\") {
+      e=substr(text,pos++,1)
+      if(e=="u") { if(substr(text,pos,4)!~/^[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]$/)fail();out=out "\\u" substr(text,pos,4);pos+=4 }
+      else if(e ~ /^["\\\/bfnrt]$/)out=out "\\" e
+      else fail()
+    } else { if(c ~ /[\r\n]/)fail();out=out c }
+  }
+  fail()
+}
+function value(capture,rec,    c,v,start) {
+  space();c=substr(text,pos,1)
+  if(c=="{") { object(capture,rec);return "" }
+  if(c=="[") { array(capture);return "" }
+  if(c=="\"")return string()
+  start=pos
+  while(pos<=length(text)&&substr(text,pos,1)!~/[ \t\r\n,}\]]/)pos++
+  v=substr(text,start,pos-start)
+  if(v!="true"&&v!="false"&&v!="null"&&v!~/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/)fail()
+  return v
+}
+function object(capture,rec,    key,v,c) {
+  pos++;space();if(substr(text,pos,1)=="}"){pos++;return}
+  while(pos<=length(text)) {
+    space();key=string();space();if(substr(text,pos++,1)!=":")fail()
+    v=value(0,rec);if(capture)fields[rec,key]=v
+    space();c=substr(text,pos++,1);if(c=="}")return;if(c!=",")fail()
+  }
+  fail()
+}
+function array(capture,    c,rec) {
+  pos++;space();if(substr(text,pos,1)=="]"){pos++;return}
+  while(pos<=length(text)) {
+    rec=capture ? ++count : 0;value(capture,rec)
+    space();c=substr(text,pos++,1);if(c=="]")return;if(c!=",")fail()
+  }
+  fail()
+}
+{ text=text $0 "\n" }
+END {
+  if(invalid)exit 1
+  pos=1;space();if(substr(text,pos,1)=="[")array(1);else {count=1;value(1,1)}
+  space();if(pos<=length(text))exit 1
+  if(mode=="nightly") {
+    for(i=1;i<=count;i++)if(fields[i,"draft"]=="false"&&fields[i,"prerelease"]=="true"&&fields[i,"tag_name"]~/^nightly-[A-Za-z0-9._-]+$/&&(best==0||fields[i,"published_at"]>fields[best,"published_at"]))best=i
+    if(!best)exit 1
+    print fields[best,"tag_name"]
+  } else if(mode=="stable") {
+    if(fields[1,"draft"]!="false"||fields[1,"prerelease"]!="false"||fields[1,"tag_name"]!~/^v[0-9][A-Za-z0-9._-]*$/)exit 1
+    print fields[1,"tag_name"]
+  } else if(mode=="metadata") {
+    if(fields[1,"tag"]!~/^[A-Za-z0-9._-]+$/||fields[1,"commit"]!~/^[a-f0-9]+$/||length(fields[1,"commit"])!=40)exit 1
+    if(fields[1,"rollup_schema_version"]!=""&&fields[1,"rollup_schema_version"]!~/^(0|[1-9][0-9]*)$/)exit 1
+    schema=fields[1,"rollup_schema_version"]+0
+    if(schema<0||schema>100000||schema!=int(schema))exit 1
+    print fields[1,"tag"],fields[1,"commit"],schema,(fields[1,"builtin_maintenance"]=="true" ? 1 : 0)
+  } else exit 1
+}
+' "$2"
+}
+
 release_setting() {
   [ -r "$STATE_FILE" ] || return 0
   sed -n "s/^${1}=\"\([^\"]*\)\"$/\1/p" "$STATE_FILE" | tail -n 1
@@ -112,7 +183,8 @@ wait_healthy() {
   while [ "$attempt" -lt 30 ]; do
     if systemctl is-active --quiet risulta-sprout && curl -fsS -D "$tmp_dir/health.headers" "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
       healthy_schema="$(awk 'tolower($1) == "x-risulta-schema-version:" { gsub("\r", "", $2); print $2 }' "$tmp_dir/health.headers")"
-      if [ "${rollup_schema_version:-0}" -eq 0 ] || [ "$healthy_schema" = "$rollup_schema_version" ]; then return 0; fi
+      healthy_maintenance="$(awk 'tolower($1) == "x-risulta-maintenance:" { gsub("\r", "", $2); print $2 }' "$tmp_dir/health.headers")"
+      if { [ "${rollup_schema_version:-0}" -eq 0 ] || [ "$healthy_schema" = "$rollup_schema_version" ]; } && { [ "${builtin_maintenance:-0}" -eq 0 ] || [ "$healthy_maintenance" = builtin ]; }; then return 0; fi
     fi
     attempt=$((attempt + 1))
     sleep 1
@@ -173,7 +245,7 @@ else
   [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || fail "The saved PORT is invalid."
 fi
 command -v curl >/dev/null 2>&1 || fail "curl is required."
-command -v python3 >/dev/null 2>&1 || fail "python3 is required to read GitHub release metadata."
+command -v awk >/dev/null 2>&1 || fail "awk is required to read release metadata."
 command -v systemctl >/dev/null 2>&1 || fail "Risulta currently requires a systemd-based Linux server."
 
 case "$(uname -s)" in Linux) ;; *) fail "Only Linux servers are supported by this installer." ;; esac
@@ -195,7 +267,17 @@ binary_replaced=0
 backup_target=""
 rollups_timer_paused=0
 rollups_service_paused=0
+backup_timer_paused=0
+backup_service_paused=0
 pause_rollups() {
+  if systemctl is-active --quiet risulta-backup.timer 2>/dev/null; then
+    systemctl stop risulta-backup.timer
+    backup_timer_paused=1
+  fi
+  if systemctl is-active --quiet risulta-backup.service 2>/dev/null; then
+    systemctl stop risulta-backup.service
+    backup_service_paused=1
+  fi
   if systemctl is-active --quiet risulta-rollups.timer 2>/dev/null; then
     systemctl stop risulta-rollups.timer
     rollups_timer_paused=1
@@ -219,6 +301,8 @@ cleanup() {
       systemctl stop risulta-sprout || true
       systemctl stop risulta-rollups.timer || true
       systemctl stop risulta-rollups.service || true
+      systemctl stop risulta-backup.timer || true
+      systemctl stop risulta-backup.service || true
       say "Update failed. Recovery files: $backup_target" >&2
       say "Keep the database backup paired with its previous executable when restoring." >&2
     fi
@@ -226,6 +310,8 @@ cleanup() {
   # Resume jobs only after success, or before any executable replacement.
   # A failed schema upgrade must keep all writers stopped for paired recovery.
   if [ "$code" -eq 0 ] || [ "$binary_replaced" -eq 0 ]; then
+    if [ "$backup_timer_paused" -eq 1 ]; then systemctl start risulta-backup.timer || true; fi
+    if [ "$backup_service_paused" -eq 1 ] && [ "$backup_timer_paused" -eq 0 ]; then systemctl start risulta-backup.service || true; fi
     if [ "$rollups_timer_paused" -eq 1 ]; then systemctl start risulta-rollups.timer || true; fi
     if [ "$rollups_service_paused" -eq 1 ] && [ "$rollups_timer_paused" -eq 0 ]; then systemctl start risulta-rollups.service || true; fi
   fi
@@ -247,19 +333,25 @@ if [ -n "$version" ]; then
   release_tag="$version"
 elif [ "$selected_channel" = nightly ]; then
   curl --proto '=https' --tlsv1.2 -fsSL "https://api.github.com/repos/$REPOSITORY/releases?per_page=100" -o "$tmp_dir/releases.json"
-  release_tag="$(python3 -c 'import json,sys; releases=json.load(open(sys.argv[1])); candidates=[r for r in releases if not r.get("draft") and r.get("prerelease") and str(r.get("tag_name", "")).startswith("nightly-")]; candidates.sort(key=lambda r: r.get("published_at") or "", reverse=True); print(candidates[0]["tag_name"] if candidates else "")' "$tmp_dir/releases.json")"
+  release_tag="$(release_json nightly "$tmp_dir/releases.json")" || fail "Invalid nightly release metadata."
 else
   curl --proto '=https' --tlsv1.2 -fsSL "https://api.github.com/repos/$REPOSITORY/releases/latest" -o "$tmp_dir/release.json"
-  release_tag="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert not r.get("draft") and not r.get("prerelease"); print(r["tag_name"])' "$tmp_dir/release.json")"
+  release_tag="$(release_json stable "$tmp_dir/release.json")" || fail "Invalid stable release metadata."
 fi
 case "$release_tag" in ""|*[!A-Za-z0-9._-]*) fail "No valid release found for $selected_channel." ;; esac
 download_base="https://github.com/$REPOSITORY/releases/download/$release_tag"
 release_commit="unknown"
 rollup_schema_version=0
 if curl --proto '=https' --tlsv1.2 -fsSL "$download_base/release.json" -o "$tmp_dir/release.json" 2>/dev/null; then
-  metadata_tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag"])' "$tmp_dir/release.json")"
-  release_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$tmp_dir/release.json")"
-  rollup_schema_version="$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])).get("rollup_schema_version",0); assert isinstance(v,int) and 0<=v<=100000; print(v)' "$tmp_dir/release.json")"
+  metadata="$(release_json metadata "$tmp_dir/release.json")" || fail "Invalid release metadata."
+  set -- $metadata
+  metadata_tag="$1"
+  release_commit="$2"
+  rollup_schema_version="$3"
+  builtin_maintenance="$4"
+  if [ "$rollup_schema_version" -gt 0 ] && [ "$builtin_maintenance" -ne 1 ]; then
+    fail "This release uses external workers. Use its original installer to install it."
+  fi
   [ "$metadata_tag" = "$release_tag" ] || fail "Release metadata tag mismatch."
   case "$release_commit" in ""|*[!a-f0-9]*) fail "Invalid release commit." ;; esac
   [ "${#release_commit}" -eq 40 ] || fail "Invalid release commit length."
@@ -282,35 +374,25 @@ if [ -x "$INSTALL_PATH" ]; then
     installed_hash="$(shasum -a 256 "$INSTALL_PATH" | awk '{print $1}')"
   fi
 fi
-download_rollups() {
-  [ "$rollup_schema_version" -gt 0 ] || return 0
-  for helper in rollup-runner.py risulta-rollups.service risulta-rollups.timer; do
-    step "Downloading $helper" curl --proto '=https' --tlsv1.2 -fsSL "$download_base/$helper" -o "$tmp_dir/$helper"
-    step "Downloading $helper checksum" curl --proto '=https' --tlsv1.2 -fsSL "$download_base/$helper.sha256" -o "$tmp_dir/$helper.sha256"
-    helper_expected="$(awk '{print $1}' "$tmp_dir/$helper.sha256")"
-    case "$helper_expected" in ""|*[!a-fA-F0-9]*) fail "The $helper checksum is invalid." ;; esac
-    [ "${#helper_expected}" -eq 64 ] || fail "The $helper checksum is invalid."
-    if command -v sha256sum >/dev/null 2>&1; then
-      helper_actual="$(sha256sum "$tmp_dir/$helper" | awk '{print $1}')"
-    else
-      helper_actual="$(shasum -a 256 "$tmp_dir/$helper" | awk '{print $1}')"
-    fi
-    [ "$helper_actual" = "$helper_expected" ] || fail "The $helper download failed checksum verification."
-  done
-}
 install_rollups() {
-  [ "$rollup_schema_version" -gt 0 ] || return 0
-  wait_healthy || fail "The upgraded database schema is not ready for rollups."
-  install -d -m 0755 "$ROLLUP_LIB_DIR"
-  install -m 0755 "$tmp_dir/rollup-runner.py" "$ROLLUP_LIB_DIR/rollup-runner.py.new"
-  mv -f "$ROLLUP_LIB_DIR/rollup-runner.py.new" "$ROLLUP_LIB_DIR/rollup-runner.py"
-  install -m 0644 "$tmp_dir/risulta-rollups.service" "$ROLLUP_SERVICE_FILE"
-  install -m 0644 "$tmp_dir/risulta-rollups.timer" "$ROLLUP_TIMER_FILE"
-  systemctl daemon-reload
-  systemctl enable --now risulta-rollups.timer
-  say "Daily rollups enabled. Historical backfill runs in bounded batches."
+  [ "${builtin_maintenance:-0}" -eq 1 ] || return 0
+  # The binary owns maintenance. Old timers must not restart after success.
+  for unit in risulta-rollups.timer risulta-backup.timer; do
+    if systemctl cat "$unit" >/dev/null 2>&1; then
+      systemctl disable --now "$unit" || fail "Could not disable the old maintenance timer: $unit"
+    fi
+  done
+  for unit in risulta-rollups.service risulta-backup.service; do
+    if systemctl cat "$unit" >/dev/null 2>&1; then
+      systemctl stop "$unit" || fail "Could not stop the old maintenance service: $unit"
+    fi
+  done
+  rollups_timer_paused=0
+  rollups_service_paused=0
+  backup_timer_paused=0
+  backup_service_paused=0
+  say "Rollups and scheduled backups run from the Risulta binary."
 }
-download_rollups
 
 if [ -n "$installed_hash" ] && [ "$installed_hash" = "$expected_hash" ]; then
   if [ "$rollup_schema_version" -gt 0 ]; then

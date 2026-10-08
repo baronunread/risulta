@@ -10,7 +10,15 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+          - runner: ubuntu-24.04-arm
+            target: host
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -22,39 +30,26 @@ jobs:
       - run: bun run typecheck
       - run: bun run test
       - run: bunx sproutboat check
-      - run: bunx sproutboat build --standalone
-      - name: Seed against a scratch server
+      - name: Prepare native ARM static compiler
+        if: matrix.target == 'host'
         run: |
-          SB_DATA_DIR=/tmp/risulta-ci-seed PORT=8099 \
-            RISULTA_ADMIN_EMAIL=admin@example.com \
-            RISULTA_ADMIN_DISPLAY_NAME=Admin \
-            RISULTA_ADMIN_PASSWORD='change-me-verify-0001' \
-            ./dist/risulta-sprout > /tmp/risulta-ci-seed.log 2>&1 &
-          echo $! > /tmp/risulta-ci-seed.pid
-          sleep 2
-          BASE=http://127.0.0.1:8099 ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='change-me-verify-0001' sh seed.sh
-          kill "$(cat /tmp/risulta-ci-seed.pid)"
-      - name: Verify (untrusted proxies, fresh state)
+          printf '#!/bin/sh\nexec gcc -static "$@"\n' > "$RUNNER_TEMP/risulta-cc"
+          printf '#!/bin/sh\nexec g++ -static "$@"\n' > "$RUNNER_TEMP/risulta-cxx"
+          chmod +x "$RUNNER_TEMP/risulta-cc" "$RUNNER_TEMP/risulta-cxx"
+          echo "CC=$RUNNER_TEMP/risulta-cc" >> "$GITHUB_ENV"
+          echo "CXX=$RUNNER_TEMP/risulta-cxx" >> "$GITHUB_ENV"
+      - name: Build standalone binary
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
         run: |
-          rm -rf /tmp/risulta-ci && mkdir -p /tmp/risulta-ci
-          SB_DATA_DIR=/tmp/risulta-ci PORT=8099 \
-            RISULTA_ADMIN_EMAIL=admin@example.com \
-            RISULTA_ADMIN_DISPLAY_NAME=Admin \
-            RISULTA_ADMIN_PASSWORD='change-me-verify-0001' \
-            ./dist/risulta-sprout > /tmp/risulta-ci.log 2>&1 &
-          echo $! > /tmp/risulta-ci.pid
-          sleep 2
-          SB_DATA_DIR=/tmp/risulta-ci BASE=http://127.0.0.1:8099 ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='change-me-verify-0001' EXPECT_TRUST=0 sh verify.sh
-          kill "$(cat /tmp/risulta-ci.pid)"
-      - name: Verify (trusted proxy, fresh state)
-        run: |
-          rm -rf /tmp/risulta-ci-trusted && mkdir -p /tmp/risulta-ci-trusted
-          SB_DATA_DIR=/tmp/risulta-ci-trusted PORT=8099 SB_TRUSTED_PROXIES=127.0.0.1 \
-            RISULTA_ADMIN_EMAIL=admin@example.com \
-            RISULTA_ADMIN_DISPLAY_NAME=Admin \
-            RISULTA_ADMIN_PASSWORD='change-me-verify-0001' \
-            ./dist/risulta-sprout > /tmp/risulta-ci-trusted.log 2>&1 &
-          echo $! > /tmp/risulta-ci-trusted.pid
-          sleep 2
-          SB_DATA_DIR=/tmp/risulta-ci-trusted BASE=http://127.0.0.1:8099 ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='change-me-verify-0001' EXPECT_TRUST=1 sh verify.sh
-          kill "$(cat /tmp/risulta-ci-trusted.pid)"
+          if [ "$BUILD_TARGET" = host ]; then
+            bun run build --target host
+          else
+            bun run build
+          fi
+          if readelf -l dist/risulta-sprout | grep -q INTERP; then
+            echo 'The binary must be statically linked.' >&2
+            exit 1
+          fi
+      - name: Verify standalone binary in both proxy modes
+        run: sh scripts/verify-binary.sh dist/risulta-sprout

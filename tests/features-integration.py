@@ -91,9 +91,10 @@ request(admin, settings_path, method='POST', payload={'frequency':'daily','time'
 settings, _ = parsed(admin, settings_path)
 assert settings['settings']['frequency'] == 'daily' and settings['settings']['hour'] == 3 and settings['settings']['minute'] == 15 and settings['settings']['retention'] == 3
 _, body = request(admin, '/backups', headers={'Accept':'text/html'})
-assert b'Runner disconnected' in body and b'Recent backups' in body
+assert (b'Starting scheduler' in body or b'Schedule active' in body) and b'Recent backups' in body
 response, _ = request(viewer, '/backups', code=303, headers={'Accept':'text/html'})
 assert response.headers['Location'] == '/'
+request(admin, settings_path, method='POST', payload={'frequency':'daily','time':'00:00','retention':3}, headers=csrf)
 
 # The HTTP token returned once must match the hash stored by the native runtime.
 keys=f'/api/sites/{site_id}/read-keys'
@@ -159,8 +160,6 @@ _, body = request(admin, f'/sites/{site_slug}?period=7&metric=visits', headers={
 assert b'Visits over time' in body and b'Unique visitor-days' not in body
 
 # Exercise the native rolled-up API against its pre-backfill raw response.
-import subprocess
-import sys
 state = Path(os.environ['SB_DATA_DIR'])
 today = int(time.time()) // 86400 * 86400
 with sqlite3.connect(state / 'd1/DB.sqlite') as historical:
@@ -174,7 +173,23 @@ raw_stats, _ = parsed(admin, f'/api/sites/{site_id}/stats?' + query)
 report_queries = ['dimension=path', 'dimension=source', 'dimension=path&sort=value&limit=1&offset=1', 'dimension=path&path=/historical', 'dimension=event']
 raw_reports = [parsed(admin, f'/api/sites/{site_id}/report?' + query + '&fresh=1&' + suffix)[0] for suffix in report_queries]
 _, raw_csv = request(admin, f'/api/sites/{site_id}/report?' + query + '&dimension=path&format=csv&fresh=1')
-subprocess.run([sys.executable, 'deploy/rollup-runner.py', '--data-dir', str(state), '--max-days', '1000'], check=True, capture_output=True)
+deadline = time.monotonic() + 90
+while True:
+    with sqlite3.connect(state / 'd1/DB.sqlite') as coverage:
+        built = coverage.execute('SELECT count(*) FROM analytics_rollup_stats_days WHERE site_id=? AND day IN (?,?)', (site_id, today-2*86400, today-86400)).fetchone()[0]
+    if built == 2:
+        break
+    assert time.monotonic() < deadline, 'Built-in maintenance did not complete historical rollups'
+    time.sleep(.25)
+with sqlite3.connect(state / 'd1/DB.sqlite') as history:
+    scheduled = history.execute("SELECT path FROM backup_history WHERE kind='scheduled' AND status='success'").fetchall()
+assert len(scheduled) == 1, 'Built-in scheduled backup did not complete'
+assert Path(scheduled[0][0]).stat().st_mode & 0o077 == 0
+with sqlite3.connect(scheduled[0][0]) as snapshot:
+    assert snapshot.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+    assert snapshot.execute('SELECT count(*) FROM users').fetchone()[0] >= 2
+health, _ = request(anonymous, '/healthz')
+assert health.headers['x-risulta-maintenance'] == 'builtin'
 rolled_stats, _ = parsed(anonymous, f'/api/sites/{site_id}/stats?' + query + '&fresh=1', headers=bearer)
 assert rolled_stats == raw_stats
 trace_stats, trace_response = parsed(admin, f'/api/sites/{site_id}/stats?' + query + '&trace=1')
