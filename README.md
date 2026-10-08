@@ -108,3 +108,10 @@ Stats and acquisition reports cache completed historical results in SQLite for u
 Stats always include traffic totals, current visitors and daily rows. Clients can request just the optional sections they need with `include=traffic`, `include=traffic,hourly`, or a comma-separated combination of `hourly`, `acquisition`, `goals` and `funnels`. Omitting `include` retains the complete existing response. Unknown sections return 400. `fresh=1` also bypasses historical component caching.
 
 Administrators can add `trace=1` to stats or JSON report API requests for native query timings, SQLite plans and `Server-Timing` headers. Tracing bypasses caches. See [the native trace report](performance/2026-10-07-query-tracing/README.md) for measurements and usage.
+
+## Next stable release
+
+v0.1.7 was withdrawn. v0.1.6 remains the latest stable release. The next stable
+release must run supported production features, including rollups and scheduled
+backups, from the Risulta binary without external Python workers. The current
+nightly workers do not meet that release requirement.
