@@ -51,14 +51,23 @@ a check confirmed the initialization does not add missing event indexes.
 
 | Work | Python median | Native median | Python / native CPU | Python / native peak RSS |
 | --- | ---: | ---: | ---: | ---: |
-| Full backfill, 920 site-days | 21.67 s | 27.70 s | 11.91 / 17.13 s | 29.8 / 37.9 MiB |
-| Four populated site-days | 0.89 s | 1.36 s | 0.35 / 0.50 s | 23.6 / 20.2 MiB |
-| Scheduled snapshot | 19.98 s | 30.40 s | 15.02 / 20.32 s | 22.1 / 17.1 MiB |
+| Full backfill, 920 site-days | 21.67 s | 20.75 s | 11.91 / 11.80 s | 29.8 / 42.4 MiB |
+| Four populated site-days | 0.89 s | 0.84 s | 0.35 / 0.26 s | 23.6 / 18.9 MiB |
+| Scheduled snapshot | 19.98 s | 20.86 s | 15.02 / 14.98 s | 22.1 / 17.7 MiB |
 
-The native implementation is slower in elapsed time in this run. Full-backfill
-CPU and memory also increase; bounded batches and snapshots use less memory.
-The dependency removal meets the packaging requirement, but these numbers
-provide no basis for claiming a speed improvement.
+Final elapsed-time medians are close to the Python baseline. Full-backfill
+peak memory increases; bounded batches and snapshots use less memory in the
+isolated benchmark process. This does not measure combined web-parent and
+maintenance-child RSS. One native full-backfill sample took 51.01 s, while the
+other two took 20.75 s and 20.23 s. That spread limits any speed claim.
+
+The initial native port deleted dimension facts using only site/day. The
+primary key is (site, dimension, day, label, visitor), so that scanned existing
+site summaries during backfill. Matching Python's four indexed dimension
+queries reduced median backfill time from 27.70 s to 20.75 s. Initial results
+are preserved in `native-initial-results.json`; populated batches and snapshots
+were also remeasured after the correction. The recreated fixture has identical
+event count and allocated page count (303,797 pages of 4,096 bytes).
 
 These are local measurements, not a VPS throughput prediction. Filesystem and
 OS caches were not flushed, background load was not controlled, and short
@@ -115,7 +124,11 @@ python3 performance/2026-10-08-builtin-workers/measure.py \
   --output /tmp/risulta-benchmark-results
 ```
 
-The harness supports macOS `time -l` and Linux GNU `time -v`. It checks exact
+The recorded benchmark entry was validated on macOS. The harness parses macOS
+`time -l` and Linux GNU `time -v` counters. Production workers use synchronous
+startup, which is separately tested on Linux x64 and ARM64. The isolated
+benchmark entry includes schema initialization overhead and differs from that
+production startup path. It checks exact
 rollup parity, snapshot integrity, event count and permissions after measuring.
 The fixture is deliberately not committed because it contains over a million
 synthetic events and is large. `python-reference/` freezes the deleted workers

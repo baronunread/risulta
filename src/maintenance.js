@@ -8,8 +8,12 @@ export function buildRollupDay(db, siteId, day, now) {
   if (day % DAY || day + DAY > Math.floor(now / DAY) * DAY) throw new Error("Only completed UTC days can be rolled up.");
   db.exec("BEGIN IMMEDIATE");
   try {
-    for (const table of ["analytics_rollup_visitors", "analytics_rollup_hours", "analytics_rollup_events", "analytics_rollup_dimensions"]) {
+    for (const table of ["analytics_rollup_visitors", "analytics_rollup_hours", "analytics_rollup_events"]) {
       db.prepare("DELETE FROM " + table + " WHERE site_id=? AND day=?").bind(siteId, day).run();
+    }
+    // Match the dimension primary key's (site, dimension, day) prefix.
+    for (const [dimension] of dimensions) {
+      db.prepare("DELETE FROM analytics_rollup_dimensions WHERE site_id=? AND dimension=? AND day=?").bind(siteId, dimension, day).run();
     }
     db.prepare("INSERT INTO analytics_rollup_visitors WITH marked AS (SELECT visitor,name,ts,lag(ts) OVER (PARTITION BY visitor ORDER BY ts,id) AS previous FROM events WHERE site_id=? AND ts>=? AND ts<?) SELECT ?,?,visitor,sum(name='pageview'),sum(CASE WHEN visitor!='' AND (previous IS NULL OR ts-previous>1800) THEN 1 ELSE 0 END) FROM marked GROUP BY visitor")
       .bind(siteId, day, day + DAY, siteId, day).run();
