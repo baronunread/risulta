@@ -39,7 +39,7 @@ select either option, but retain the interactive first-run setup. An exact
 nightly version on a fresh installation does not opt into future nightlies;
 the default channel stays stable.
 
-The installer requires Linux, systemd, curl and Python 3 for release JSON
+The installer requires Linux, systemd, curl and awk for release JSON
 parsing; updates also require `flock` from util-linux. Update mode needs an
 existing service, configuration and database. It does not prompt, install
 Caddy, rewrite the environment file, or change the service definition. It
@@ -78,8 +78,7 @@ Restoring older data discards activity collected since that backup. If the
 schema remains compatible, an exact-version install can replace only the
 executable while preserving current data. The first nightly adds `read_api_keys`, `backup_settings`, `backup_history`
 and a covering analytics index. These additions preserve the existing tables
-and event data; earlier binaries ignore the new tables. Backup scheduling
-uses the separate runner described in `public/backup-setup.txt`.
+and event data; earlier binaries ignore the new tables. Backup scheduling and rollup processing run in a separate process of the same executable, with no Python dependency. Older external worker timers are disabled when upgrading to a built-in maintenance release. Releases that require external workers must use their original installer.
 
 The readiness check confirms the service and `/healthz`; the release workflow
 also exercises login, authorization and analytics against disposable state.

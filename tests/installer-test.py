@@ -24,11 +24,13 @@ if name=='uname': print('Linux' if args==['-s'] else 'x86_64');sys.exit(0)
 if name=='sleep': sys.exit(0)
 if name=='flock': sys.exit(1 if os.environ.get('LOCK_BUSY') else 0)
 if name=='systemctl':
- if args[-1] in ['risulta-rollups.timer','risulta-rollups.service']:
-  marker=root/('rollups-timer-active' if args[-1].endswith('timer') else 'rollups-service-active')
-  if args[0]=='is-active':sys.exit(0 if marker.exists() else 3)
-  if args[0]=='stop':marker.unlink(missing_ok=True)
-  if args[0] in ['start','restart'] or (args[0]=='enable' and '--now' in args):marker.touch()
+ units=[a for a in args if a in ['risulta-rollups.timer','risulta-rollups.service','risulta-backup.timer','risulta-backup.service']]
+ if units:
+  for unit in units:
+   marker=root/(('rollups' if 'rollups' in unit else 'backup')+('-timer-active' if unit.endswith('timer') else '-service-active'))
+   if args[0]=='is-active':sys.exit(0 if marker.exists() else 3)
+   if args[0] in ['stop','disable']:marker.unlink(missing_ok=True)
+   if args[0] in ['start','restart'] or (args[0]=='enable' and '--now' in args):marker.touch()
   sys.exit(0)
  if args[0]=='is-active': sys.exit(0 if (root/'active').exists() else 3)
  if args[0]=='stop': (root/'active').unlink(missing_ok=True)
@@ -55,10 +57,10 @@ if name=='curl':
  artifact=b'#!/bin/sh\necho nightly-test\n'
  asset=url.rsplit('/',1)[-1].removesuffix('.sha256')
  helper=asset in ['rollup-runner.py','risulta-rollups.service','risulta-rollups.timer']
- if helper:artifact=pathlib.Path('deploy',asset).read_bytes()
+ if helper:raise SystemExit('Unexpected external worker download')
  tag='nightly-20261006-0123456789ab';commit='0123456789abcdef0123456789abcdef01234567'
  if '/healthz' in url:
-  if '-D' in args:pathlib.Path(args[args.index('-D')+1]).write_text('x-risulta-schema-version: '+('1' if os.environ.get('BAD_SCHEMA_VERSION') else '5')+'\r\n')
+  if '-D' in args:pathlib.Path(args[args.index('-D')+1]).write_text('x-risulta-schema-version: '+('1' if os.environ.get('BAD_SCHEMA_VERSION') else '5')+'\r\nx-risulta-maintenance: '+('external' if os.environ.get('BAD_MAINTENANCE') else 'builtin')+'\r\n')
   sys.exit(22 if os.environ.get('FAIL_HEALTH') else 0)
  if url.endswith('releases/latest'):data=json.dumps({'tag_name':'v0.1.6','draft':False,'prerelease':False}).encode()
  elif 'releases?per_page=' in url:
@@ -66,7 +68,7 @@ if name=='curl':
  elif url.endswith('/release.json'):
   selected=url.split('/download/')[1].split('/')[0]
   if os.environ.get('MISSING_METADATA'):sys.exit(22)
-  data=json.dumps({'tag':'wrong' if os.environ.get('BAD_METADATA') else selected,'commit':commit,'rollup_schema_version':5 if os.environ.get('ROLLUP_RELEASE') else 0}).encode()
+  data=json.dumps({'tag':'wrong' if os.environ.get('BAD_METADATA') else selected,'commit':commit,'rollup_schema_version':5 if os.environ.get('ROLLUP_RELEASE') else 0,'builtin_maintenance':bool(os.environ.get('ROLLUP_RELEASE')) and not bool(os.environ.get('EXTERNAL_WORKERS'))}).encode()
  elif url.endswith('.sha256'):
   data=((('0'*64) if (os.environ.get('BAD_CHECKSUM') or (helper and os.environ.get('BAD_ROLLUP_CHECKSUM'))) else hashlib.sha256(artifact).hexdigest())+'  risulta-sprout-linux-x64\n').encode()
  else:data=artifact
@@ -103,8 +105,9 @@ def scenario(options, channel=None, installed=OLD, flags=None, existing=True):
     if channel:(envdir/'release.env').write_text(f'CHANNEL="{channel}"\nTAG="previous"\nCOMMIT="unknown"\n')
     (root/'active').touch()
     if (flags or {}).get('ROLLUPS_ACTIVE'):
-        (root/'rollups-timer-active').touch()
-        (root/'rollups-service-active').touch()
+        for unit in ['rollups','backup']:
+            (root/(unit+'-timer-active')).touch()
+            (root/(unit+'-service-active')).touch()
     mocks=root/'mocks';mocks.mkdir()
     for name in ['id','uname','sleep','systemctl','curl','install','cp','flock']:
         p=mocks/name;p.write_text('#!'+sys.executable+'\n'+MOCK);p.chmod(0o755)
@@ -183,22 +186,54 @@ for failure in ['', 'FAIL_BACKUP', 'FAIL_HEALTH']:
         stop_job=calls.index('systemctl ["stop", "risulta-rollups.service"]')
         backup=calls.index('cp ')
         assert stop_timer < backup and stop_job < backup
+        assert calls.index('systemctl ["stop", "risulta-backup.timer"]') < backup
+        assert calls.index('systemctl ["stop", "risulta-backup.service"]') < backup
         assert (root/'rollups-timer-active').exists() == (failure != 'FAIL_HEALTH')
         assert not (root/'rollups-service-active').exists()
+        assert (root/'backup-timer-active').exists() == (failure != 'FAIL_HEALTH')
         count+=1
-for installed,extra in [(OLD,{}),(BINARY,{}),(OLD,{'BAD_ROLLUP_CHECKSUM':'1'}),(OLD,{'FAIL_HEALTH':'1'}),(OLD,{'BAD_SCHEMA_VERSION':'1'})]:
+for installed,extra in [(OLD,{}),(BINARY,{}),(OLD,{'EXTERNAL_WORKERS':'1'}),(OLD,{'FAIL_HEALTH':'1'}),(OLD,{'BAD_SCHEMA_VERSION':'1'}),(OLD,{'BAD_MAINTENANCE':'1'})]:
     flags={'ROLLUP_RELEASE':'1',**extra}
     scratch,root,result,_=scenario(['--update','--channel','nightly'],installed=installed,flags=flags)
     with scratch:
         assert result.returncode == (1 if extra else 0),(result.stdout,result.stderr)
+        assert not (root/'lib/rollup-runner.py').exists()
+        assert not (root/'rollups-timer-active').exists()
+        calls=(root/'calls').read_text()
+        assert '/rollup-runner.py' not in calls and '/backup-runner.py' not in calls
         if not extra:
-            assert (root/'lib/rollup-runner.py').read_bytes()==Path('deploy/rollup-runner.py').read_bytes()
-            assert (root/'rollups.timer').read_bytes()==Path('deploy/risulta-rollups.timer').read_bytes()
-            assert (root/'rollups-timer-active').exists()
-            calls=(root/'calls').read_text()
-            assert calls.index('/healthz') < calls.index('systemctl ["enable", "--now", "risulta-rollups.timer"]')
-        else:
-            assert not (root/'lib/rollup-runner.py').exists()
-            assert not (root/'rollups-timer-active').exists()
+            assert calls.index('/healthz') < calls.index('systemctl ["disable", "--now", "risulta-rollups.timer"]')
+        if 'EXTERNAL_WORKERS' in extra:
+            assert '"stop"' not in calls
         count+=1
+
+# Exercise the installer JSON reader without invoking installation boundaries.
+with tempfile.TemporaryDirectory(prefix='risulta-json-reader-') as scratch:
+    root = Path(scratch)
+    function = SOURCE[SOURCE.index('release_json() {'):SOURCE.index('\nrelease_setting() {')]
+    reader = root / 'read.sh'
+    reader.write_text(function + '\nrelease_json "$1" "$2"\n')
+    valid_metadata = {'tag': TAG, 'commit': COMMIT, 'rollup_schema_version': 5, 'builtin_maintenance': True}
+    cases = [
+        ('metadata', json.dumps(valid_metadata), f'{TAG} {COMMIT} 5 1'),
+        ('metadata', json.dumps({**valid_metadata, 'toolchain': {'tag': 'ignored', 'nested': ['quoted \" body', None, {'commit': 'ignored'}]}}), f'{TAG} {COMMIT} 5 1'),
+        ('metadata', json.dumps({**valid_metadata, 'rollup_schema_version': 'garbage'}), None),
+        ('metadata', json.dumps({**valid_metadata, 'rollup_schema_version': -1}), None),
+        ('metadata', json.dumps({**valid_metadata, 'rollup_schema_version': 1.5}), None),
+        ('metadata', json.dumps(valid_metadata) + ' trailing', None),
+        ('metadata', '{"tag":', None),
+        ('stable', json.dumps({'tag_name': 'v0.1.6', 'draft': False, 'prerelease': False, 'body': 'Escaped \" tags and } braces'}), 'v0.1.6'),
+        ('stable', json.dumps({'tag_name': 'v0.1.6', 'draft': True, 'prerelease': False}), None),
+        ('nightly', json.dumps([{'tag_name': 'nightly-newer', 'draft': False, 'prerelease': True, 'published_at': '2026-10-08'}, {'tag_name': 'nightly-older', 'draft': False, 'prerelease': True, 'published_at': '2026-10-07'}]), 'nightly-newer'),
+    ]
+    for mode, data, expected in cases:
+        input_file = root / 'input.json'
+        input_file.write_text(data)
+        result = subprocess.run(['sh', str(reader), mode, str(input_file)], capture_output=True, text=True, timeout=5)
+        if expected is None:
+            assert result.returncode != 0, (mode, data, result.stdout)
+        else:
+            assert result.returncode == 0 and result.stdout.strip() == expected, (data, result.stderr, result.stdout)
+print(f'installer JSON reader OK ({len(cases)} cases)')
+
 print(f'installer OK ({count} transaction scenarios)')

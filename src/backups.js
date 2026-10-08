@@ -1,4 +1,4 @@
-// Backup preferences and bounded history shared by the app and server runner.
+// Backup preferences and bounded history shared by the app and built-in maintenance.
 let ready = false;
 export function ensureBackupSchema(db) {
   if (ready) return;

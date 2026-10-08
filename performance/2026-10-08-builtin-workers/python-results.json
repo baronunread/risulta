@@ -1,0 +1,110 @@
+{
+  "now": 1791511200,
+  "events": 1001005,
+  "samples": [
+    {
+      "mode": "rollup-full",
+      "sample": 0,
+      "wall_s": 21.672735792119056,
+      "user_s": 7.91,
+      "system_s": 4.0,
+      "peak_rss_bytes": 34078720,
+      "result": "920"
+    },
+    {
+      "mode": "rollup-full",
+      "sample": 1,
+      "wall_s": 22.243461832869798,
+      "user_s": 8.01,
+      "system_s": 4.13,
+      "peak_rss_bytes": 28393472,
+      "result": "920"
+    },
+    {
+      "mode": "rollup-full",
+      "sample": 2,
+      "wall_s": 20.399330707732588,
+      "user_s": 7.93,
+      "system_s": 3.98,
+      "peak_rss_bytes": 31195136,
+      "result": "920"
+    },
+    {
+      "mode": "backup",
+      "sample": 0,
+      "wall_s": 20.187426125165075,
+      "user_s": 5.66,
+      "system_s": 9.36,
+      "peak_rss_bytes": 23216128,
+      "result": "backup created"
+    },
+    {
+      "mode": "backup",
+      "sample": 1,
+      "wall_s": 19.975022957660258,
+      "user_s": 5.74,
+      "system_s": 9.57,
+      "peak_rss_bytes": 23511040,
+      "result": "backup created"
+    },
+    {
+      "mode": "backup",
+      "sample": 2,
+      "wall_s": 19.27850400004536,
+      "user_s": 5.66,
+      "system_s": 9.15,
+      "peak_rss_bytes": 22855680,
+      "result": "backup created"
+    },
+    {
+      "mode": "rollup-bounded",
+      "sample": 0,
+      "now": 1791338400,
+      "wall_s": 0.7952749580144882,
+      "user_s": 0.18,
+      "system_s": 0.14,
+      "peak_rss_bytes": 24313856,
+      "result": "4"
+    },
+    {
+      "mode": "rollup-bounded",
+      "sample": 1,
+      "now": 1791338400,
+      "wall_s": 0.7929265410639346,
+      "user_s": 0.17,
+      "system_s": 0.13,
+      "peak_rss_bytes": 25640960,
+      "result": "4"
+    },
+    {
+      "mode": "rollup-bounded",
+      "sample": 2,
+      "now": 1791338400,
+      "wall_s": 0.8890132498927414,
+      "user_s": 0.19,
+      "system_s": 0.16,
+      "peak_rss_bytes": 24756224,
+      "result": "4"
+    },
+    {
+      "mode": "rollup-bounded",
+      "sample": 3,
+      "now": 1791338400,
+      "wall_s": 1.9199970001354814,
+      "user_s": 0.29,
+      "system_s": 0.28,
+      "peak_rss_bytes": 23822336,
+      "result": "4"
+    },
+    {
+      "mode": "rollup-bounded",
+      "sample": 4,
+      "now": 1791338400,
+      "wall_s": 2.0881497501395643,
+      "user_s": 0.36,
+      "system_s": 0.31,
+      "peak_rss_bytes": 28786688,
+      "result": "4"
+    }
+  ]
+}

@@ -344,7 +344,7 @@ export function backupsPage(admin, settings, history, message, error) {
   const pad = function (n) { return n < 10 ? "0" + n : String(n); };
   const connected = Number(settings.runner_seen) > Math.floor(Date.now() / 1000) - 180;
   const scheduled = settings.frequency !== "off";
-  const status = scheduled ? (connected ? "Runner connected" : "Runner disconnected") : "Manual backups only";
+  const status = scheduled ? (connected ? "Schedule active" : "Starting scheduler") : "Manual backups only";
   const rows = history.map((item) => '<tr><td>' + journeyTime(item.created_at) + ' UTC</td><td>' +
     (item.kind === "scheduled" ? "Scheduled" : "Manual") + '</td><td><span class="badge">' + escapeHtml(item.status) +
     '</span></td><td>' + (item.bytes ? backupSize(item.bytes) : "") + '</td></tr>').join("");
@@ -365,12 +365,12 @@ export function backupsPage(admin, settings, history, message, error) {
     '<div class="backup-field-pair"><div class="field"><label for="backup-time">Time (UTC)</label><input id="backup-time" name="time" type="time" required value="' +
     pad(settings.hour) + ':' + pad(settings.minute) + '"></div><div class="field"><label for="backup-retention">Copies to keep</label><input id="backup-retention" name="retention" type="number" min="1" max="90" required value="' +
     settings.retention + '"></div></div><p class="hint">Retention applies to scheduled backups. Manual snapshots are kept.</p><button class="button secondary" type="submit">Save schedule</button></form>' +
-    (!connected ? '<p class="backup-runner-note">Automatic backups need the server runner. Saving a schedule alone does not start it.</p>' : "") + '</section></div>' +
+    (!connected ? '<p class="backup-runner-note">Risulta checks your saved schedule every minute. If this status persists, check the server logs.</p>' : "") + '</section></div>' +
     '<section class="card backup-history"><div class="report-titlebar"><div><h2>Recent backups</h2><p class="hint">The 20 most recent attempts. Files remain on the server.</p></div></div>' +
     (rows ? '<div class="table-scroll" tabindex="0" role="region" aria-label="Backup history"><table class="data-table"><thead><tr><th scope="col">Created (UTC)</th><th scope="col">Type</th><th scope="col">Status</th><th scope="col">Size</th></tr></thead><tbody>' + rows +
       '</tbody></table></div>' : '<div class="backup-history-empty"><p>No backups recorded yet.</p><p class="hint">Create a backup to see it here. Older files are still in the server&#39;s backups folder.</p></div>') + '</section>' +
-    '<details class="backup-guide"><summary>Set up automatic backups and recovery</summary><div><h2>Connect the runner</h2><p>Use the included server timer or run the backup runner once a minute with cron. It reads the schedule you save above.</p>' +
-    '<pre class="setup">python3 deploy/backup-runner.py --data-dir /var/lib/risulta-sprout</pre><p><a class="report-link" href="/backup-setup.txt">Open server setup instructions</a></p>' +
+    '<details class="backup-guide"><summary>Set up automatic backups and recovery</summary><div><h2>Save a schedule</h2><p>Risulta runs scheduled backups from its own executable. Save a daily or weekly schedule above.</p>' +
+    '<p><a class="report-link" href="/backup-setup.txt">Open backup and recovery instructions</a></p>' +
     '<h2>Keep a copy elsewhere</h2><p>Copy snapshots off this server for protection against disk failure. Database snapshots include account and session data, so keep them private.</p>' +
     '<h2>Restore safely</h2><p>Stop Risulta, preserve the current database and its WAL sidecars, then restore a verified snapshot at d1/DB.sqlite before restarting. Test restoration on a separate instance first.</p></div></details></main>', null, []);
 }

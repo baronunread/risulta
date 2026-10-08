@@ -15,6 +15,7 @@
     "RISULTA_BASE_URL",
     "RISULTA_LOG_LEVEL"
   ],
+  "triggers": { "crons": ["* * * * *"] },
   "assets": {
     "directory": "public",
     "binding": "ASSETS",

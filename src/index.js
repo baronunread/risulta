@@ -1,3 +1,6 @@
+import { startMaintenanceProcess, exitMaintenanceProcess, isMaintenanceChild } from "./native-workers.js";
+import { runRollups, runScheduledBackup } from "./maintenance.js";
+import { backupFiles } from "./backup-files.js";
 import { analyticsTrace, tracedAnalyticsResponse } from "./analytics-trace.js";
 import { cachedAnalytics } from "./analytics-cache.js";
 import { SCHEMA_VERSION } from "./migrations.ts";
@@ -236,7 +239,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/healthz", () => new Response("ok\n", { headers: { "x-risulta-schema-version": String(SCHEMA_VERSION) } }));
+app.get("/healthz", () => new Response("ok\n", { headers: { "x-risulta-schema-version": String(SCHEMA_VERSION), "x-risulta-maintenance": "builtin" } }));
 app.get("/favicon.ico", () => new Response("", { status: 204 }));
 
 app.get("/avatar.svg", (c) => {
@@ -1115,11 +1118,53 @@ async function routeRequest(request) {
   return response;
 }
 
+async function runMaintenanceChild() {
+  try {
+    ensureBackupSchema(env.DB);
+    await ensureReady(env.DB);
+    const now = Math.floor(Date.now() / 1000);
+    let backup = "failed";
+    let days = 0;
+    let failed = false;
+    try {
+      backup = runScheduledBackup(env.DB, backupFiles, now);
+    } catch (error) {
+      failed = true;
+      console.error("Scheduled backup failed: " + String(error));
+    }
+    try {
+      days = runRollups(env.DB, now);
+    } catch (error) {
+      failed = true;
+      console.error("Rollup processing failed: " + String(error));
+    }
+    console.log(JSON.stringify({ type: "maintenance", backup, days }));
+    exitMaintenanceProcess(failed ? "1" : "0");
+  } catch (error) {
+    console.error("Maintenance failed: " + String(error));
+    exitMaintenanceProcess("1");
+  }
+}
+
+const maintenanceChild = globalThis.env ? isMaintenanceChild() : false;
+if (maintenanceChild) {
+  setTimeout(runMaintenanceChild, 0);
+}
+
 export default {
+  scheduled() {
+    if (maintenanceChild) return;
+    const result = startMaintenanceProcess();
+    if (result === "error") {
+      incrementCounter("database_errors_total");
+      console.error("Unable to start built-in maintenance.");
+    }
+  },
   // The runtime resolves a returned promise directly; no .then() chaining on
   // top of it (that shape hangs). Logging and error counting live inside
   // routeRequest so this stays a direct return.
   fetch(request) {
+    if (maintenanceChild) return new Response("Maintenance process", { status: 503 });
     return routeRequest(request);
   },
 };
