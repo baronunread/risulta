@@ -1146,7 +1146,14 @@ async function runMaintenanceChild() {
   }
 }
 
-const maintenanceChild = globalThis.env ? isMaintenanceChild() : false;
+// Native startup can precede env becoming visible on globalThis. Read the
+// operating system flag directly; Bun tests have no Porffor intrinsic.
+let maintenanceChild = false;
+try {
+  maintenanceChild = isMaintenanceChild();
+} catch {
+  maintenanceChild = false;
+}
 if (maintenanceChild) {
   setTimeout(runMaintenanceChild, 0);
 }
