@@ -55,6 +55,26 @@
       }
   });
 
+  var dropdownSelector = ".site-switcher[open], .account-menu[open], .range-picker[open]";
+  document.body.addEventListener("pointerdown", function (event) {
+    document.querySelectorAll(dropdownSelector).forEach(function (dropdown) {
+      if (!dropdown.contains(event.target)) dropdown.open = false;
+    });
+  });
+  document.body.addEventListener("focusin", function (event) {
+    document.querySelectorAll(dropdownSelector).forEach(function (dropdown) {
+      if (!dropdown.contains(event.target)) dropdown.open = false;
+    });
+  });
+  document.body.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape") return;
+    document.querySelectorAll(dropdownSelector).forEach(function (dropdown) {
+      var focused = dropdown.contains(document.activeElement);
+      dropdown.open = false;
+      if (focused) dropdown.querySelector("summary").focus();
+    });
+  });
+
   // Flash messages rendered once after a redirect (e.g. "Profile updated.").
   document.querySelectorAll("[data-toast]").forEach(function (el) {
     showToast(el.textContent);

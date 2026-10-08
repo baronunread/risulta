@@ -273,3 +273,5 @@ main{flex:1 0 auto;padding-block:56px 72px}.titlebar{display:flex;align-items:fl
 .website-dashboard .titlebar h1{min-height:40px;display:flex;align-items:center}.website-dashboard .titlebar{min-height:90px}.overview-reports{grid-template-columns:repeat(2,minmax(0,1fr))}@media(max-width:760px){.overview-reports{grid-template-columns:1fr}}
 
 .dashboard-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-block-end:24px}.dashboard-toolbar .range-picker{width:auto}.dashboard-toolbar .current{display:flex;align-items:center;gap:8px}@media(max-width:760px){.website-dashboard .titlebar{flex-direction:column;align-items:flex-start;gap:16px}.website-dashboard .titlebar>.periods{min-height:40px}.dashboard-toolbar .range-form{position:absolute;inset-inline-end:0;inset-inline-start:auto;width:min(440px,calc(100vw - 32px))}}
+
+.settings-header-space{display:none}@media(max-width:760px){.settings-header-space{display:block;min-height:40px}}

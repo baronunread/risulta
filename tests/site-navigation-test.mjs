@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import app from '../src/index.js';
 import { ensureSiteSlugs, availableSiteSlug } from '../src/sites.ts';
-import { siteGoals } from '../src/store.js';
+import { siteGoals, siteForKey } from '../src/store.js';
 import { readKeyHash } from '../src/read-api.js';
 const nativeDigest = crypto.subtle.digest.bind(crypto.subtle);
 crypto.subtle.digest = (algorithm,input)=>nativeDigest(algorithm,input instanceof Uint8Array ? input : new TextEncoder().encode(String(input)));
@@ -19,8 +19,8 @@ try{
  assert.equal(sqlite.query('SELECT slug FROM sites WHERE id=1').get().slug,'shop');
  sqlite.exec("INSERT INTO users(id,email,password_hash,role,created_at) VALUES(1,'admin@test','unused','admin',0),(2,'viewer@test','unused','viewer',0); INSERT INTO site_users VALUES(2,1,'viewer');");
  for(const [token,id] of [['admin',1],['viewer',2]]) sqlite.query('INSERT INTO sessions VALUES(?,?,?,0,?)').run(await readKeyHash(token),id,'csrf',Math.floor(Date.now()/1000)+3600);
- for(const [oldPath,newPath] of [['/sites/1?period=30','/sites/shop?period=30'],['/sites/1/settings?source=google','/sites/shop/goals?source=google'],['/sites/1/settings?error=funnel-steps-invalid','/sites/shop/funnels?error=funnel-steps-invalid'],['/sites/shop/conversions?period=1','/sites/shop/goals?period=1']]){const r=await request(oldPath);assert.equal(r.status,308);assert.equal(r.headers.get('location'),newPath);}
- assert.equal((await request('/sites/shop/settings')).headers.get('location'),'/sites/shop/goals');
+ for(const [oldPath,newPath] of [['/sites/1?period=30','/sites/shop?period=30'],['/sites/1/settings?source=google','/sites/shop/settings?source=google'],['/sites/1/settings?error=funnel-steps-invalid','/sites/shop/settings?error=funnel-steps-invalid'],['/sites/shop/conversions?period=1','/sites/shop/goals?period=1']]){const r=await request(oldPath);assert.equal(r.status,308);assert.equal(r.headers.get('location'),newPath);}
+ assert.equal((await request('/sites/shop/settings')).status,200);
  for(const suffix of ['','/goals','/funnels','/reports','/reports/journeys','/partials/live','/partials/goals']){
   assert.equal((await request('/sites/shop'+suffix,'viewer')).status,200,suffix);
   const denied=await request('/sites/shop-2'+suffix,'viewer');assert.equal(denied.status,404);assert.equal(denied.headers.get('location'),null);
@@ -43,6 +43,19 @@ try{
  assert.deepEqual(aggregate.find(g=>g.name==='Signup'),{name:'Signup',event_name:'signup',path:'',conversions:2,unique_conversions:1,value:6,conversion_rate:0.5});
  const exact=aggregate.find(g=>g.name==='Exact signup');assert.equal(exact.conversions,1);assert.equal(exact.value,10);
  assert.equal(aggregate.find(g=>g.name==='Purchase').conversions,0);
+ const settings=await(await request('/sites/shop/settings')).text();assert.ok(settings.includes('shell website-dashboard settings-page'));assert.ok(settings.includes('<h1>Settings</h1>'));assert.ok(settings.includes('Save hostname'));
+ const viewerSettings=await(await request('/sites/shop/settings','viewer')).text();assert.ok(!viewerSettings.includes('Save hostname'));
+ assert.equal((await request('/sites/shop-2/settings','viewer')).status,404);
+ assert.equal((await request('/api/sites/1/domain','viewer','domain=moved.test')).status,403);
+ assert.equal((await request('/api/sites/1/domain','admin','domain=moved.test',false)).status,403);
+ assert.ok((await request('/api/sites/1/domain','admin','domain=bad!')).headers.get('location').includes('domain-invalid'));
+ assert.ok((await request('/api/sites/1/domain','admin','domain=shop.example')).headers.get('location').includes('domain-registered'));
+ const eventsBefore=sqlite.query('SELECT count(*) n FROM events WHERE site_id=1').get().n;
+ assert.equal(siteForKey(db,'one').domain,'renamed.test');
+ const moved=await request('/api/sites/1/domain','admin','domain=https%3A%2F%2Fmoved.test');assert.equal(moved.headers.get('location'),'/sites/shop/settings?saved=1');
+ assert.deepEqual(sqlite.query('SELECT domain,public_key,slug FROM sites WHERE id=1').get(),{domain:'moved.test',public_key:'one',slug:'shop'});
+ assert.equal(siteForKey(db,'one').domain,'moved.test');
+ assert.equal(sqlite.query('SELECT count(*) n FROM events WHERE site_id=1').get().n,eventsBefore);
  const unauthenticated=await app.fetch(new Request('http://localhost/sites/shop/goals'));assert.equal(unauthenticated.status,303);
  const home=await(await request('/')).text();assert.ok(home.includes('/sites/shop'));assert.ok(!home.includes('href="/sites/1"'));
  console.log('site navigation OK (migration, stable collision-safe slugs, legacy redirects, permissions, CSRF and goal/funnel creation)');
