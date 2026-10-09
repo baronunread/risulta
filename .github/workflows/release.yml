@@ -156,6 +156,7 @@ jobs:
             exit 1
           fi
           sh scripts/verify-binary.sh "$ARTIFACT"
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_TEMP python3 tests/systemd-installer-test.py "$ARTIFACT"
           sh -n deploy/install.sh
           jq -n --arg bun "$(bun --version)" \
             --arg sproutboat "$(bunx --no-install sproutboat --version)" \
@@ -208,7 +209,7 @@ jobs:
             --arg channel "$CHANNEL" --arg repository "$GH_REPO" \
             --slurpfile x64 risulta-sprout-linux-x64.toolchain.json \
             --slurpfile arm64 risulta-sprout-linux-arm64.toolchain.json \
-            '{tag: $tag, commit: $commit, channel: $channel, repository: $repository, rollup_schema_version: 6, builtin_maintenance: true,
+            '{tag: $tag, commit: $commit, channel: $channel, repository: $repository, rollup_schema_version: 7, builtin_maintenance: true,
               toolchain: {"linux-x64": $x64[0], "linux-arm64": $arm64[0]}}' > release.json
           rm -- *.toolchain.json
           for asset in risulta-sprout-linux-x64 risulta-sprout-linux-arm64 install.sh release.json; do

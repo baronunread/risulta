@@ -53,3 +53,5 @@ jobs:
           fi
       - name: Verify standalone binary in both proxy modes
         run: sh scripts/verify-binary.sh dist/risulta-sprout
+      - name: Verify real systemd installation, CLI upgrade and paired recovery
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_TEMP python3 tests/systemd-installer-test.py dist/risulta-sprout

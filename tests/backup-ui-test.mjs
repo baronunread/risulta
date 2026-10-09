@@ -9,7 +9,7 @@ const page = usersPage(admin, [], [], "success");
 assert.match(page, /method="post" action="\/api\/backup" data-backup-form/);
 assert.match(page, /value="token&lt;&amp;&quot;"/);
 assert.match(page, /data-backup-toast role="status" aria-live="polite" aria-atomic="true"><\/div>/);
-assert.match(page, /data-backup-feedback>Database backup created/);
+assert.match(page, /data-backup-feedback data-kind="success">Database backup created/);
 assert.match(usersPage(admin, [], [], "failed"), /Database backup failed/);
 assert.match(usersPage(admin, [], [], "csrf"), /Reload this page/);
 assert.doesNotMatch(usersPage(admin, [], [], "<script>"), /<script>/);
@@ -17,8 +17,8 @@ assert.doesNotMatch(usersPage(admin, [], [], "<script>"), /<script>/);
 // Exercise the complete browser script with only its DOM and network boundary supplied.
 const script = readFileSync(new URL("../public/dashboard.js", import.meta.url), "utf8");
 const button = { disabled: false };
-const feedback = { textContent: "" };
-const toast = { textContent: "", className: "" };
+const feedback = { textContent: "", getAttribute: () => "success" };
+const toast = { children: [], attributes: {}, removed: false, setAttribute(name,value){this.attributes[name]=value;}, replaceChildren(...nodes){this.children=nodes;this.removed=false;}, remove(){this.removed=true;} };
 let submit;
 let request;
 let reply;
@@ -31,8 +31,9 @@ const form = {
 };
 runInNewContext(script, {
   document: {
-    querySelector: (selector) => ({ "[data-backup-form]": form, "[data-backup-feedback]": feedback, "[data-backup-toast]": toast })[selector],
+    querySelector: (selector) => ({ "[data-backup-form]": form, "[data-backup-feedback]": feedback, ".toast": toast })[selector],
     querySelectorAll: () => [],
+    createElement: () => ({textContent:"",setAttribute(){},addEventListener(){}}),
     body: { addEventListener: () => {} },
   },
   URLSearchParams,
@@ -58,14 +59,17 @@ resolve({ ok: true, status: 200, json: async () => ({ ok: true, path: "backups/t
 await pending;
 assert.equal(button.disabled, false);
 assert.match(feedback.textContent, /backups\/test.sqlite \(4096 bytes\)/);
-assert.equal(toast.textContent, feedback.textContent);
+assert.equal(toast.children[1].textContent, feedback.textContent);
+assert.equal(toast.attributes["data-kind"], "success");
 timers.at(-1)();
-assert.equal(toast.textContent, "");
+assert.equal(toast.removed, true);
 assert.match(feedback.textContent, /Copy it off the server/);
 for (const [status, message] of [[401, /session has expired/], [403, /Reload this page/], [500, /backup failed/]]) {
   reply = async () => ({ ok: false, status, json: async () => ({ error: "failure" }) });
   await submit(event);
   assert.match(feedback.textContent, message);
+  assert.equal(toast.attributes.role, "alert");
+  assert.equal(toast.attributes["data-kind"], "error");
   assert.equal(button.disabled, false);
 }
 reply = async () => { throw new Error("network"); };

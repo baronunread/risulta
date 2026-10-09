@@ -1,3 +1,4 @@
+import { annotationInput, siteAnnotations } from "./annotations.js";
 import { widgetAllowed, widgetData, widgetPage } from "./public-widgets.js";
 import { startMaintenanceProcess, exitMaintenanceProcess, isMaintenanceChild } from "./native-workers.js";
 import { runRollups, runScheduledBackup } from "./maintenance.js";
@@ -78,6 +79,8 @@ import {
   journeysPage,
   measurementPage,
   sitePage,
+  setupPage,
+  trackerStatus,
   siteSettingsPage,
   trackerFor,
   usersPage,
@@ -270,10 +273,9 @@ app.get("/widget.js", (c) => env.ASSETS.fetch(c.req.raw));
 app.get("/public/widget/:key{[A-Za-z0-9_-]+}", (c) => {
   if (!widgetAllowed(clientIp(c.req.raw),Math.floor(Date.now()/1000))) return json({error:"too many widget requests"},429,{"retry-after":"60"});
   const data = widgetData(env.DB, c.req.param("key"), Math.floor(Date.now()/1000));
-  if (!data) return new Response("Public sharing is unavailable.", {status:404,headers:{"cache-control":"no-store"}});
   const url = new URL(c.req.url);
   const size = ["small","medium","wide"].includes(url.searchParams.get("size")) ? url.searchParams.get("size") : "medium";
-  return new Response(widgetPage(data,size,url.searchParams.get("theme")), {headers:{"content-type":"text/html;charset=utf-8","cache-control":"no-store","referrer-policy":"no-referrer","content-security-policy":"default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors *"}});
+  return new Response(widgetPage(data,size,url.searchParams.get("theme")), {status:data ? 200 : 404,headers:{"content-type":"text/html;charset=utf-8","cache-control":"no-store","referrer-policy":"no-referrer","content-security-policy":"default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors *"}});
 });
 app.get("/public/data/:key{[A-Za-z0-9_-]+}", (c) => {
   if (!widgetAllowed(clientIp(c.req.raw),Math.floor(Date.now()/1000))) return json({error:"too many widget requests"},429,{"retry-after":"60"});
@@ -630,9 +632,20 @@ app.get("/sites/:id{[a-z0-9-]+}", (c) => {
   // window of the same length, like the Bun app.
   const comparison = overviewComparison(env.DB, site, { ...range, since: range.since - days * 86400, until: range.since });
   const sites = listSitesForUser(env.DB, session);
-  return new Response(sitePage(session, site, sites, analytics, range, days, metric, publicOrigin(c.req.raw, url), comparison),
+  return new Response(sitePage(session, site, sites, analytics, range, days, metric, publicOrigin(c.req.raw, url), comparison, siteAnnotations(env.DB, site.id, range)),
     { headers: { "content-type": "text/html;charset=utf-8" } });
 });
+
+function setupRoute(c, partial) {
+  const session = c.get("session");
+  const site = getSiteForUser(env.DB, c.req.param("id"), session);
+  if (!site) return new Response("Unknown site", { status: 404 });
+  const received = !!env.DB.prepare("SELECT ts FROM events WHERE site_id=? AND name='pageview' ORDER BY ts DESC LIMIT 1").bind(site.id).first();
+  const content = partial ? trackerStatus(site, received) : setupPage(session, site, listSitesForUser(env.DB, session), publicOrigin(c.req.raw, new URL(c.req.url)), received);
+  return new Response(content, { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
+}
+app.get("/sites/:id{[a-z0-9-]+}/setup", (c) => setupRoute(c, false));
+app.get("/sites/:id{[a-z0-9-]+}/partials/setup", (c) => setupRoute(c, true));
 
 app.get("/api/sites", (c) => json(listSitesForUser(env.DB, c.get("session"))));
 
@@ -666,7 +679,7 @@ app.post("/api/sites", async (c) => {
     .run();
   siteByKey.set(publicKey, { id: Number(res.meta.last_row_id), domain });
   if (wantsJson) return json({ id: res.meta.last_row_id, name, domain, publicKey, slug }, 201);
-  return redirect("/sites/" + slug);
+  return redirect("/sites/" + slug + "/setup");
 });
 
 app.post("/api/sites/:id{[0-9]+}/domain", (c) => {
@@ -870,14 +883,48 @@ app.post("/api/sites/:id{[0-9]+}/public-widget", (c) => {
 });
 
 // Site configuration keeps the existing site identity and analytics.
+function annotationWrite(c, removing) {
+  const session = c.get("session");
+  const request = c.req.raw;
+  const body = bodyOf(request);
+  const wantsJson = wantsJsonFrom(request);
+  if (session.role !== "admin") return json({ error: "forbidden" }, 403);
+  if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
+  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  if (!site) return json({ error: "unknown site" }, 404);
+  const annotationId = Number(c.req.param("annotationId") || 0);
+  if (annotationId && !env.DB.prepare("SELECT id FROM annotations WHERE id=? AND site_id=?").bind(annotationId, site.id).first()) return json({ error: "unknown annotation" }, 404);
+  const returnUrl = "/sites/" + siteSlug(site) + "/settings";
+  if (removing) {
+    env.DB.prepare("DELETE FROM annotations WHERE id=? AND site_id=?").bind(annotationId, site.id).run();
+  } else {
+    const parsed = inputFrom(body, wantsJson);
+    if (!parsed.ok) return json({ error: "invalid body" }, 400);
+    const input = annotationInput(parsed.value);
+    if (input.error) return wantsJson ? json({ error: input.error }, 400) : redirect(returnUrl + "?error=annotation-invalid");
+    if (annotationId) env.DB.prepare("UPDATE annotations SET ts=?,text=? WHERE id=? AND site_id=?").bind(input.ts, input.text, annotationId, site.id).run();
+    else {
+      const total = Number(env.DB.prepare("SELECT count(*) AS n FROM annotations WHERE site_id=?").bind(site.id).first().n);
+      if (total >= 500) return wantsJson ? json({ error: "This website has reached its 500-note limit." }, 409) : redirect(returnUrl + "?error=annotation-limit");
+      env.DB.prepare("INSERT INTO annotations(site_id,ts,text) VALUES(?,?,?)").bind(site.id, input.ts, input.text).run();
+    }
+  }
+  return wantsJson ? json({ ok: true }) : redirect(returnUrl + "?annotation=saved#annotations");
+}
+app.post("/api/sites/:id{[0-9]+}/annotations", (c) => annotationWrite(c, false));
+app.post("/api/sites/:id{[0-9]+}/annotations/:annotationId{[0-9]+}", (c) => annotationWrite(c, false));
+app.post("/api/sites/:id{[0-9]+}/annotations/:annotationId{[0-9]+}/delete", (c) => annotationWrite(c, true));
+
 app.get("/sites/:id{[a-z0-9-]+}/settings", (c) => {
   const session = c.get("session");
   const site = getSiteForUser(env.DB, c.req.param("id"), session);
   if (!site) return new Response("Unknown site", { status: 404 });
   const url = new URL(c.req.url);
   const error = url.searchParams.get("error") === "domain-invalid" ? "Enter a valid hostname." :
-    url.searchParams.get("error") === "domain-registered" ? "That hostname is already used by another website." : "";
-  return new Response(siteSettingsPage(session, site, listSitesForUser(env.DB, session), error, url.searchParams.has("saved"), env.DB.prepare("SELECT enabled FROM public_widgets WHERE site_id=?").bind(site.id).first(), new URL(c.req.url).origin),
+    url.searchParams.get("error") === "domain-registered" ? "That hostname is already used by another website." :
+    url.searchParams.get("error") === "annotation-invalid" ? "Choose a valid date and write a note between 1 and 240 characters." :
+    url.searchParams.get("error") === "annotation-limit" ? "This website has reached its 500-note limit." : "";
+  return new Response(siteSettingsPage(session, site, listSitesForUser(env.DB, session), error, url.searchParams.has("saved"), env.DB.prepare("SELECT enabled FROM public_widgets WHERE site_id=?").bind(site.id).first(), publicOrigin(c.req.raw, url), siteAnnotations(env.DB, site.id), { size: ["small", "medium", "wide"].includes(url.searchParams.get("size")) ? url.searchParams.get("size") : "medium", theme: ["light", "dark", "auto"].includes(url.searchParams.get("theme")) ? url.searchParams.get("theme") : "auto" }),
     { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
@@ -918,7 +965,7 @@ app.get("/sites/:id{[a-z0-9-]+}/partials/live", (c) => {
   const analytics = overviewAnalytics(env.DB, site, range, false);
   const comparison = overviewComparison(env.DB, site, { ...range, since: range.since - days * 86400, until: range.since });
   const oobCurrent = '<strong id="live-current-value" data-current hx-swap-oob="true">' + fmtInt(analytics.current) + "</strong>";
-  return new Response(oobCurrent + liveFragment(site, analytics, range, days, metric, comparison),
+  return new Response(oobCurrent + liveFragment(site, analytics, range, days, metric, comparison, siteAnnotations(env.DB, site.id, range)),
     { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
@@ -1069,7 +1116,7 @@ app.post("/api/backup", async (c) => {
   if (!csrfValid(session, csrfValue(request, body))) return htmlForm ? redirect("/users?backup=csrf") : json({ error: "csrf mismatch" }, 403);
   try {
     const snapshot = env.DB.backup();
-    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "public_widgets", "analytics_rollup_stats_days", "analytics_rollup_hours", "analytics_rollup_events", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty", "analytics_query_cache", "analytics_cache_days", "analytics_cache_config"];
+    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "public_widgets", "annotations", "analytics_rollup_stats_days", "analytics_rollup_hours", "analytics_rollup_events", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty", "analytics_query_cache", "analytics_cache_days", "analytics_cache_config"];
     const counts = {};
     for (let i = 0; i < tables.length; i++) {
       counts[tables[i]] = Number(env.DB.prepare("SELECT count(*) AS n FROM " + tables[i]).first().n);

@@ -1,4 +1,5 @@
 (function () {
+  if (document.querySelector(".widget-unavailable")) return;
   var timer;
   var pending;
   var visible = true;
@@ -6,6 +7,7 @@
   var refreshOnReturn = false;
   var key = location.pathname.split("/").pop();
   var status = document.querySelector("[data-status]");
+  var liveLabel = document.querySelector("[data-live-label]");
   function format(value) { return Number(value).toLocaleString("en-US"); }
   function curve(days) {
     var max = Math.max.apply(null, [1].concat(days));
@@ -37,6 +39,7 @@
       if (response.status === 404) {
         revoked = true;
         document.querySelector(".card").textContent = "Public sharing is unavailable.";
+        document.querySelector(".card").setAttribute("role", "status");
         return;
       }
       if (!response.ok) throw new Error("Unable to refresh");
@@ -54,10 +57,12 @@
       }
       document.querySelector(".domain").textContent = data.domain;
       if (status) status.textContent = "Last 7 days · UTC";
+      if (liveLabel) liveLabel.textContent = "online now";
       document.querySelector(".dot").classList.remove("stale");
     } catch {
       if (!paused()) {
         if (status) status.textContent = "Update delayed";
+        if (liveLabel) liveLabel.textContent = "delayed";
         document.querySelector(".dot").classList.add("stale");
       }
     } finally {
@@ -79,6 +84,7 @@
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent || !event.data) return;
     if (event.data.type === "risulta-widget-theme") {
+      document.documentElement.classList.remove("theme-auto", "theme-light");
       document.documentElement.classList.toggle("theme-dark", event.data.dark === true);
       return;
     }

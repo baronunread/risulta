@@ -11,6 +11,9 @@ table creation.
 | 2 | Completed-day summaries, coverage and invalidation triggers |
 | 3 | Hourly traffic, custom-event goal facts and separate stats coverage |
 | 4 | Persistent analytics cache and event/configuration revision triggers |
+| 5 | Ordered covering funnel index |
+| 6 | Opt-in public widget settings |
+| 7 | Site-owned chart annotations |
 
 Each migration and its schema_migrations marker commit atomically. Failed
 steps roll back and retry at the next start; completed steps are not replayed.
@@ -83,7 +86,7 @@ custom-event-only visits, historical mutations and installer recovery.
 
 Schema 3 adds tables without rewriting events or existing daily summaries.
 The stats coverage table is separate, so old daily coverage remains available
-for Overview/Reports while hourly/event facts backfill. The new worker rebuilds
+for Overview/Reports while hourly/event facts backfill. The built-in maintenance process rebuilds
 previously covered days in the same bounded batches and publishes both coverage
 markers in the day's transaction. Existing dirty-day triggers apply to both
 read paths. Incomplete stats coverage uses the previous raw stats query.
@@ -95,10 +98,9 @@ rows preserve exact visitor membership across dates, including imported hashes,
 and count session starts after inactivity within each UTC day. Custom events
 participate in visits, and visits-only hours stay visible.
 
-The release metadata and health header now advertise schema 5. The installer
-continues to pause old workers and verify matching health before replacing and
-resuming the worker. Previous schema-2 executables and workers reject the newer
-schema; recovery requires the saved paired database and executable.
+Current metadata and the health header advertise schema 7. The installer
+verifies matching schema and built-in maintenance health. Previous binaries
+reject newer schemas; recovery requires the saved paired database and executable.
 
 Migration 3 also adds `idx_events_site_ts_funnels`, a covering index on site, timestamp, visitor, event name and path. Funnel calculations keep their capped ordered raw stream inside SQLite and return aggregate step counts, preserving repeated-step behavior and the truncation flag. This index adds storage and maintenance on event writes; no raw events are removed.
 
@@ -110,7 +112,7 @@ Every lookup checks per-day event revisions and the site's goal/funnel configura
 
 Append `fresh=1` to stats or report API requests to bypass both caches. Cache keys include site, range, report dimension, filters, pagination, sorting and cohort selection. Persistent and memory caches each retain at most 128 entries, and payloads over 262,144 characters are not stored. Persistent eviction retains the newest calculated entries. The first uncached request still computes the query; this does not precompute arbitrary reports. Cache/revision tables are included in backups. Data is retained indefinitely; no event retention or deletion policy is introduced.
 
-Migration 4 is additive and transactional. Interrupted upgrades roll back the cache tables, triggers and migration marker together. The matching release binary and worker require schema 4; restore their paired backup to downgrade.
+Migration 4 is additive and transactional. Interrupted upgrades roll back the cache tables, triggers and migration marker together. The matching release binary requires at least schema 4; restore their paired backup to downgrade.
 
 Historical traffic totals and daily rows are also cached as a separate component. A new live event invalidates the complete live result but preserves that historical component. Exact visitor membership is still deduplicated across the historical/live boundary. Uncovered or dirty historical ranges retain raw fallback. No additional schema migration is required for component caching or selective stats.
 
@@ -122,4 +124,15 @@ Administrator stats/report requests support `trace=1`. This bypasses full-result
 
 Migration 5 adds `idx_events_site_visitor_ts_funnels` on site, visitor, timestamp, event name and path. Large funnel ranges read the existing 50,000-event cap in visitor/time order directly from the covering index, avoiding a full-range sort and event-table lookups. Small ranges retain the event-name/date index path. Funnel order, repeated steps and truncation are preserved.
 
-The index is built transactionally during startup. This adds startup time, storage and index maintenance on ingestion; no events or rollup tables are removed. An interrupted build rolls back its migration marker and retries on restart. The release metadata, binary health header and worker require schema 5. Downgrades require restoring the paired pre-upgrade database, binary and worker backup.
+The index is built transactionally during startup. This adds startup time, storage and index maintenance on ingestion; no events or rollup tables are removed. An interrupted build rolls back its migration marker and retries on restart. The release metadata, binary health header include schema 5 or later. Downgrades require restoring the paired pre-upgrade database and binary backup.
+
+
+## Annotations (schema 7)
+
+The annotations table is indexed by website and UTC date. Notes reference the
+website with a cascading foreign key, and do not change events, rollups or
+cached analytics. Every dashboard refresh reads its notes independently of
+the analytics cache. Manual and scheduled database snapshots include them.
+Migration 7 commits the table, index and ledger marker together. A failed
+migration rolls back and retries on restart. Older schema-6 binaries reject
+this database, so restore a complete paired recovery backup when downgrading.

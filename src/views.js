@@ -63,13 +63,13 @@ export function loginPage(error) {
     "Sign in",
     null,
     '<main class="auth" id="main"><div class="auth-box"><div class="auth-brand">' + MARK + "<span>Risulta</span></div>" +
-      '<section class="card" aria-labelledby="login-title"><h1 id="login-title">Sign in to Risulta</h1>' +
-      '<p class="intro">Use one account to view all of your websites.</p>' +
-      (error ? '<p class="error" id="login-error">' + escapeHtml(error) + "</p>" : "") +
+      '<section class="card" aria-labelledby="login-title"><h1 id="login-title">Welcome back.</h1>' +
+      '<p class="intro">Sign in to your analytics.</p>' +
       '<form class="form" method="post" action="/login">' +
       '<div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required></div>' +
       '<div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>' +
-      '<button class="button" type="submit">Sign in</button></form></section></div></main>',
+      '<button class="button" type="submit">Sign in</button></form></section></div></main>' +
+      (error ? '<div class="toast" data-toast data-toast-kind="error" role="alert"><span class="toast-message">' + escapeHtml(error) + '</span></div>' : ""),
   );
 }
 
@@ -105,7 +105,7 @@ export function newSitePage(user, error) {
   );
 }
 
-export function liveFragment(site, analytics, range, days, metric, comparison) {
+export function liveFragment(site, analytics, range, days, metric, comparison, annotations) {
   const metrics = analytics.summary;
   const viewsPerVisit = Number(metrics.visits) ? Number(metrics.pageviews) / Number(metrics.visits) : 0;
   const metricLabel = metric === "pageviews" ? "Pageviews" : metric === "visits" ? "Visits" : "Visitors";
@@ -120,7 +120,7 @@ export function liveFragment(site, analytics, range, days, metric, comparison) {
     const deltaText = previous ? (percent > 0 ? "+" : "") + percent + "%" : Number(metrics[item[0]]) ? "New" : "0%";
     const deltaLabel = previous ? deltaText + " vs previous period" : Number(metrics[item[0]]) ? "New traffic, none in the previous period" : "No traffic in either period";
     const delta = comparison ? '<span class="metric-comparison" title="' + escapeHtml(deltaLabel) + '" aria-label="' + escapeHtml(deltaLabel) + '">' + deltaText + '</span>' : "";
-    return '<a class="metric overview-metric" href="/sites/' + siteSlug(site) + "?" + liveQuery(range, days, comparison) + "&metric=" + item[0] + '"' +
+    return '<a id="metric-' + item[0] + '" class="metric overview-metric" href="/sites/' + siteSlug(site) + "?" + liveQuery(range, days, comparison) + "&metric=" + item[0] + '"' +
       (selected ? ' aria-current="true"' : "") + '><span class="metric-label">' + item[1] + '</span><strong data-metric="' + item[0] + '">' +
       fmtInt(metrics[item[0]]) + '</strong><span class="metric-description">' + item[2] + '</span>' + delta + '</a>';
   }).join("");
@@ -146,10 +146,10 @@ export function liveFragment(site, analytics, range, days, metric, comparison) {
   const filterBar = chips ? '<nav class="overview-filters" aria-label="Active visitor filters">' + chips +
     '<a class="report-link" href="/sites/' + siteSlug(site) + '?' + liveQuery({ ...range, filters: {} }, days, comparison) + '&metric=' + metric + '">Clear all</a></nav>' +
     '<p class="hint">Showing all activity from daily visitors with a pageview matching these filters.</p>' : '';
-  return filterBar + '<section class="panel overview-panel" aria-label="Traffic overview"><nav class="metrics overview-metrics" aria-label="Select a chart metric">' + summary + '</nav>' +
+  return filterBar + '<section id="traffic-overview" class="panel overview-panel" aria-label="Traffic overview"><nav class="metrics overview-metrics" aria-label="Select a chart metric" hx-boost:inherited="swap:&quot;outerMorph show:none&quot; select:#main target:#main">' + summary + '</nav>' +
     (hasData ? '<div class="chart-wrap"><div class="chart-heading"><h2>' + metricLabel + ' over time</h2><span class="hint"><strong data-metric="views-per-visit">' +
-      oneDecimal(viewsPerVisit) + '</strong> pages per visit</span></div>' + chart(series, metric, metricLabel) + chart(series, metric, metricLabel, true) + '</div>' :
-      '<div class="empty"><h2>' + (Object.keys(range.filters || {}).length ? 'No matching visitors' : 'Waiting for the first visitor') + '</h2><p>' + (Object.keys(range.filters || {}).length ? 'Try another date range or remove a filter.' : 'Install the tracker below. New visits will appear here live.') + '</p></div>') + '</section>' +
+      oneDecimal(viewsPerVisit) + '</strong> pages per visit</span></div>' + chart(series, metric, metricLabel, false, annotations) + chart(series, metric, metricLabel, true, annotations) + annotationList(annotations) + '</div>' :
+      '<div class="empty"><h2>' + (Object.keys(range.filters || {}).length ? 'No matching visitors' : 'Waiting for the first visitor') + '</h2><p>' + (Object.keys(range.filters || {}).length ? 'Try another date range or remove a filter.' : 'Connect your website to start receiving pageviews.') + '</p></div>') + '</section>' +
     '<div class="overview-footer"><details class="metric-help" data-disclosure="metrics"><summary>What do these numbers mean?</summary><p>Visitors are counted once per day. Someone returning on another day counts again. ' +
     'A visit is a browsing session, ending after more than 30 minutes of inactivity or at UTC midnight. Pageviews count each page loaded. Dates use UTC.</p></details>' +
     '</div>' +
@@ -230,19 +230,20 @@ export function siteNavigation(site, range, active) {
     '<a href="/sites/' + siteSlug(site) + item[1] + (item[0] === "settings" ? "" : '?' + query + (item[0] === "reports" ? '&cohort=1' : '')) + '"' + (active === item[0] ? ' aria-current="page"' : '') + '>' + item[2] + '</a>').join('') + '</nav>';
 }
 
-export function siteSettingsPage(session, site, sites, error, saved, sharing, origin) {
+export function siteSettingsPage(session, site, sites, error, saved, sharing, origin, annotations, widgetOptions) {
   const form = session.role === "admin"
     ? '<section class="card"><h2>Tracked hostname</h2><p class="hint">Changing this keeps all existing analytics. Events from the previous hostname stop being accepted immediately. Keep the same tracker code on the new hostname.</p>' +
+      '<p><a class="report-link" href="/sites/' + siteSlug(site) + '/setup">Check tracker connection &rarr;</a></p>' +
       (saved ? '<p class="success" role="status">Hostname updated.</p>' : "") +
       (error ? '<p class="error" role="alert">' + escapeHtml(error) + "</p>" : "") +
       '<form class="form" method="post" action="/api/sites/' + site.id + '/domain"><input type="hidden" name="csrf" value="' + escapeHtml(session.csrf) + '">' +
       '<div class="field"><label for="domain">Hostname</label><input id="domain" name="domain" type="text" inputmode="url" autocomplete="url" maxlength="253" required value="' + escapeHtml(site.domain) + '"></div>' +
       '<div class="actions"><button class="button" type="submit">Save hostname</button></div></form></section>'
     : '<section class="card"><h2>Tracked hostname</h2><p>' + escapeHtml(site.domain) + '</p><p class="hint">Ask an administrator to change this hostname.</p></section>';
-  const widget = session.role === "admin" ? '<section class="card"><h2>Public widget</h2><p class="hint">Share visitor totals, pageviews and a seven-day chart. Raw events and visitor identities stay private.</p><form class="form" method="post" action="/api/sites/'+site.id+'/public-widget"><input type="hidden" name="csrf" value="'+escapeHtml(session.csrf)+'"><label><input type="checkbox" name="enabled" value="1"'+(sharing && sharing.enabled ? ' checked' : '')+'> Enable public sharing</label><button class="button secondary" type="submit">Save sharing</button></form><p class="hint">Choose small, medium or wide with data-size. Set data-theme to light or dark.</p><pre class="setup">'+escapeHtml('<script async src="'+origin+'/widget.js" data-site="'+site.public_key+'" data-size="medium" data-theme="light"></script>')+'</pre></section>' : "";
+  const widget = widgetSettings(session, site, sharing, origin, widgetOptions);
   return pageShell("Website settings", session,
     '<main class="shell website-dashboard settings-page" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + '</p><h1>Settings</h1><p class="dashboard-period">Website configuration</p></div><div class="settings-header-space" aria-hidden="true"></div></div>' +
-    siteNavigation(site, { days: 7, filters: {} }, "settings") + form + widget + '</main>', site, sites);
+    siteNavigation(site, { days: 7, filters: {} }, "settings") + form + widget + annotationSettings(session, site, annotations) + '</main>', site, sites);
 }
 
 function periodLabel(range) {
@@ -261,7 +262,7 @@ function trackerButton(site, origin) {
   return '<button class="button secondary tracker-copy" type="button" data-copy-code data-copy-value="' + escapeHtml(snippet) + '" title="Copy the script to paste into your site’s head"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="4" rx="1.5"/><path d="M8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/></svg>Copy tracker code</button>';
 }
 
-export function sitePage(user, site, sites, analytics, range, days, metric, origin, comparison) {
+export function sitePage(user, site, sites, analytics, range, days, metric, origin, comparison, annotations) {
   const title = periodLabel(range);
   const hasData = Number(analytics.summary.pageviews) > 0;
   const statsBase = "/sites/" + siteSlug(site) + "/partials/live?" + (range.from ? "from=" + range.from + "&to=" + range.to : "period=" + days) + "&metric=" + metric + filterQuery(range);
@@ -288,8 +289,8 @@ export function sitePage(user, site, sites, analytics, range, days, metric, orig
       '<label class="compact-field" for="range-to"><span>To</span><input id="range-to" name="to" type="date" required value="' + escapeHtml(range.to) + '"></label>' +
       '<button class="button secondary" type="submit">Apply</button></form></details></div>' +
       '<div id="live-stats" data-stats-url="' + statsBase + '" hx-get="' + statsBase + '" hx-trigger="every 30s" hx-sync="this:drop" hx-target="#live-stats" hx-swap="innerHTML">' +
-      liveFragment(site, analytics, range, days, metric, comparison) +
-      "</div>" + (hasData || Object.keys(range.filters || {}).length ? "" : install) + "</main>",
+      liveFragment(site, analytics, range, days, metric, comparison, annotations) +
+      "</div>" + (hasData || Object.keys(range.filters || {}).length ? "" : install + '<p><a class="report-link" href="/sites/' + siteSlug(site) + '/setup">Check your tracker setup &rarr;</a></p>') + "</main>",
     site,
     sites,
   );
@@ -330,7 +331,7 @@ export function usersPage(admin, users, sites, backup) {
       '<form class="form" method="post" action="/api/backup" data-backup-form>' +
       '<input type="hidden" name="csrf" value="' + escapeHtml(admin.csrf) + '">' +
       '<button class="button" type="submit" aria-describedby="backup-help">Create backup</button></form>' +
-      '<p class="backup-feedback" data-backup-feedback>' + escapeHtml(backupMessage) + '</p>' +
+      '<p class="backup-feedback" data-backup-feedback data-kind="' + (backup === "success" ? "success" : "error") + '">' + escapeHtml(backupMessage) + '</p>' +
       '<div data-backup-toast role="status" aria-live="polite" aria-atomic="true"></div></section></main>',
     null,
     [],
@@ -619,4 +620,44 @@ export function measurementPage(session, site, sites, goals, goalResults, funnel
     siteNavigation(site, range, kind) + (errorMessage ? '<p class="error" role="alert">' + escapeHtml(errorMessage) + '</p>' : '') +
     (Object.keys(range.filters || {}).length ? '<p class="hint measurement-context">Daily visitors matching: ' + escapeHtml(Object.keys(range.filters).map((key) => key + ': ' + range.filters[key]).join(', ')) + '</p>' : '') +
     '<div class="measurement-workspace' + (form ? '' : ' measurement-readonly') + '"><div class="measurement-results">' + (results || empty) + '</div>' + (form ? '<aside class="measurement-create" aria-label="Create ' + (kind === 'goals' ? 'a goal' : 'a funnel') + '">' + form + '</aside>' : '') + '</div></main>', site, sites);
+}
+
+
+function annotationList(annotations) {
+  if (!annotations || !annotations.length) return "";
+  return '<details class="chart-notes" data-disclosure="annotations"><summary>' + annotations.length + ' chart note' + (annotations.length === 1 ? '' : 's') + '</summary><ul>' + annotations.map((note) => '<li><time datetime="' + note.day + '">' + note.day + '</time><span>' + escapeHtml(note.text) + '</span></li>').join('') + '</ul></details>';
+}
+
+function annotationSettings(session, site, annotations) {
+  const notes = annotations || [];
+  const csrf = '<input type="hidden" name="csrf" value="' + escapeHtml(session.csrf) + '">';
+  const fields = function (id, note) {
+    return '<div class="annotation-fields"><div class="field"><label for="annotation-day-' + id + '">Date (UTC)</label><input id="annotation-day-' + id + '" name="day" type="date" min="2000-01-01" max="2100-12-31" required value="' + (note ? note.day : dayStringFromMs(Date.now())) + '"></div><div class="field"><label for="annotation-text-' + id + '">Note</label><input id="annotation-text-' + id + '" name="text" maxlength="240" required placeholder="Deployed the new homepage" value="' + (note ? escapeHtml(note.text) : '') + '"></div></div>';
+  };
+  const admin = session.role === "admin";
+  const form = admin ? '<form class="form annotation-form" method="post" action="/api/sites/' + site.id + '/annotations">' + csrf + fields('new') + '<button class="button secondary" type="submit">Add note</button></form>' : '';
+  return '<section class="card" id="annotations"><h2>Chart annotations</h2><p class="hint">Give traffic changes context with a dated note about a deployment, campaign or outage. Notes are private to this website and never appear in public widgets.</p>' + form + (notes.length ? '<ul class="annotation-list">' + notes.map((note) => '<li><div><time datetime="' + note.day + '">' + note.day + ' UTC</time><p>' + escapeHtml(note.text) + '</p></div>' + (admin ? '<details><summary>Edit note</summary><form class="form" method="post" action="/api/sites/' + site.id + '/annotations/' + note.id + '">' + csrf + fields(note.id, note) + '<button class="button secondary" type="submit">Save note</button></form><form method="post" action="/api/sites/' + site.id + '/annotations/' + note.id + '/delete">' + csrf + '<button class="link-button" type="submit">Delete note</button></form></details>' : '') + '</li>').join('') + '</ul>' : '<p class="hint">No notes yet.</p>') + '</section>';
+}
+
+function widgetSettings(session, site, sharing, origin, options) {
+  if (session.role !== "admin") return '';
+  const enabled = sharing && sharing.enabled;
+  const size = options && options.size || 'medium';
+  const theme = options && options.theme || 'auto';
+  const snippet = '<script async src="' + origin + '/widget.js" data-site="' + site.public_key + '" data-size="' + size + '" data-theme="' + theme + '"></script>';
+  const sizes = [['small', 'Compact badge'], ['medium', 'Card'], ['wide', 'Wide card']];
+  const themes = [['auto', 'Follow website'], ['light', 'Light'], ['dark', 'Dark']];
+  const select = function (name, label, values, selected) { return '<div class="field"><label for="widget-' + name + '">' + label + '</label><select id="widget-' + name + '" name="' + name + '">' + values.map((value) => '<option value="' + value[0] + '"' + (selected === value[0] ? ' selected' : '') + '>' + value[1] + '</option>').join('') + '</select></div>'; };
+  const dimensions = size === 'small' ? [260, 48] : size === 'wide' ? [560, 238] : [320, 218];
+  return '<section class="card" id="public-widget"><h2>Public traffic widget</h2><p class="hint">Share your hostname, online count, pageviews and daily visitor totals for the last seven UTC days. Paths, raw events, notes and visitor identities stay private.</p><form class="form" method="post" action="/api/sites/' + site.id + '/public-widget"><input type="hidden" name="csrf" value="' + escapeHtml(session.csrf) + '"><label class="widget-consent"><input type="checkbox" name="enabled" value="1"' + (enabled ? ' checked' : '') + '> Enable public sharing</label><button class="button secondary" type="submit">Save sharing</button></form>' + (enabled ? '<form class="widget-options" method="get" action="/sites/' + siteSlug(site) + '/settings#public-widget">' + select('size', 'Size', sizes, size) + select('theme', 'Theme', themes, theme) + '<button class="button secondary" type="submit">Update preview</button></form><div class="widget-preview"><iframe title="Public traffic widget preview" style="color-scheme:' + (theme === "auto" ? "light dark" : theme) + '" src="' + origin + '/public/widget/' + site.public_key + '?size=' + size + '&amp;theme=' + theme + '" width="' + dimensions[0] + '" height="' + dimensions[1] + '" loading="lazy" referrerpolicy="no-referrer"></iframe></div><div class="snippet" tabindex="0" role="region" aria-label="Widget embed code"><code>' + escapeHtml(snippet) + '</code></div><button class="button secondary" type="button" data-copy-code data-copy-value="' + escapeHtml(snippet) + '">Copy embed code</button><p class="hint">Paste the script where you want the widget. Updates arrive every 60 seconds and pause while hidden. Visitors are counted once per UTC day, so returning on another day counts again. Disabling sharing clears existing embeds on their next refresh.</p>' : '<p class="hint">Sharing is off. Enable it to preview and copy your embed code.</p>') + '</section>';
+}
+
+export function trackerStatus(site, received) {
+  const url = '/sites/' + siteSlug(site) + '/partials/setup';
+  return '<section id="tracker-status" class="tracker-status" role="status" aria-live="polite"' + (received ? '' : ' hx-get="' + url + '" hx-trigger="every 5s" hx-swap="outerHTML" hx-sync="this:drop"') + '><h2>' + (received ? 'Your tracker is connected.' : 'Waiting for your first pageview.') + '</h2><p class="hint">' + (received ? 'Risulta has received a valid pageview from this website. You can open Overview to explore your traffic.' : 'Open your website after adding the script. This page checks every five seconds.') + '</p><a class="report-link" href="/sites/' + siteSlug(site) + (received ? '">Open Overview &rarr;' : '/setup">Check again') + '</a></section>';
+}
+
+export function setupPage(session, site, sites, origin, received) {
+  const snippet = '<script defer src="' + origin + '/js/' + site.public_key + '.js"></script>';
+  return pageShell('Connect your website', session, '<main class="shell website-dashboard" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + '</p><h1>Connect your website</h1><p class="dashboard-period">A small script, then your first pageview.</p></div></div>' + siteNavigation(site, { days: 7, filters: {} }, 'overview') + '<section class="card setup-guide"><h2>1. Add the tracker</h2><p>Paste this into the <code>&lt;head&gt;</code> of every page you want to track on <strong>' + escapeHtml(site.domain) + '</strong>.</p><div class="snippet" role="region" tabindex="0" aria-label="Tracker installation code"><code>' + escapeHtml(snippet) + '</code></div><button class="button secondary" type="button" data-copy-code data-copy-value="' + escapeHtml(snippet) + '">Copy tracker code</button><h2>2. Visit your website</h2><p>Load a page on the tracked hostname. Single-page apps are supported: the script records route changes through browser history and back/forward navigation.</p></section>' + trackerStatus(site, received) + '<details class="setup-troubleshooting"><summary>No pageviews yet?</summary><ul><li>The hostname must match <strong>' + escapeHtml(site.domain) + '</strong>. A different subdomain needs its own website.</li><li>Check that the script appears in the page source and loads successfully in your browser’s Network panel.</li><li>Privacy extensions can block analytics requests. Try a browser profile without extensions to confirm installation.</li><li>Your Content Security Policy must allow scripts and connections to <code>' + escapeHtml(origin) + '</code>.</li><li>Keep this tab open while visiting your website, or use Check again with JavaScript disabled.</li></ul><p>Moving to a new hostname? An administrator can change it in <a class="report-link" href="/sites/' + siteSlug(site) + '/settings">Settings</a>. Existing analytics and tracker code are kept.</p></details></main>', site, sites);
 }
