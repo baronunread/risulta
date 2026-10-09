@@ -1,6 +1,6 @@
 """Real systemd installation/upgrade/paired recovery on disposable CI runners."""
 import hashlib
-import http.cookiejar
+from http.cookiejar import CookieJar
 import json
 import os
 from pathlib import Path
@@ -48,7 +48,7 @@ def ready(schema):
         time.sleep(.2)
     raise RuntimeError('Native systemd readiness failed')
 
-client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
 with tempfile.TemporaryDirectory(prefix='risulta-systemd-', dir=os.environ['RUNNER_TEMP']) as temporary:
     scratch = Path(temporary)
     fixture = scratch / 'assets'
