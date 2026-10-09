@@ -1,3 +1,4 @@
+import { widgetAllowed, widgetData, widgetPage } from "./public-widgets.js";
 import { startMaintenanceProcess, exitMaintenanceProcess, isMaintenanceChild } from "./native-workers.js";
 import { runRollups, runScheduledBackup } from "./maintenance.js";
 import { backupFiles } from "./backup-files.js";
@@ -261,6 +262,24 @@ app.get("/dashboard.js", (c) => env.ASSETS.fetch(c.req.raw));
 app.get("/favicon-light.svg", (c) => env.ASSETS.fetch(c.req.raw));
 app.get("/favicon-dark.svg", (c) => env.ASSETS.fetch(c.req.raw));
 app.get("/site.webmanifest", (c) => env.ASSETS.fetch(c.req.raw));
+
+app.get("/widget-geist.woff2", (c) => env.ASSETS.fetch(c.req.raw));
+app.get("/widget-geist-LICENSE.txt", (c) => env.ASSETS.fetch(c.req.raw));
+app.get("/widget-frame.js", (c) => env.ASSETS.fetch(c.req.raw));
+app.get("/widget.js", (c) => env.ASSETS.fetch(c.req.raw));
+app.get("/public/widget/:key{[A-Za-z0-9_-]+}", (c) => {
+  if (!widgetAllowed(clientIp(c.req.raw),Math.floor(Date.now()/1000))) return json({error:"too many widget requests"},429,{"retry-after":"60"});
+  const data = widgetData(env.DB, c.req.param("key"), Math.floor(Date.now()/1000));
+  if (!data) return new Response("Public sharing is unavailable.", {status:404,headers:{"cache-control":"no-store"}});
+  const url = new URL(c.req.url);
+  const size = ["small","medium","wide"].includes(url.searchParams.get("size")) ? url.searchParams.get("size") : "medium";
+  return new Response(widgetPage(data,size,url.searchParams.get("theme")), {headers:{"content-type":"text/html;charset=utf-8","cache-control":"no-store","referrer-policy":"no-referrer","content-security-policy":"default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors *"}});
+});
+app.get("/public/data/:key{[A-Za-z0-9_-]+}", (c) => {
+  if (!widgetAllowed(clientIp(c.req.raw),Math.floor(Date.now()/1000))) return json({error:"too many widget requests"},429,{"retry-after":"60"});
+  const data = widgetData(env.DB,c.req.param("key"),Math.floor(Date.now()/1000));
+  return json(data || {error:"public sharing unavailable"},data ? 200 : 404,{"access-control-allow-origin":"*","cache-control":"no-store"});
+});
 
 // Tracker asset: public, cookieless, same behavior as the Bun app.
 app.get("/js/:key{[A-Za-z0-9_-]+\\.js}", (c) => {
@@ -835,6 +854,21 @@ app.post("/api/sites/:id{[0-9]+}/funnels", async (c) => {
   return redirect(settingsUrl);
 });
 
+app.post("/api/sites/:id{[0-9]+}/public-widget", (c) => {
+  const session = c.get("session");
+  if (session.role !== "admin") return json({error:"forbidden"},403);
+  const request = c.req.raw;
+  const body = bodyOf(request);
+  if (!csrfValid(session,csrfValue(request,body))) return json({error:"csrf mismatch"},403);
+  const site = getSiteForUser(env.DB,Number(c.req.param("id")),session);
+  if (!site) return json({error:"unknown site"},404);
+  const parsed = inputFrom(body,wantsJsonFrom(request));
+  if (!parsed.ok) return json({error:"invalid body"},400);
+  const enabled = parsed.value.enabled === "1" || parsed.value.enabled === true ? 1 : 0;
+  env.DB.prepare("INSERT INTO public_widgets(site_id,enabled) VALUES(?,?) ON CONFLICT(site_id) DO UPDATE SET enabled=excluded.enabled").bind(site.id,enabled).run();
+  return wantsJsonFrom(request) ? json({ok:true,enabled:enabled===1}) : redirect("/sites/"+siteSlug(site)+"/settings");
+});
+
 // Site configuration keeps the existing site identity and analytics.
 app.get("/sites/:id{[a-z0-9-]+}/settings", (c) => {
   const session = c.get("session");
@@ -843,7 +877,7 @@ app.get("/sites/:id{[a-z0-9-]+}/settings", (c) => {
   const url = new URL(c.req.url);
   const error = url.searchParams.get("error") === "domain-invalid" ? "Enter a valid hostname." :
     url.searchParams.get("error") === "domain-registered" ? "That hostname is already used by another website." : "";
-  return new Response(siteSettingsPage(session, site, listSitesForUser(env.DB, session), error, url.searchParams.has("saved")),
+  return new Response(siteSettingsPage(session, site, listSitesForUser(env.DB, session), error, url.searchParams.has("saved"), env.DB.prepare("SELECT enabled FROM public_widgets WHERE site_id=?").bind(site.id).first(), new URL(c.req.url).origin),
     { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
@@ -1035,7 +1069,7 @@ app.post("/api/backup", async (c) => {
   if (!csrfValid(session, csrfValue(request, body))) return htmlForm ? redirect("/users?backup=csrf") : json({ error: "csrf mismatch" }, 403);
   try {
     const snapshot = env.DB.backup();
-    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "analytics_rollup_stats_days", "analytics_rollup_hours", "analytics_rollup_events", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty", "analytics_query_cache", "analytics_cache_days", "analytics_cache_config"];
+    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "public_widgets", "analytics_rollup_stats_days", "analytics_rollup_hours", "analytics_rollup_events", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty", "analytics_query_cache", "analytics_cache_days", "analytics_cache_config"];
     const counts = {};
     for (let i = 0; i < tables.length; i++) {
       counts[tables[i]] = Number(env.DB.prepare("SELECT count(*) AS n FROM " + tables[i]).first().n);

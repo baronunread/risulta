@@ -28,14 +28,14 @@ assert.throws(() => migrateSchema(failingDb));
 assert.equal(failure.query('SELECT max(version) AS n FROM schema_migrations').get().n, 1);
 assert.equal(failure.query("SELECT count(*) AS n FROM sqlite_master WHERE name='analytics_rollup_days'").get().n, 0);
 failingDb.exec = exec; migrateSchema(failingDb); migrateSchema(failingDb);
-assert.equal(failure.query('SELECT count(*) AS n FROM schema_migrations').get().n, 5);
-failure.exec("INSERT INTO schema_migrations VALUES(6,'future',0)");
+assert.equal(failure.query('SELECT count(*) AS n FROM schema_migrations').get().n, 6);
+failure.exec("INSERT INTO schema_migrations VALUES(7,'future',0)");
 assert.throws(() => migrateSchema(failingDb), /newer Risulta/);
 failure.close();
 // A schema-4 database keeps its events when the covering-index upgrade retries.
 const indexUpgrade = new Database(':memory:'); indexUpgrade.exec(legacy);
 const indexDb = adapter(indexUpgrade); migrateSchema(indexDb);
-indexUpgrade.exec("DROP INDEX idx_events_site_visitor_ts_funnels; DELETE FROM schema_migrations WHERE version=5; INSERT INTO events(id,site_id,ts,name,path,visitor) VALUES(1,1,10,'pageview','/','a');");
+indexUpgrade.exec("DROP INDEX idx_events_site_visitor_ts_funnels; DELETE FROM schema_migrations WHERE version>=5; INSERT INTO events(id,site_id,ts,name,path,visitor) VALUES(1,1,10,'pageview','/','a');");
 const indexExec = indexDb.exec;
 indexDb.exec = (sql) => { if (sql === FUNNEL_INDEX_SCHEMA) indexExec(sql + ' INVALID SQL;'); else indexExec(sql); };
 assert.throws(() => migrateSchema(indexDb));
@@ -43,7 +43,7 @@ assert.equal(indexUpgrade.query('SELECT max(version) AS n FROM schema_migrations
 assert.equal(indexUpgrade.query("SELECT count(*) AS n FROM sqlite_master WHERE name='idx_events_site_visitor_ts_funnels'").get().n,0);
 indexDb.exec = indexExec; migrateSchema(indexDb); migrateSchema(indexDb);
 assert.equal(indexUpgrade.query('SELECT count(*) AS n FROM events').get().n,1);
-assert.equal(indexUpgrade.query('SELECT max(version) AS n FROM schema_migrations').get().n,5);
+assert.equal(indexUpgrade.query('SELECT max(version) AS n FROM schema_migrations').get().n,6);
 indexUpgrade.close();
 // Upgrade an already covered v2 database without replaying or discarding daily data.
 const upgrade = new Database(':memory:'); upgrade.exec(legacy + "INSERT INTO sites VALUES(1,'Shop','shop.test','key',0);");

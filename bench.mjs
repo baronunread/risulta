@@ -1,12 +1,12 @@
 // Dev-only localhost ingest benchmark for the standalone sprout.
-// Methodology: free port, warmup, fixed-duration free port, warmup, fixed-duration
+// Methodology: free port, warmup, fixed-duration
 // hammering at fixed concurrency, RPS + latency percentiles + RSS +
 // tracker bytes. Run: bun bench.mjs (build the host binary first).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { arch, platform, release, tmpdir } from "node:os";
 import { gzipSync } from "node:zlib";
 
 const concurrency = Math.max(1, Number(process.env.CONCURRENCY || 25));
@@ -30,9 +30,9 @@ const app = spawn(binary, [], {
     PORT: String(port),
     SB_DATA_DIR: dir,
     // Trust loopback as a proxy so each hammer request can carry a distinct
-    // X-Forwarded-For test-net address. The INGEST binding limits per IP
+    // X-Forwarded-For benchmark address. The INGEST binding limits per IP
     // (240/60s like production); rotating 512 keys keeps the aggregate
-    // quota far above what 5 seconds can spend, so the number measures
+    // quota far above what the run can spend, so the number measures
     // server capacity, not the throttle.
     SB_TRUSTED_PROXIES: "127.0.0.1",
     RISULTA_ADMIN_EMAIL: adminEmail,
@@ -40,6 +40,10 @@ const app = spawn(binary, [], {
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
+process.on("exit", () => {
+  if (app.exitCode === null) app.kill("SIGTERM");
+});
+app.stdout.resume();
 let errors = "";
 app.stderr.on("data", (chunk) => {
   errors += chunk;
@@ -80,7 +84,7 @@ const body = JSON.stringify({ name: "pageview", domain: site.domain, path: "/ben
 let keyCounter = 0;
 const nextIp = () => {
   const n = keyCounter++;
-  return `198.51.100.${n % 256}`;
+  return `198.18.${Math.floor((n % 512) / 256)}.${n % 256}`;
 };
 const send = async () => {
   const response = await fetch(endpoint, {
@@ -94,6 +98,22 @@ for (let index = 0; index < 100; index += 1) await send();
 
 const latencies = [];
 let completed = 0;
+const sampleRss = () => new Promise((resolve) => {
+  const ps = spawn("ps", ["-o", "rss=", "-p", String(app.pid)]);
+  let value = "";
+  ps.stdout.on("data", (chunk) => { value += chunk; });
+  ps.once("close", () => resolve(Number(value.trim()) * 1024));
+});
+const idleRss = await sampleRss();
+const samples = [];
+let sampling = true;
+const sampler = (async function sampleDuringLoad() {
+  while (sampling) {
+    const value = await sampleRss();
+    if (value > 0) samples.push(value);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+})();
 const started = performance.now();
 const deadline = started + durationSeconds * 1000;
 await Promise.all(
@@ -107,17 +127,14 @@ await Promise.all(
   }),
 );
 const elapsedSeconds = (performance.now() - started) / 1000;
+sampling = false;
+await sampler;
 latencies.sort((a, b) => a - b);
 const percentile = (fraction) => latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * fraction))];
-const rss = await new Promise((resolve) => {
-  const ps = spawn("ps", ["-o", "rss=", "-p", String(app.pid)]);
-  let value = "";
-  ps.stdout.on("data", (chunk) => {
-    value += chunk;
-  });
-  ps.once("close", () => resolve(Number(value.trim()) * 1024));
-});
 const tracker = await (await fetch(`${base}/js/${site.publicKey}.js`)).text();
+const afterLoadRss = await sampleRss();
+const sortedSamples = [...samples].sort((a, b) => a - b);
+const medianRss = sortedSamples[Math.floor(sortedSamples.length / 2)] || afterLoadRss;
 app.kill("SIGTERM");
 await new Promise((resolve) => app.once("exit", resolve));
 
@@ -125,6 +142,11 @@ console.log(
   JSON.stringify(
     {
       executable: binary,
+      environment: {
+        os: `${platform()} ${release()}`,
+        arch: arch(),
+        runtime: `Bun ${Bun.version}`,
+      },
       concurrency,
       duration_seconds: Number(elapsedSeconds.toFixed(2)),
       completed,
@@ -134,7 +156,15 @@ console.log(
         p95: Number(percentile(0.95).toFixed(2)),
         p99: Number(percentile(0.99).toFixed(2)),
       },
-      rss_mb: Number((rss / 1024 / 1024).toFixed(1)),
+      rss_mib: {
+        idle: Number((idleRss / 1024 / 1024).toFixed(1)),
+        load_peak: Number(((sortedSamples.at(-1) || afterLoadRss) / 1024 / 1024).toFixed(1)),
+        load_median: Number((medianRss / 1024 / 1024).toFixed(1)),
+        after_load: Number((afterLoadRss / 1024 / 1024).toFixed(1)),
+        samples: samples.length,
+        interval_ms: 100,
+        method: "ps process RSS sampling during the load window",
+      },
       startup_ms: startupMs,
       tracker_bytes: Buffer.byteLength(tracker),
       tracker_gzip_bytes: gzipSync(tracker).length,

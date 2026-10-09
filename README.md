@@ -109,8 +109,42 @@ Stats always include traffic totals, current visitors and daily rows. Clients ca
 
 Administrators can add `trace=1` to stats or JSON report API requests for native query timings, SQLite plans and `Server-Timing` headers. Tracing bypasses caches. See [the native trace report](performance/2026-10-07-query-tracing/README.md) for measurements and usage.
 
-## Stable v0.1.7
+## Stable v0.1.8
 
-v0.1.7 replaces the withdrawn build with rollups and scheduled backups running
+v0.1.7 replaced the withdrawn build with rollups and scheduled backups running
 from the Risulta binary, without external Python workers. The installer also
 requires no Python runtime. See [before/after measurements](performance/2026-10-08-builtin-workers/README.md).
+
+### Command-line updates
+
+The installer creates `/usr/local/bin/risulta` and keeps a private copy of the
+installer at `/etc/risulta-sprout/installer.sh`. Run `sudo risulta update` to
+update on the saved channel. Use `sudo risulta update --channel stable`,
+`sudo risulta update --channel nightly`, or `sudo risulta update --version TAG`
+to select a channel or a specific release. The wrapper forwards arguments to
+the installer and needs no Python runtime. To refresh the installer itself,
+download the current website installer and run it with `--update`.
+
+### Public traffic widgets
+
+Public sharing is off by default. An administrator can enable it for an
+individual website under Settings. Widgets expose only the hostname, current
+visitor count, pageviews and daily visitor counts for the last seven UTC days.
+Visitors across this period are the sum of daily visitor counts, matching the
+cookie-free daily identity model. No raw events, paths or visitor identities
+are public. Disable sharing to revoke the endpoint immediately; existing
+embeds clear their data at their next refresh.
+
+```html
+<script async src="https://your-risulta-host/widget.js"
+  data-site="YOUR_TRACKER_KEY" data-size="wide" data-theme="auto"></script>
+```
+
+Sizes: `small`, `medium`, `wide`. Themes: `light`, `dark`, `auto` (the embedding
+page's `dark` class or `data-theme` attribute). Frames poll every 60 seconds,
+update in place, pause while hidden or offscreen, and refresh on return.
+Snapshots are cached for 30 seconds with at most 64 entries. Public endpoints
+are limited to 120 requests per IP per minute and 1,200 requests per instance
+per minute, with bounded limiter state. Failed refreshes retain the last
+result and show delayed status. The aggregate JSON endpoint is
+`/public/data/YOUR_TRACKER_KEY` and supports anonymous cross-origin reads.
