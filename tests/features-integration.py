@@ -47,7 +47,7 @@ def parsed(*args, **kwargs):
     return json.loads(body), response
 
 response, body = request(anonymous, '/healthz')
-assert body == b'ok\n' and response.headers['x-risulta-schema-version'] == '5'
+assert body == b'ok\n' and response.headers['x-risulta-schema-version'] == '6'
 
 request(admin, '/login', method='POST', payload={'email':os.environ['ADMIN_EMAIL'], 'password':os.environ['ADMIN_PASSWORD']})
 session, _ = parsed(admin, '/api/session')
@@ -60,6 +60,27 @@ request(admin, '/api/users', code=201, method='POST', payload={'email':'feature-
 request(viewer, '/login', method='POST', payload={'email':'feature-viewer@example.com','password':'feature-viewer-password-0001'})
 vs,_ = parsed(viewer, '/api/session')
 vcsrf={'X-CSRF-Token':vs['csrf']}
+
+# Public widgets expose aggregates only after explicit admin consent.
+public_path='/public/data/'+site['publicKey']
+widget_setting='/api/sites/'+str(site_id)+'/public-widget'
+request(anonymous,public_path,code=404)
+request(viewer,widget_setting,code=403,method='POST',payload={'enabled':True},headers=vcsrf)
+request(admin,widget_setting,code=403,method='POST',payload={'enabled':True})
+request(admin,widget_setting,method='POST',payload={'enabled':True},headers=csrf)
+data,response=parsed(anonymous,public_path)
+assert set(data)=={'domain','current','visitors','pageviews','days','updated'} and len(data['days'])==7
+assert response.headers['Access-Control-Allow-Origin']=='*'
+for size in ['small','medium','wide']:
+    response,body=request(anonymous,'/public/widget/'+site['publicKey']+'?size='+size+'&theme=dark')
+    assert b'/widget-frame.js' in body and b'location.reload' not in body
+    assert 'frame-ancestors *' in response.headers['Content-Security-Policy']
+request(admin,widget_setting,method='POST',payload={'enabled':False},headers=csrf)
+request(anonymous,public_path,code=404)
+request(anonymous,'/public/data/'+other['publicKey'],code=404)
+request(anonymous,'/widget.js')
+request(anonymous,'/widget-frame.js')
+request(anonymous,'/widget-geist.woff2')
 
 # The same real route supports JSON and a usable native HTML form.
 _, body = request(admin, '/users', headers={'Accept':'text/html'})
@@ -74,8 +95,8 @@ _,body=request(admin, '/users?backup=success',headers={'Accept':'text/html'})
 assert b'Database backup created' in body
 backup,_=parsed(admin, '/api/backup',method='POST',payload={},headers=csrf)
 assert backup['ok'] and backup['bytes']>0 and backup['manifest']['tables']['read_api_keys']==0
-assert backup['manifest']['schema_version'] == 5
-assert backup['manifest']['tables']['schema_migrations'] == 5
+assert backup['manifest']['schema_version'] == 6
+assert backup['manifest']['tables']['schema_migrations'] == 6
 assert backup['manifest']['tables']['analytics_rollup_days'] == 0
 
 # Preferences must be real, bounded, admin-only and protected by CSRF.

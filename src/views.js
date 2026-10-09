@@ -229,7 +229,7 @@ export function siteNavigation(site, range, active) {
     '<a href="/sites/' + siteSlug(site) + item[1] + (item[0] === "settings" ? "" : '?' + query + (item[0] === "reports" ? '&cohort=1' : '')) + '"' + (active === item[0] ? ' aria-current="page"' : '') + '>' + item[2] + '</a>').join('') + '</nav>';
 }
 
-export function siteSettingsPage(session, site, sites, error, saved) {
+export function siteSettingsPage(session, site, sites, error, saved, sharing, origin) {
   const form = session.role === "admin"
     ? '<section class="card"><h2>Tracked hostname</h2><p class="hint">Changing this keeps all existing analytics. Events from the previous hostname stop being accepted immediately. Keep the same tracker code on the new hostname.</p>' +
       (saved ? '<p class="success" role="status">Hostname updated.</p>' : "") +
@@ -238,9 +238,10 @@ export function siteSettingsPage(session, site, sites, error, saved) {
       '<div class="field"><label for="domain">Hostname</label><input id="domain" name="domain" type="text" inputmode="url" autocomplete="url" maxlength="253" required value="' + escapeHtml(site.domain) + '"></div>' +
       '<div class="actions"><button class="button" type="submit">Save hostname</button></div></form></section>'
     : '<section class="card"><h2>Tracked hostname</h2><p>' + escapeHtml(site.domain) + '</p><p class="hint">Ask an administrator to change this hostname.</p></section>';
+  const widget = session.role === "admin" ? '<section class="card"><h2>Public widget</h2><p class="hint">Share visitor totals, pageviews and a seven-day chart. Raw events and visitor identities stay private.</p><form class="form" method="post" action="/api/sites/'+site.id+'/public-widget"><input type="hidden" name="csrf" value="'+escapeHtml(session.csrf)+'"><label><input type="checkbox" name="enabled" value="1"'+(sharing && sharing.enabled ? ' checked' : '')+'> Enable public sharing</label><button class="button secondary" type="submit">Save sharing</button></form><p class="hint">Choose small, medium or wide with data-size. Set data-theme to light or dark.</p><pre class="setup">'+escapeHtml('<script async src="'+origin+'/widget.js" data-site="'+site.public_key+'" data-size="medium" data-theme="light"></script>')+'</pre></section>' : "";
   return pageShell("Website settings", session,
     '<main class="shell website-dashboard settings-page" id="main"><div class="titlebar"><div><p class="eyebrow">' + escapeHtml(site.domain) + '</p><h1>Settings</h1><p class="dashboard-period">Website configuration</p></div><div class="settings-header-space" aria-hidden="true"></div></div>' +
-    siteNavigation(site, { days: 7, filters: {} }, "settings") + form + '</main>', site, sites);
+    siteNavigation(site, { days: 7, filters: {} }, "settings") + form + widget + '</main>', site, sites);
 }
 
 function periodLabel(range) {

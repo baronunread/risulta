@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict';
+import { Database } from 'bun:sqlite';
+import { widgetAllowed, widgetData, widgetPage } from '../src/public-widgets.js';
+const sqlite = new Database(':memory:');
+sqlite.exec("CREATE TABLE sites(id INTEGER PRIMARY KEY,domain TEXT,public_key TEXT);CREATE TABLE public_widgets(site_id INTEGER PRIMARY KEY,enabled INTEGER);CREATE TABLE events(site_id INTEGER,ts INTEGER,name TEXT,visitor TEXT);INSERT INTO sites VALUES(1,'one.test','one'),(2,'two.test','two');INSERT INTO public_widgets VALUES(1,1),(2,0);");
+const db = {prepare(sql) {let args=[];const q=sqlite.query(sql);return {bind(...a){args=a;return this;},first(){return q.get(...args);},all(){return {results:q.all(...args)};}};}};
+const now=Math.floor(Date.now()/1000),today=Math.floor(now/86400)*86400;
+sqlite.query('INSERT INTO events VALUES(?,?,?,?)').run(1,now,'pageview','a');
+sqlite.query('INSERT INTO events VALUES(?,?,?,?)').run(1,now,'pageview','a');
+sqlite.query('INSERT INTO events VALUES(?,?,?,?)').run(1,today-86400+1,'pageview','b');
+sqlite.query('INSERT INTO events VALUES(?,?,?,?)').run(2,now,'pageview','private');
+assert.equal(widgetData(db,'two',now),null);
+assert.equal(widgetData(db,'missing',now),null);
+const data=widgetData(db,'one',now);
+assert.equal(data.visitors,2);assert.equal(data.pageviews,3);assert.equal(data.days.length,7);
+assert.deepEqual(Object.keys(data).sort(),['current','days','domain','pageviews','updated','visitors']);
+sqlite.exec('UPDATE public_widgets SET enabled=0 WHERE site_id=1');
+assert.equal(widgetData(db,'one',now+1),null);
+sqlite.exec('UPDATE public_widgets SET enabled=1 WHERE site_id=1');
+assert.equal(widgetData(db,'one',now+1),data);
+sqlite.query('INSERT INTO events VALUES(?,?,?,?)').run(1,now,'pageview','c');
+assert.equal(widgetData(db,'one',now+31).visitors,3);
+for(const size of ['small','medium','wide']){
+ const page=widgetPage({...data,domain:'<script>alert(1)</script>'},size,'dark');
+ assert.ok(page.includes('&lt;script&gt;'));
+ assert.ok(page.includes('data-current'));
+ assert.ok(page.includes('/widget-frame.js'));
+ assert.ok(!page.includes('location.reload'));
+ if(size!=='small')assert.ok(page.includes(' C'));
+}
+for(let i=0;i<120;i++)assert.equal(widgetAllowed('one',60),true);
+assert.equal(widgetAllowed('one',60),false);
+assert.equal(widgetAllowed('one',120),true);
+for(let i=0;i<255;i++)assert.equal(widgetAllowed('ip'+i,120),true);
+assert.equal(widgetAllowed('overflow',120),false);
+console.log('Public widgets OK (private default, isolation, aggregate fields, caching, revocation, safe markup and request bounds)');
