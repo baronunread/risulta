@@ -45,6 +45,7 @@ export function pageShell(title, user, body, site, sites) {
   return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<meta name="color-scheme" content="light dark"><meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">' +
     '<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">' +
+    '<link rel="preload" href="/widget-geist.woff2" as="font" type="font/woff2" crossorigin>' +
     '<link rel="stylesheet" href="/style.css">' +
     (title === "Websites" ? '<link rel="stylesheet" href="/home.css">' : "") +
     '<link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)">' +
