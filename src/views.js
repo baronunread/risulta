@@ -63,13 +63,13 @@ export function loginPage(error) {
     "Sign in",
     null,
     '<main class="auth" id="main"><div class="auth-box"><div class="auth-brand">' + MARK + "<span>Risulta</span></div>" +
-      '<section class="card" aria-labelledby="login-title"><h1 id="login-title">Sign in to Risulta</h1>' +
-      '<p class="intro">Use one account to view all of your websites.</p>' +
-      (error ? '<p class="error" id="login-error">' + escapeHtml(error) + "</p>" : "") +
+      '<section class="card" aria-labelledby="login-title"><h1 id="login-title">Welcome back.</h1>' +
+      '<p class="intro">Sign in to your analytics.</p>' +
       '<form class="form" method="post" action="/login">' +
       '<div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required></div>' +
       '<div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>' +
-      '<button class="button" type="submit">Sign in</button></form></section></div></main>',
+      '<button class="button" type="submit">Sign in</button></form></section></div></main>' +
+      (error ? '<div class="toast" data-toast data-toast-kind="error" role="alert"><span class="toast-message">' + escapeHtml(error) + '</span></div>' : ""),
   );
 }
 
@@ -120,7 +120,7 @@ export function liveFragment(site, analytics, range, days, metric, comparison) {
     const deltaText = previous ? (percent > 0 ? "+" : "") + percent + "%" : Number(metrics[item[0]]) ? "New" : "0%";
     const deltaLabel = previous ? deltaText + " vs previous period" : Number(metrics[item[0]]) ? "New traffic, none in the previous period" : "No traffic in either period";
     const delta = comparison ? '<span class="metric-comparison" title="' + escapeHtml(deltaLabel) + '" aria-label="' + escapeHtml(deltaLabel) + '">' + deltaText + '</span>' : "";
-    return '<a class="metric overview-metric" href="/sites/' + siteSlug(site) + "?" + liveQuery(range, days, comparison) + "&metric=" + item[0] + '"' +
+    return '<a id="metric-' + item[0] + '" class="metric overview-metric" href="/sites/' + siteSlug(site) + "?" + liveQuery(range, days, comparison) + "&metric=" + item[0] + '"' +
       (selected ? ' aria-current="true"' : "") + '><span class="metric-label">' + item[1] + '</span><strong data-metric="' + item[0] + '">' +
       fmtInt(metrics[item[0]]) + '</strong><span class="metric-description">' + item[2] + '</span>' + delta + '</a>';
   }).join("");
@@ -146,7 +146,7 @@ export function liveFragment(site, analytics, range, days, metric, comparison) {
   const filterBar = chips ? '<nav class="overview-filters" aria-label="Active visitor filters">' + chips +
     '<a class="report-link" href="/sites/' + siteSlug(site) + '?' + liveQuery({ ...range, filters: {} }, days, comparison) + '&metric=' + metric + '">Clear all</a></nav>' +
     '<p class="hint">Showing all activity from daily visitors with a pageview matching these filters.</p>' : '';
-  return filterBar + '<section class="panel overview-panel" aria-label="Traffic overview"><nav class="metrics overview-metrics" aria-label="Select a chart metric">' + summary + '</nav>' +
+  return filterBar + '<section id="traffic-overview" class="panel overview-panel" aria-label="Traffic overview"><nav class="metrics overview-metrics" aria-label="Select a chart metric" hx-boost:inherited="swap:&quot;outerMorph show:none&quot; select:#main target:#main">' + summary + '</nav>' +
     (hasData ? '<div class="chart-wrap"><div class="chart-heading"><h2>' + metricLabel + ' over time</h2><span class="hint"><strong data-metric="views-per-visit">' +
       oneDecimal(viewsPerVisit) + '</strong> pages per visit</span></div>' + chart(series, metric, metricLabel) + chart(series, metric, metricLabel, true) + '</div>' :
       '<div class="empty"><h2>' + (Object.keys(range.filters || {}).length ? 'No matching visitors' : 'Waiting for the first visitor') + '</h2><p>' + (Object.keys(range.filters || {}).length ? 'Try another date range or remove a filter.' : 'Install the tracker below. New visits will appear here live.') + '</p></div>') + '</section>' +

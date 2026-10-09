@@ -18,20 +18,35 @@
   // Toasts double as the accessible live region: one visible, announced node
   // instead of a separate visual toast plus a hidden sr-only echo.
   var toastTimer = null;
-  function showToast(text) {
+  function showToast(text, kind, duration) {
     var toast = document.querySelector(".toast");
     if (!toast) {
       toast = document.createElement("div");
       toast.className = "toast";
-      toast.setAttribute("role", "status");
-      toast.setAttribute("aria-live", "polite");
       document.body.appendChild(toast);
     }
-    toast.textContent = text;
+    toast.setAttribute("role", kind === "error" ? "alert" : "status");
+    toast.setAttribute("aria-live", kind === "error" ? "assertive" : "polite");
+    toast.setAttribute("aria-atomic", "true");
+    toast.setAttribute("data-kind", kind || "success");
+    var icon = document.createElement("span");
+    icon.className = "toast-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = kind === "error" ? "!" : kind === "pending" ? "·" : "✓";
+    var message = document.createElement("span");
+    message.className = "toast-message";
+    message.textContent = text;
+    var close = document.createElement("button");
+    close.type = "button";
+    close.className = "toast-close";
+    close.setAttribute("aria-label", "Dismiss notification");
+    close.textContent = "×";
+    close.addEventListener("click", function () { clearTimeout(toastTimer); toast.remove(); });
+    toast.replaceChildren(icon, message, close);
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () {
-      toast.remove();
-    }, 2400);
+    if (duration !== 0 && kind !== "error" && kind !== "pending") {
+      toastTimer = setTimeout(function () { toast.remove(); }, duration || 5000);
+    }
   }
 
   // Tracker copy buttons are outside the live refresh region.
@@ -41,7 +56,7 @@
       var region = button.parentElement.querySelector(".snippet code");
       var code = button.getAttribute("data-copy-value") || (region && region.textContent);
       var done = function (ok) {
-        showToast(ok ? "Copied to clipboard." : "Copy failed.");
+        showToast(ok ? "Copied to clipboard." : "Copy failed.", ok ? "success" : "error");
       };
       if (!code) return done(false);
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -77,35 +92,29 @@
 
   // Flash messages rendered once after a redirect (e.g. "Profile updated.").
   document.querySelectorAll("[data-toast]").forEach(function (el) {
-    showToast(el.textContent);
+    var text = el.textContent;
+    var kind = el.getAttribute("data-toast-kind");
     el.remove();
+    showToast(text, kind);
   });
 
   // Native submission remains available when JavaScript is disabled.
   var backupForm = document.querySelector("[data-backup-form]");
   if (backupForm) {
-    var backupToast = document.querySelector("[data-backup-toast]");
     var backupFeedback = document.querySelector("[data-backup-feedback]");
-    var backupTimer = null;
-    function backupStatus(text) {
+    function backupStatus(text, kind) {
       backupFeedback.textContent = text;
-      backupToast.className = "toast";
-      backupToast.textContent = text;
-      clearTimeout(backupTimer);
-      backupTimer = setTimeout(function () {
-        backupToast.textContent = "";
-        backupToast.className = "";
-      }, 10000);
+      showToast(text, kind || "error", 10000);
     }
     if (backupFeedback.textContent) {
-      setTimeout(function () { backupStatus(backupFeedback.textContent); }, 100);
+      setTimeout(function () { backupStatus(backupFeedback.textContent, backupFeedback.getAttribute("data-kind") || "success"); }, 100);
     }
     backupForm.addEventListener("submit", async function (event) {
       event.preventDefault();
       var button = backupForm.querySelector("button");
       if (button.disabled) return;
       button.disabled = true;
-      backupStatus("Creating database backup...");
+      backupStatus("Creating database backup...", "pending");
       try {
         var response = await fetch(backupForm.action, {
           method: "POST",
@@ -114,7 +123,7 @@
         });
         var result = await response.json();
         if (response.ok && result.ok && result.path && result.bytes > 0) {
-          backupStatus("Backup created: " + result.path + " (" + result.bytes + " bytes). Copy it off the server for safekeeping.");
+          backupStatus("Backup created: " + result.path + " (" + result.bytes + " bytes). Copy it off the server for safekeeping.", "success");
         } else if (response.status === 401) {
           backupStatus("Your session has expired. Sign in again before creating a backup.");
         } else if (response.status === 403) {
@@ -245,21 +254,31 @@
 
   // Preserve expanded dashboard sections across live refreshes.
   var disclosures = {};
+  var metricFocusHref = null;
   document.body.addEventListener("htmx:before:swap", function (event) {
-    if (!event.target) return;
-    if (event.target.id === "main") hideChartTooltip();
-    if (event.target.id !== "live-stats") return;
+    var swapTarget = event.detail && event.detail.ctx && event.detail.ctx.target || event.target;
+    if (!swapTarget) return;
+    if (swapTarget.id === "main") {
+      hideChartTooltip();
+      var metricLink = document.activeElement && document.activeElement.closest(".overview-metric");
+      metricFocusHref = metricLink ? metricLink.getAttribute("href") : null;
+    }
+    if (swapTarget.id !== "live-stats") return;
     hideChartTooltip();
     document.querySelectorAll("#live-stats details[data-disclosure]").forEach(function (detail) {
       disclosures[detail.getAttribute("data-disclosure")] = detail.open;
     });
   });
   document.body.addEventListener("htmx:after:swap", function (event) {
-    if (event.target && event.target.id === "main") {
-      var activeTab = document.querySelector(".site-tabs [aria-current]");
+    var swapTarget = event.detail && event.detail.ctx && event.detail.ctx.target || event.target;
+    if (swapTarget && swapTarget.id === "main") {
+      var activeTab = metricFocusHref
+        ? document.querySelector(".overview-metric[aria-current]")
+        : document.querySelector(".site-tabs [aria-current]");
+      metricFocusHref = null;
       if (activeTab) activeTab.focus({ preventScroll: true });
     }
-    if (!event.target || event.target.id !== "live-stats") return;
+    if (!swapTarget || swapTarget.id !== "live-stats") return;
     document.querySelectorAll("#live-stats details[data-disclosure]").forEach(function (detail) {
       detail.open = disclosures[detail.getAttribute("data-disclosure")] === true;
     });
