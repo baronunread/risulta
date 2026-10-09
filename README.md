@@ -114,3 +114,13 @@ Administrators can add `trace=1` to stats or JSON report API requests for native
 v0.1.7 replaces the withdrawn build with rollups and scheduled backups running
 from the Risulta binary, without external Python workers. The installer also
 requires no Python runtime. See [before/after measurements](performance/2026-10-08-builtin-workers/README.md).
+
+### Command-line updates
+
+The installer creates `/usr/local/bin/risulta` and keeps a private copy of the
+installer at `/etc/risulta-sprout/installer.sh`. Run `sudo risulta update` to
+update on the saved channel. Use `sudo risulta update --channel stable`,
+`sudo risulta update --channel nightly`, or `sudo risulta update --version TAG`
+to select a channel or a specific release. The wrapper forwards arguments to
+the installer and needs no Python runtime. To refresh the installer itself,
+download the current website installer and run it with `--update`.

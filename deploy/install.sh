@@ -17,6 +17,45 @@ channel=""
 version=""
 update_only=0
 
+install_cli() {
+  # Keep the tested installer locally so updates share its release parsing.
+  cli_installer="$0"
+  if [ ! -f "$cli_installer" ]; then
+    cli_installer="$tmp_dir/saved-installer.sh"
+    curl --proto '=https' --tlsv1.2 -fsSL "$download_base/install.sh" -o "$cli_installer"
+    curl --proto '=https' --tlsv1.2 -fsSL "$download_base/install.sh.sha256" -o "$tmp_dir/installer.sha256"
+    cli_expected="$(awk '{print $1}' "$tmp_dir/installer.sha256")"
+    case "$cli_expected" in ""|*[!a-fA-F0-9]*) fail "Invalid installer checksum." ;; esac
+    [ "${#cli_expected}" -eq 64 ] || fail "Invalid installer checksum."
+    if command -v sha256sum >/dev/null 2>&1; then
+      cli_actual="$(sha256sum "$cli_installer" | awk '{print $1}')"
+    else
+      cli_actual="$(shasum -a 256 "$cli_installer" | awk '{print $1}')"
+    fi
+    [ "$cli_actual" = "$cli_expected" ] || fail "The saved installer failed checksum verification."
+  fi
+  install -m 0600 "$cli_installer" "$ENV_DIR/installer.sh.new"
+  mv -f "$ENV_DIR/installer.sh.new" "$ENV_DIR/installer.sh"
+  cat > "$tmp_dir/risulta-cli" <<'CLI'
+#!/bin/sh
+set -eu
+usage() {
+  printf '%s\n' 'Usage: sudo risulta update [--channel stable|nightly] [--version TAG]' '       risulta --help'
+}
+[ "$#" -gt 0 ] || { usage; exit 2; }
+case "$1" in
+  --help|-h) usage; exit 0 ;;
+  update) shift ;;
+  *) usage >&2; exit 2 ;;
+esac
+[ "$(id -u)" -eq 0 ] || { printf '%s\n' 'Run updates with sudo risulta update.' >&2; exit 1; }
+[ -r /etc/risulta-sprout/installer.sh ] || { printf '%s\n' 'The saved Risulta installer is missing. Rerun the website installer.' >&2; exit 1; }
+exec sh /etc/risulta-sprout/installer.sh --update "$@"
+CLI
+  install -m 0755 "$tmp_dir/risulta-cli" /usr/local/bin/risulta.new
+  mv -f /usr/local/bin/risulta.new /usr/local/bin/risulta
+}
+
 say() { printf '%s\n' "$*"; }
 fail() { say "Error: $*" >&2; exit 1; }
 usage() {
@@ -400,6 +439,7 @@ if [ -n "$installed_hash" ] && [ "$installed_hash" = "$expected_hash" ]; then
     install_rollups
   fi
   save_release_state
+  install_cli
   say "Risulta is up to date."
   exit 0
 fi
@@ -445,6 +485,7 @@ if [ "$update_only" -eq 1 ]; then
   install_rollups
   save_release_state
   service_stopped=0
+  install_cli
   say "Updated to $release_tag. Dashboard: $(saved_setting RISULTA_BASE_URL)"
   exit 0
 fi
@@ -678,6 +719,7 @@ say "Risulta is ready."
 install_rollups
 save_release_state
 service_stopped=0
+install_cli
 say "Dashboard: $base_url"
 case "$proxy_mode" in
   caddy)

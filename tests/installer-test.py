@@ -83,6 +83,7 @@ def scenario(options, channel=None, installed=OLD, flags=None, existing=True):
     scratch = tempfile.TemporaryDirectory(prefix='risulta-installer-test-')
     root = Path(scratch.name)
     paths = {'/usr/local/bin/risulta-sprout': root/'bin/risulta-sprout',
+             '/usr/local/bin/risulta': root/'bin/risulta',
              '/etc/risulta-sprout': root/'etc/risulta-sprout',
              '/var/lib/risulta-sprout': root/'data',
              '/etc/systemd/system/risulta-sprout.service': root/'service',
@@ -136,6 +137,17 @@ for options,saved,target in [(['--update'],None,'v0.1.6'),(['--update'], 'nightl
         assert '/releases/latest/download/' not in calls
         assert 'daemon-reload' not in calls and 'caddy' not in calls
         assert result.stdout.index('Checksum verified')<result.stdout.index('Stopping Risulta')
+        cli=root/'bin/risulta'
+        assert cli.is_file() and os.access(cli,os.X_OK)
+        assert 'python' not in cli.read_text()
+        assert (root/'etc/risulta-sprout/installer.sh').is_file()
+        help_result=subprocess.run(['sh',str(cli),'--help'],capture_output=True,text=True)
+        assert help_result.returncode==0 and 'risulta update' in help_result.stdout
+        cached=root/'etc/risulta-sprout/installer.sh'
+        cached.write_text('printf "%s\\n" "$@"\n')
+        cli_env=os.environ.copy();cli_env['PATH']=str(root/'mocks')+os.pathsep+cli_env['PATH'];cli_env['TEST_ROOT']=str(root)
+        forwarded=subprocess.run(['sh',str(cli),'update','--version','v0.1.7'],env=cli_env,capture_output=True,text=True)
+        assert forwarded.returncode==0 and forwarded.stdout.splitlines()==['--update','--version','v0.1.7'],(forwarded.returncode,forwarded.stdout,forwarded.stderr)
         count+=1
 
 for flag in ['BAD_CHECKSUM','BAD_METADATA','MISSING_METADATA','LOCK_BUSY']:
