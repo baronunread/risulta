@@ -3,8 +3,8 @@ import { escapeHtml, fmtInt } from "./util.js";
 
 function visitorSparkline(site) {
   const days = site.overview.byDay;
-  const width = 144;
-  const height = 36;
+  const width = 200;
+  const height = 40;
   const inset = 3;
   let max = 0;
 
@@ -29,7 +29,7 @@ function visitorSparkline(site) {
     previousY = y;
   }
 
-  return '<svg class="home-sparkline" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="Visitors over the last 7 days">' +
+  return '<svg class="home-sparkline" viewBox="0 0 ' + width + " " + height + '" preserveAspectRatio="none" role="img" aria-label="Visitors over the last 7 days">' +
     '<path class="home-sparkline-line" d="' + path + '" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>' +
     "</svg>";
 }
@@ -37,15 +37,17 @@ function visitorSparkline(site) {
 export function homeCards(sites) {
   if (!sites.length) return "";
 
-  return '<ol class="home-sites">' + sites.map(function (site) {
-    return '<li><a class="home-site-card" href="/sites/' + escapeHtml(siteSlug(site)) + '">' +
-      '<span class="home-site-identity"><strong class="home-site-name" title="' + escapeHtml(site.name) + '">' + escapeHtml(site.name) + '</strong>' +
-      '<span class="home-site-domain" title="' + escapeHtml(site.domain) + '">' + escapeHtml(site.domain) + '</span></span>' +
-      '<span class="home-site-arrow" aria-hidden="true">&rarr;</span>' +
-      '<span class="home-site-stats" aria-label="Last 7 days">' +
-      '<span class="home-site-stat"><strong>' + fmtInt(site.overview.visitors) + '</strong><span>visitors</span></span>' +
-      '<span class="home-site-stat"><strong>' + fmtInt(site.overview.pageviews) + '</strong><span>pageviews</span></span>' +
-      visitorSparkline(site) +
-      '</span></a></li>';
-  }).join("") + "</ol>";
+  return '<table class="home-sites" role="table"><caption class="sr-only">Website traffic over the last 7 days</caption>' +
+    '<colgroup><col class="home-column-site"><col class="home-column-total"><col class="home-column-total"><col class="home-column-trend"></colgroup>' +
+    '<thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Website</th><th scope="col" role="columnheader">Visitors</th>' +
+    '<th scope="col" role="columnheader">Pageviews</th><th scope="col" role="columnheader">7-day trend</th></tr></thead><tbody role="rowgroup">' +
+    sites.map(function (site) {
+      return '<tr class="home-site-row" role="row"><th class="home-site-identity" scope="row" role="rowheader">' +
+        '<a class="home-site-link" href="/sites/' + escapeHtml(siteSlug(site)) + '"><span class="home-site-name">' + escapeHtml(site.name) + '</span>' +
+        '<span class="home-site-domain">' + escapeHtml(site.domain) + '</span></a></th>' +
+        '<td class="home-site-total" role="cell"><span class="home-mobile-label" aria-hidden="true">Visitors</span>' + fmtInt(site.overview.visitors) + '</td>' +
+        '<td class="home-site-total" role="cell"><span class="home-mobile-label" aria-hidden="true">Pageviews</span>' + fmtInt(site.overview.pageviews) + '</td>' +
+        '<td class="home-site-trend" role="cell"><div class="home-trend-inner">' + visitorSparkline(site) +
+        '<span class="home-site-arrow" aria-hidden="true">&rarr;</span></div></td></tr>';
+    }).join("") + '</tbody></table>';
 }
