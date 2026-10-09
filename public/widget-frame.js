@@ -3,6 +3,7 @@
   var pending;
   var visible = true;
   var revoked = false;
+  var refreshOnReturn = false;
   var key = location.pathname.split("/").pop();
   var status = document.querySelector("[data-status]");
   function format(value) { return Number(value).toLocaleString("en-US"); }
@@ -62,12 +63,16 @@
     } finally {
       clearTimeout(timeout);
       pending = null;
-      schedule();
+      if (refreshOnReturn && !paused()) {
+        refreshOnReturn = false;
+        refresh();
+      } else schedule();
     }
   }
   function visibilityChanged() {
     clearTimeout(timer);
     if (paused()) { if (pending) pending.abort(); }
+    else if (pending) refreshOnReturn = true;
     else refresh();
   }
   document.addEventListener("visibilitychange", visibilityChanged);

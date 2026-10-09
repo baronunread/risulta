@@ -240,9 +240,9 @@ request(anonymous, '/api/event/' + site['publicKey'], code=202, method='POST', p
 fresh_stats, _ = parsed(admin, f'/api/sites/{site_id}/stats?' + query)
 assert fresh_stats['summary']['pageviews'] == raw_stats['summary']['pageviews'] + 1
 with sqlite3.connect(state / 'd1/DB.sqlite') as historical:
-    historical.execute("UPDATE events SET value=4 WHERE site_id=? AND ts<? AND name='signup'", (site_id,today))
+    historical.execute("UPDATE events SET value=4 WHERE site_id=? AND ts<? AND name='signup' AND visitor='imported-repeat'", (site_id,today))
 dirty_stats, _ = parsed(admin, f'/api/sites/{site_id}/stats?' + query)
-assert next(g for g in dirty_stats['goals'] if g['name']=='Historical signup')['value'] == 8
+assert next(g for g in dirty_stats['goals'] if g['name']=='Historical signup')['value'] == 8, dirty_stats['goals']
 
 # Closed-day results persist in SQLite; external mutations invalidate immediately.
 closed_query = 'from=' + time.strftime('%Y-%m-%d', time.gmtime(today - 2 * 86400)) + '&to=' + time.strftime('%Y-%m-%d', time.gmtime(today - 86400))
@@ -250,7 +250,7 @@ closed_stats, _ = parsed(admin, f'/api/sites/{site_id}/stats?' + closed_query)
 assert parsed(viewer, f'/api/sites/{site_id}/stats?' + closed_query)[0] == closed_stats
 with sqlite3.connect(state / 'd1/DB.sqlite') as historical:
     assert historical.execute('SELECT count(*) FROM analytics_query_cache WHERE site_id=?', (site_id,)).fetchone()[0] > 0
-    historical.execute("UPDATE events SET value=6 WHERE site_id=? AND ts<? AND name='signup'", (site_id,today))
+    historical.execute("UPDATE events SET value=6 WHERE site_id=? AND ts<? AND name='signup' AND visitor='imported-repeat'", (site_id,today))
 assert next(g for g in parsed(admin, f'/api/sites/{site_id}/stats?' + closed_query)[0]['goals'] if g['name']=='Historical signup')['value'] == 12
 assert parsed(admin, f'/api/sites/{site_id}/stats?' + closed_query + '&fresh=1')[0] == parsed(admin, f'/api/sites/{site_id}/stats?' + closed_query)[0]
 
