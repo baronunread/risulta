@@ -19,19 +19,19 @@ sudo sh install.sh --update --channel nightly
 Later updates use the saved channel:
 
 ```sh
-sudo sh install.sh --update
+sudo risulta update
 ```
 
 Switch back to the latest stable release:
 
 ```sh
-sudo sh install.sh --update --channel stable
+sudo risulta update --channel stable
 ```
 
 Install a particular release once, without changing the saved channel:
 
 ```sh
-sudo sh install.sh --update --version nightly-20261006-0123456789ab
+sudo risulta update --version nightly-20261006-0123456789ab
 ```
 
 `--channel` and `--version` cannot be combined. New installations can also
@@ -104,3 +104,13 @@ not automatically upgrade the compiler or application packages.
 
 Publishing a nightly does not update servers. This rollout enables manual
 updates only; no automatic-update timer is installed.
+
+
+The saved CLI is installed by the current installer. If `risulta` is missing,
+rerun the downloaded installer with `--update` once. Inspect the deployed tag
+and exact commit with `sudo cat /etc/risulta-sprout/release.env`; compare it to
+that release's `release.json`, not to the newest commit on main.
+
+v0.2 adds schema 7 for chart notes. Before downgrading to v0.1.8 (schema 6),
+restore the paired data and executable saved before the upgrade. Running an
+old executable against the upgraded database is unsupported.

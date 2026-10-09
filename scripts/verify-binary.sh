@@ -50,7 +50,7 @@ def stop(process):
 
 with tempfile.TemporaryDirectory(prefix="risulta-verify-") as scratch:
     for trust in (0, 1):
-        for suite in ("seed.sh", "verify.sh", "tests/features-integration.py"):
+        for suite in ("seed.sh", "verify.sh", "tests/features-integration.py", "tests/recovery-integration.py"):
             label = f"{suite.replace(chr(47), chr(95))}-trust-{trust}"
             state = Path(scratch) / label
             state.mkdir()
@@ -61,7 +61,7 @@ with tempfile.TemporaryDirectory(prefix="risulta-verify-") as scratch:
             env = os.environ.copy()
             env.pop("SB_TRUSTED_PROXIES", None)
             env.update(SB_DATA_DIR=str(state), PORT=str(port),
-                       BASE=base, EXPECT_TRUST=str(trust),
+                       BASE=base, EXPECT_TRUST=str(trust), RISULTA_VERIFY_BINARY=str(binary),
                        RISULTA_BASE_URL=base,
                        RISULTA_ADMIN_EMAIL="admin@example.com",
                        RISULTA_ADMIN_DISPLAY_NAME="Admin",

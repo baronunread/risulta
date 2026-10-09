@@ -2,8 +2,8 @@
 
 The smallest self-hosted web analytics you can run.
 
-Risulta is a single ~4.7 MB binary. It serves the dashboard, collects
-pageviews, and keeps every site in its own SQLite file. No Docker, no
+Risulta is a standalone binary. It serves the dashboard, collects
+pageviews, and stores site-scoped analytics in SQLite. No Docker, no
 external database, no cookies.
 
 ```sh
@@ -19,13 +19,16 @@ mode, see [release channels and recovery](deploy/NIGHTLIES.md).
 
 ## Features
 
-- Multi-site, with per-site tracker keys and isolated SQLite storage
+- Multi-site, with per-site tracker keys and site-scoped access
 - Cookie-free visitor counts (daily-salted hashes, nothing stored raw)
 - Goals and funnels, included, not held back for a paid tier
 - Daily visitor journeys with site-scoped session drilldowns
 - JSON/CSV report export, plus full HTML report pages
 - Site-scoped bearer keys for read-only stats and report exports
 - Password auth, sessions, CSRF, admin/viewer roles
+- Dated chart annotations for deployments, campaigns and outages
+- Opt-in public traffic widgets in three sizes
+- Guided tracker installation with first-pageview confirmation
 - Online backups: one call, no downtime, integrity-checked manifest
 - Prometheus metrics, structured request logging
 
@@ -48,11 +51,10 @@ upgraded. Collisions receive a short suffix (`shop-2`); later display-name or
 domain changes do not rename existing slugs. Numeric dashboard bookmarks
 redirect to the canonical slug. API routes continue to use numeric site IDs.
 
-The site tabs are Overview, Reports, Journeys, Goals and Funnels. Tracker code
+The site tabs are Overview, Reports, Journeys, Goals, Funnels and Settings. Tracker code
 copies directly to the clipboard from the button beside the Overview title. Goals and Funnels each show their
-results and, for administrators, a creation form. Previous settings and
-conversions bookmarks redirect to Goals (funnel validation errors redirect to
-Funnels). Date ranges and visitor filters carry between tabs and form returns.
+results and, for administrators, a creation form. Legacy conversions bookmarks redirect to Goals (funnel validation errors redirect to
+Funnels). Settings includes hostname editing, public widgets and chart annotations. Date ranges and visitor filters carry between tabs and form returns.
 
 The schema upgrade adds nullable `sites.slug`, backfills existing sites and
 creates the unique `idx_sites_slug` index. Existing event data, site IDs and
@@ -78,7 +80,7 @@ query parameters are not accepted.
 
 - [DESIGN.md](DESIGN.md): visual and interaction rules
 - [PROBE-RESULTS.md](PROBE-RESULTS.md): build matrix and runtime probes
-- [risulta.pages.dev](https://risulta.pages.dev): the pitch, if you want it
+- [risulta.dev](https://risulta.dev): the pitch, if you want it
 
 ## License
 
@@ -111,7 +113,7 @@ Administrators can add `trace=1` to stats or JSON report API requests for native
 
 ## Stable v0.1.8
 
-v0.1.7 replaced the withdrawn build with rollups and scheduled backups running
+The supported stable binary includes rollups and scheduled backups running
 from the Risulta binary, without external Python workers. The installer also
 requires no Python runtime. See [before/after measurements](performance/2026-10-08-builtin-workers/README.md).
 
@@ -141,10 +143,53 @@ embeds clear their data at their next refresh.
 ```
 
 Sizes: `small`, `medium`, `wide`. Themes: `light`, `dark`, `auto` (the embedding
-page's `dark` class or `data-theme` attribute). Frames poll every 60 seconds,
+page's explicit `dark`/`light` class or `data-theme` attribute, then its operating-system preference). Frames poll every 60 seconds,
 update in place, pause while hidden or offscreen, and refresh on return.
 Snapshots are cached for 30 seconds with at most 64 entries. Public endpoints
 are limited to 120 requests per IP per minute and 1,200 requests per instance
 per minute, with bounded limiter state. Failed refreshes retain the last
 result and show delayed status. The aggregate JSON endpoint is
 `/public/data/YOUR_TRACKER_KEY` and supports anonymous cross-origin reads.
+
+
+## Connect a website
+
+After adding a website, Risulta opens a setup guide with the exact tracker
+snippet. Paste it into the page head, deploy the page and visit its registered
+hostname. The guide checks every five seconds for a valid pageview and stops
+polling once connected. With JavaScript disabled, use **Check again**.
+
+The hostname must match the configured site. Single-page navigation through
+history updates and back/forward actions is tracked automatically. The guide
+explains missing scripts, blocked requests and Content Security Policy rules.
+Change a hostname in Settings to keep its existing analytics and tracker key.
+
+## Chart annotations
+
+Administrators can add, edit and delete dated notes in website Settings.
+Notes appear as neutral markers on Overview charts and as a readable list
+under the chart. Dates use UTC; notes are limited to 240 characters, with up
+to 500 notes per website. Multiple notes on a day share a marker. On Today,
+a date-only note marks midnight, rather than implying an exact deployment time.
+Notes are visible to authorized viewers of that website, never in public widgets.
+
+The annotations migration is additive and transactional (schema 7). A
+schema-6 binary cannot open an upgraded database. A downgrade must restore
+the paired pre-upgrade database and executable; see the recovery guide.
+
+## Supported deployment and development tools
+
+Production supports Linux x64 and ARM64 on Debian or Ubuntu with systemd.
+HTTPS setup can use Caddy. The executable contains web serving, collection,
+rollups and scheduled backups. No Bun, Node or Python runtime is required
+on the production server. Development builds, verification and benchmark
+scripts use their own tools; Python scripts in this repository are optional
+development utilities, never production workers.
+
+Published release assets provide the exact platform-specific byte sizes and
+SHA-256 checksums. Sizes vary with the compiler and platform; avoid treating
+an older benchmark's binary size as the current release size.
+
+See [v0.2 verification and operational limits](docs/v0.2-verification.md),
+[worker performance evidence](performance/2026-10-08-builtin-workers/README.md),
+and [benchmark harness](bench.mjs).

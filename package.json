@@ -1,12 +1,12 @@
 {
   "name": "risulta",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "lint": "oxlint .",
-    "test": "bun tests/daystring-test.mjs && bun tests/encoding-test.mjs && bun tests/backup-ui-test.mjs && bun tests/journeys-test.mjs && bun tests/visits-test.mjs && bun tests/funnels-test.mjs && bun tests/overview-test.mjs && bun tests/rollup-test.mjs && bun tests/analytics-cache-test.mjs && bun tests/analytics-trace-test.mjs && bun tests/site-navigation-test.mjs && bun tests/home-test.mjs && bun tests/chart-range-test.mjs && bun tests/read-api-test.mjs && bun tests/backup-schedule-test.mjs && bun tests/public-widgets-test.mjs && bun tests/widget-polling-test.mjs && python3 tests/installer-test.py && python3 tests/installer-cli-test.py",
+    "test": "bun tests/annotations-test.mjs && bun tests/daystring-test.mjs && bun tests/encoding-test.mjs && bun tests/backup-ui-test.mjs && bun tests/journeys-test.mjs && bun tests/visits-test.mjs && bun tests/funnels-test.mjs && bun tests/overview-test.mjs && bun tests/rollup-test.mjs && bun tests/analytics-cache-test.mjs && bun tests/analytics-trace-test.mjs && bun tests/site-navigation-test.mjs && bun tests/home-test.mjs && bun tests/chart-range-test.mjs && bun tests/read-api-test.mjs && bun tests/backup-schedule-test.mjs && bun tests/public-widgets-test.mjs && bun tests/widget-polling-test.mjs && python3 tests/installer-test.py && python3 tests/installer-cli-test.py",
     "check": "sproutboat check",
     "check:lock": "bun scripts/check-lock.mjs",
     "dev": "sproutboat dev --port 8099",

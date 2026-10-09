@@ -176,7 +176,7 @@
     guide.setAttribute("x1", point.getAttribute("cx"));
     guide.setAttribute("x2", point.getAttribute("cx"));
     chartTooltip.children[0].textContent = point.getAttribute("data-date");
-    chartTooltip.children[1].textContent = point.getAttribute("data-count") + " " + point.getAttribute("data-metric-label").toLowerCase();
+    chartTooltip.children[1].textContent = point.getAttribute("data-annotation") || point.getAttribute("data-count") + " " + point.getAttribute("data-metric-label").toLowerCase();
     chartTooltip.classList.toggle("is-drifting", drift === true && !chartTooltip.hidden);
     chartTooltip.hidden = false;
     var box = chartTooltip.getBoundingClientRect();
@@ -191,6 +191,8 @@
   function inspectPointer(event) {
     var chart = event.target.closest("svg.chart");
     if (!chart) return;
+    var annotation = event.target.closest(".chart-annotation");
+    if (annotation) return showChartPoint(chart, annotation, event.clientX, event.clientY, false);
     var matrix = chart.getScreenCTM();
     if (!matrix) return;
     var coordinate = chart.createSVGPoint();
@@ -225,19 +227,19 @@
     if (chart && (!event.relatedTarget || !chart.contains(event.relatedTarget))) hideChartTooltip();
   });
   document.body.addEventListener("focusin", function (event) {
-    var point = event.target.closest(".chart-point");
+    var point = event.target.closest(".chart-point, .chart-annotation");
     if (!point) return;
     var box = point.getBoundingClientRect();
     showChartPoint(point.closest("svg.chart"), point, box.left + box.width / 2, box.top);
   });
   document.body.addEventListener("focusout", function (event) {
-    if (event.target.closest(".chart-point")) hideChartTooltip();
+    if (event.target.closest(".chart-point, .chart-annotation")) hideChartTooltip();
   });
   document.body.addEventListener("keydown", function (event) {
     if (event.key === "Escape") { hideChartTooltip(); return; }
-    var point = event.target.closest(".chart-point");
+    var point = event.target.closest(".chart-point, .chart-annotation");
     if (!point) return;
-    var points = Array.from(point.closest("svg.chart").querySelectorAll(".chart-point"));
+    var points = Array.from(point.closest("svg.chart").querySelectorAll(point.classList.contains("chart-annotation") ? ".chart-annotation" : ".chart-point"));
     var index = points.indexOf(point);
     if (event.key === "ArrowRight") index = Math.min(points.length - 1, index + 1);
     else if (event.key === "ArrowLeft") index = Math.max(0, index - 1);

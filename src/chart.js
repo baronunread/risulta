@@ -46,7 +46,7 @@ export function chartPointLabel(point) {
   return hourLabel(point.hour) + " UTC";
 }
 
-export function chart(series, metric, metricLabel, mobile) {
+export function chart(series, metric, metricLabel, mobile, annotations) {
   const width = mobile ? 320 : 960;
   const height = mobile ? 190 : 248;
   const suffix = mobile ? "-mobile" : "";
@@ -94,6 +94,15 @@ export function chart(series, metric, metricLabel, mobile) {
     const label = chartPointLabel(series[i]) + ": " + fmtInt(series[i][metric]) + " " + metricLabel.toLowerCase();
     circles += '<circle class="chart-point" cx="' + xs[i] + '" cy="' + ys[i] + '" r="5" tabindex="0" role="img" aria-label="' + escapeHtml(label) + '" data-date="' + escapeHtml(series[i].hour === undefined ? series[i].day + " UTC" : chartPointLabel(series[i])) + '" data-count="' + fmtInt(series[i][metric]) + '" data-metric-label="' + escapeHtml(metricLabel) + '" data-value="' + escapeHtml(label) + '"></circle>';
   }
+  let markers = "";
+  for (let i = 0; i < series.length; i++) {
+    const notes = (annotations || []).filter((note) => series[i].hour === undefined ? note.day === series[i].day : i === 0);
+    if (!notes.length) continue;
+    const text = notes.map((note) => note.text).join("; ");
+    const label = notes[0].day + " UTC: " + text;
+    markers += '<line class="annotation-guide" x1="' + xs[i] + '" x2="' + xs[i] + '" y1="' + top + '" y2="' + (height - bottom) + '" vector-effect="non-scaling-stroke" aria-hidden="true"/>' +
+      '<circle class="chart-annotation" cx="' + xs[i] + '" cy="' + top + '" r="5" tabindex="0" role="img" aria-label="' + escapeHtml(label) + '" data-date="' + notes[0].day + ' UTC" data-annotation="' + escapeHtml(text) + '"><title>' + escapeHtml(label) + '</title></circle>';
+  }
   let tickLabels = "";
   for (let t = 0; t < ticks.length; t++) {
     const i = ticks[t];
@@ -109,5 +118,5 @@ export function chart(series, metric, metricLabel, mobile) {
     '<g class="grid" aria-hidden="true"><path d="M0 ' + top + "H" + width + "M0 " + (height - bottom + top) / 2 + "H" + width + "M0 " + (height - bottom) + 'H' + width + '"/></g>' +
     '<path d="' + area + '" fill="url(#area' + suffix + ')" aria-hidden="true"/>' +
     '<path d="' + line + '" fill="none" stroke="currentColor" stroke-width="2" vector-effect="non-scaling-stroke" aria-hidden="true"/>' +
-    '<line class="chart-guide" x1="0" x2="0" y1="' + top + '" y2="' + (height - bottom) + '" vector-effect="non-scaling-stroke" aria-hidden="true"/>' + circles + tickLabels + "</svg>";
+    '<line class="chart-guide" x1="0" x2="0" y1="' + top + '" y2="' + (height - bottom) + '" vector-effect="non-scaling-stroke" aria-hidden="true"/>' + circles + markers + tickLabels + "</svg>";
 }

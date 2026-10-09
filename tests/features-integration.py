@@ -47,7 +47,7 @@ def parsed(*args, **kwargs):
     return json.loads(body), response
 
 response, body = request(anonymous, '/healthz')
-assert body == b'ok\n' and response.headers['x-risulta-schema-version'] == '6'
+assert body == b'ok\n' and response.headers['x-risulta-schema-version'] == '7'
 
 request(admin, '/login', method='POST', payload={'email':os.environ['ADMIN_EMAIL'], 'password':os.environ['ADMIN_PASSWORD']})
 session, _ = parsed(admin, '/api/session')
@@ -61,6 +61,19 @@ request(viewer, '/login', method='POST', payload={'email':'feature-viewer@exampl
 vs,_ = parsed(viewer, '/api/session')
 vcsrf={'X-CSRF-Token':vs['csrf']}
 
+# Setup remains readable without JavaScript and checks only authorized sites.
+_,body=request(admin,f'/sites/{site_slug}/setup',headers={'Accept':'text/html'})
+assert b'Waiting for your first pageview.' in body and b'Copy tracker code' in body
+request(viewer,f'/sites/{other["slug"]}/partials/setup',code=404,headers={'Accept':'text/html'})
+notes_path=f'/api/sites/{site_id}/annotations'
+request(viewer,notes_path,code=403,method='POST',payload={'day':'2026-10-09','text':'No'},headers=vcsrf)
+request(admin,notes_path,code=403,method='POST',payload={'day':'2026-10-09','text':'No'})
+request(admin,notes_path,code=400,method='POST',payload={'day':'2026-02-30','text':'No'},headers=csrf)
+request(admin,notes_path,method='POST',payload={'day':time.strftime('%Y-%m-%d',time.gmtime()),'text':'Homepage <launch>'},headers=csrf)
+_,body=request(admin,f'/sites/{site_slug}/settings?size=wide&theme=dark',headers={'Accept':'text/html'})
+assert b'Homepage &lt;launch&gt;' in body and b'Add note' in body
+_,body=request(viewer,f'/sites/{site_slug}/settings',headers={'Accept':'text/html'})
+assert b'Homepage &lt;launch&gt;' in body and b'Add note' not in body
 # Public widgets expose aggregates only after explicit admin consent.
 public_path='/public/data/'+site['publicKey']
 widget_setting='/api/sites/'+str(site_id)+'/public-widget'
@@ -71,6 +84,7 @@ request(admin,widget_setting,method='POST',payload={'enabled':True},headers=csrf
 data,response=parsed(anonymous,public_path)
 assert set(data)=={'domain','current','visitors','pageviews','days','updated'} and len(data['days'])==7
 assert response.headers['Access-Control-Allow-Origin']=='*'
+assert 'launch' not in json.dumps(data)
 for size in ['small','medium','wide']:
     response,body=request(anonymous,'/public/widget/'+site['publicKey']+'?size='+size+'&theme=dark')
     assert b'/widget-frame.js' in body and b'location.reload' not in body
@@ -95,8 +109,8 @@ _,body=request(admin, '/users?backup=success',headers={'Accept':'text/html'})
 assert b'Database backup created' in body
 backup,_=parsed(admin, '/api/backup',method='POST',payload={},headers=csrf)
 assert backup['ok'] and backup['bytes']>0 and backup['manifest']['tables']['read_api_keys']==0
-assert backup['manifest']['schema_version'] == 6
-assert backup['manifest']['tables']['schema_migrations'] == 6
+assert backup['manifest']['schema_version'] == 7
+assert backup['manifest']['tables']['schema_migrations'] == 7
 assert backup['manifest']['tables']['analytics_rollup_days'] == 0
 
 # Preferences must be real, bounded, admin-only and protected by CSRF.
@@ -152,6 +166,15 @@ with sqlite3.connect(db_path,timeout=10) as db:
     assert stored==hashlib.sha256(key['token'].encode()).hexdigest()
     rows=[(site_id,anchor,'pageview','/first',visitor),(site_id,anchor,'signup','/second',visitor),(site_id,anchor+1800,'pageview','/third',visitor),(site_id,anchor+3601,'pageview','/fourth',visitor),(other_id,anchor,'pageview','/private',visitor)]
     db.executemany('INSERT INTO events (site_id,ts,name,path,visitor) VALUES (?,?,?,?,?)',rows)
+_,body=request(admin,f'/sites/{site_slug}/partials/setup',headers={'Accept':'text/html'})
+assert b'Your tracker is connected.' in body and b'hx-trigger' not in body
+with sqlite3.connect(db_path) as notes_db:
+    note_id=notes_db.execute('SELECT id FROM annotations WHERE site_id=?',(site_id,)).fetchone()[0]
+request(admin,f'/api/sites/{other_id}/annotations/{note_id}',code=404,method='POST',payload={'day':'2026-10-09','text':'wrong site'},headers=csrf)
+request(admin,notes_path+f'/{note_id}',method='POST',payload={'day':time.strftime('%Y-%m-%d',time.gmtime()),'text':'Homepage launched'},headers=csrf)
+_,body=request(admin,f'/sites/{site_slug}?period=7',headers={'Accept':'text/html'})
+assert b'chart-annotation' in body and b'Homepage launched' in body
+request(admin,notes_path+f'/{note_id}/delete',method='POST',payload={},headers=csrf)
 journeys=f'/api/sites/{site_id}/journeys'
 request(anonymous,journeys,code=401)
 request(viewer,f'/api/sites/{other_id}/journeys',code=404)
