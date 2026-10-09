@@ -1,3 +1,5 @@
+/* Keep the first rendered font for this navigation if the font loads slowly. */
+@font-face{font-family:Geist;src:url(/widget-geist.woff2) format("woff2");font-weight:100 900;font-display:optional}
 
 :root{--bg:#fff;--fg:#171717;--muted:#666;--faint:#8f8f8f;--line:#eaeaea;--soft:#fafafa;--hover:#f2f2f2;--focus:#0070f3;--danger:#b42318;font-family:Geist,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:light}
 .snippet{position:relative}.snippet .snippet-copy{position:absolute;inset-block-start:8px;inset-inline-end:8px;z-index:1;min-height:32px;padding-inline:10px;background:var(--bg);font-size:12px}.snippet+.hint#copy-status{display:none}.toast{position:fixed;z-index:10;inset-inline-end:24px;inset-block-end:24px;max-width:min(360px,calc(100% - 48px));padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--fg);color:var(--bg);box-shadow:0 12px 28px rgba(0,0,0,.16)}
