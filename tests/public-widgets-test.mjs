@@ -26,6 +26,8 @@ for(const size of ['small','medium','wide']){
  assert.ok(page.includes('data-current'));
  assert.ok(page.includes('/widget-frame.js'));
  assert.ok(!page.includes('location.reload'));
+ // a declared color scheme keeps the frame transparent on any embedding page (no light corners)
+ assert.ok(page.includes('<meta name="color-scheme" content="light dark">'));
  if(size!=='small')assert.ok(page.includes(' C'));
 }
 for(let i=0;i<120;i++)assert.equal(widgetAllowed('one',60),true);
