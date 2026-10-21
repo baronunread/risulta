@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.1
+
+- The event collector now sends CORS headers on every response, including
+  errors, and answers preflight (OPTIONS) requests with 204. Browsers no longer
+  report "Failed to fetch" for tracker beacons, and integrations that send
+  `application/json` work.
+- Rejected events whose domain doesn't match the site are logged with the
+  offending hostname only, at most once an hour per site and hostname.
+- The README shows how to reserve a public widget's size so embedding pages
+  don't shift when it appears.
+
+No schema change: upgrades and downgrades between v0.2.0 and v0.2.1 need no
+migration.
+
 ## v0.2.0
 
 - Refreshed dashboard, login, notifications and public widget styling.
