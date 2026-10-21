@@ -20,7 +20,8 @@
   frame.title = "Public website traffic, powered by Risulta";
   frame.width = dimensions[size][0];
   frame.height = dimensions[size][1];
-  frame.style.cssText = "display:block;border:0;max-width:100%;color-scheme:" + theme;
+  // The frame keeps the card's rounded corners even if a browser paints an opaque backdrop.
+  frame.style.cssText = "display:block;border:0;border-radius:10px;max-width:100%;color-scheme:" + theme;
   frame.loading = "lazy";
   frame.referrerPolicy = "no-referrer";
   script.parentNode.insertBefore(frame, script);

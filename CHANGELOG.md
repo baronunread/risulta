@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.2
+
+- Public widgets no longer show light square corners behind their rounded card
+  on dark pages. The widget page declares its color scheme, so browsers keep the
+  frame transparent, and `widget.js` rounds the frame to match the card.
+
+No schema change.
+
 ## v0.2.1
 
 - The event collector now sends CORS headers on every response, including
