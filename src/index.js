@@ -1,4 +1,5 @@
 import { annotationInput, siteAnnotations } from "./annotations.js";
+import { INGEST_CORS, ingestPreflight, createDomainMismatchLogger } from "./ingest-http.js";
 import { widgetAllowed, widgetData, widgetPage } from "./public-widgets.js";
 import { startMaintenanceProcess, exitMaintenanceProcess, isMaintenanceChild } from "./native-workers.js";
 import { runRollups, runScheduledBackup } from "./maintenance.js";
@@ -295,25 +296,34 @@ app.get("/js/:key{[A-Za-z0-9_-]+\\.js}", (c) => {
 // the runtime-resolved client IP + User-Agent; neither input is stored.
 // Rejections (400/403) count as rejected events; unknown keys (404) are not
 // a site and are not counted, mirroring the Bun app.
+const logDomainMismatch = createDomainMismatchLogger((line) => console.warn(line));
+function eventJson(data, status, headers) {
+  return json(data, status, headers ? { ...INGEST_CORS, ...headers } : INGEST_CORS);
+}
+app.options("/api/event/:key{[A-Za-z0-9_-]+}", () => ingestPreflight());
 app.post("/api/event/:key{[A-Za-z0-9_-]+}", async (c) => {
   const request = c.req.raw;
   const site = siteForKey(env.DB, c.req.param("key"));
-  if (!site) return json({ error: "unknown site" }, 404);
+  if (!site) return eventJson({ error: "unknown site" }, 404);
   const parsed = parseJson(bodyOf(request));
-  if (!parsed.ok) { incrementCounter("events_rejected_total"); return json({ error: "body must be JSON" }, 400); }
+  if (!parsed.ok) { incrementCounter("events_rejected_total"); return eventJson({ error: "body must be JSON" }, 400); }
   const input = parsed.value;
   const name = String(input.name || "");
-  if (!validEventName(name)) { incrementCounter("events_rejected_total"); return json({ error: "event name is invalid" }, 400); }
+  if (!validEventName(name)) { incrementCounter("events_rejected_total"); return eventJson({ error: "event name is invalid" }, 400); }
   const value = validValue(input.value === undefined ? null : input.value);
-  if (value === false) { incrementCounter("events_rejected_total"); return json({ error: "value is out of range" }, 400); }
+  if (value === false) { incrementCounter("events_rejected_total"); return eventJson({ error: "value is out of range" }, 400); }
   const domain = cleanDomain(input.domain);
-  if (domain !== site.domain) { incrementCounter("events_rejected_total"); return json({ error: "domain mismatch" }, 403); }
+  if (domain !== site.domain) {
+    incrementCounter("events_rejected_total");
+    logDomainMismatch(site.domain, domain, Date.now());
+    return eventJson({ error: "domain mismatch" }, 403);
+  }
   const parts = splitPathAndAttribution(input.path);
-  if (parts.path.charAt(0) !== "/") { incrementCounter("events_rejected_total"); return json({ error: "path must start with /" }, 400); }
+  if (parts.path.charAt(0) !== "/") { incrementCounter("events_rejected_total"); return eventJson({ error: "path must start with /" }, 400); }
   const throttle = ingestThrottle(request);
   if (!throttle.allowed) {
     incrementCounter("rate_limits_total");
-    return json({ error: "too many analytics events, try again shortly" }, 429, { "retry-after": String(throttle.retryAfter) });
+    return eventJson({ error: "too many analytics events, try again shortly" }, 429, { "retry-after": String(throttle.retryAfter) });
   }
   const ts = Math.floor(Date.now() / 1000);
   env.DB.prepare(
@@ -326,7 +336,7 @@ app.post("/api/event/:key{[A-Za-z0-9_-]+}", async (c) => {
     )
     .run();
   incrementCounter("events_accepted_total");
-  return json({ ok: true }, 202);
+  return eventJson({ ok: true }, 202);
 });
 
 // Sign-in. Rate-limited per email; JSON callers get codes, forms get the
