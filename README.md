@@ -151,6 +151,17 @@ per minute, with bounded limiter state. Failed refreshes retain the last
 result and show delayed status. The aggregate JSON endpoint is
 `/public/data/YOUR_TRACKER_KEY` and supports anonymous cross-origin reads.
 
+The script inserts the frame when it runs, so reserve its size to keep the page
+from shifting as it appears: `small` is 260×48, `medium` 320×218 and `wide`
+560×238 pixels.
+
+```html
+<div style="width:260px;max-width:100%;height:48px">
+  <script async src="https://your-risulta-host/widget.js"
+    data-site="YOUR_TRACKER_KEY" data-size="small" data-theme="auto"></script>
+</div>
+```
+
 
 ## Connect a website
 
