@@ -1,9 +1,9 @@
 # Risulta as a hosted SaaS (risulta.dev) on Sproutboat Cloud
 
-Status: plan, 2026-11-08. No app code changes in this PR.
+Status: plan, 2026-11-08. No app code changes in this PR. This doc is to move to the private `risulta-cloud` repo once merged (it stays in PR #92 for now).
 Decision (2026-11-08): **shared multi-tenant**, like Plausible. One Risulta app serves every customer, tenant isolation is enforced in app code, and hosted and self-hosted stay **one codebase** (AGPL-3.0, no open-core split).
 
-Tags: **[M]** measured for this plan (Apple M1, macOS 15.3.1, Bun 1.4.4, standalone build of `cbfab15`, sproutboat 0.15.0, embedded SQLite, not Cloud), **[R]** read from the repo or the platform docs, **[E]** estimate or proposal. Nothing tagged [E] has been measured. Scripts for [M] numbers: `performance/2026-11-08-saas-baseline/`.
+Tags: **[M]** measured for this plan (Apple M1, macOS 15.3.1, Bun 1.4.4, standalone build of `cbfab15`, sproutboat 0.15.0, embedded SQLite, not Cloud), **[R]** read from the repo or the platform docs, **[E]** estimate or proposal. Work is tagged by repo: **`risulta`** (open core) or **`cloud`** (private `risulta-cloud`), see "Repo split". Nothing tagged [E] has been measured. Scripts for [M] numbers: `performance/2026-11-08-saas-baseline/`.
 
 ## 0. What the app is today (facts that shape the plan)
 
@@ -17,15 +17,49 @@ Tags: **[M]** measured for this plan (Apple M1, macOS 15.3.1, Bun 1.4.4, standal
 
 Platform facts used below (Sproutboat Cloud closed alpha): 32 MiB per app, 2 s CPU and 30 s wall per request ([R] `web/src/data/limits.ts`: per-app storage and egress limits are **not enforced yet**), per-account SQLite shard on the app host, LTX backups RPO 60 s / RTO 4 h on host loss (given), bindings `kv d1 r2 queue do ae ratelimit assets secret service` with **no email binding** [R: `sproutboat-cloud/docs/phase1-design.md`], outbound fetch goes through an egress service that blocks private ranges [R: `cloud-plan-2026-09-09.md`].
 
-## 1. Tenancy model
+## Repo split (decided 2026-11-08): core + thin private repo
+
+**`risulta` (open, AGPL-3.0)** keeps the app and everything a self-hoster can use: orgs and memberships, the scoped data layer and isolation harness, quotas and usage counters, sampling, retention and purge mechanisms, the cron rework, tracker and app host handling, auth flows (signup, verify, invitations, reset), the mailer **interface**, and the **extension hooks** below, all with safe self-hosted defaults.
+
+**`risulta-cloud` (private, `baronunread/risulta-cloud`)** holds only what is specific to running risulta.dev: billing, checkout and trial logic; the EU email provider adapter and templates; the risulta.dev marketing site, pricing and legal pages (terms, privacy, DPA, subprocessors); Sproutboat Cloud deploy config and secrets setup; abuse tooling; runbooks and ops notes. Rule: **it never forks or patches app code.** Anything it needs from the app becomes a hook or an option in `risulta`.
+
+### Extension hooks (one object, passed to `createRisulta(hooks)`)
+
+| Hook | Shape | Self-hosted default | Cloud implementation |
+| --- | --- | --- | --- |
+| `quota` | `limits(org) -> {sites, pageviews, members, readKeys, retentionDays}` | unlimited | plan catalog (Starter, Growth), comped and trial limits |
+| `billing` | `state(org) -> {status: active\|trialing\|past_due\|locked\|canceled, banner?}`; optional `routes(app)` mounting `/billing/*` and `/api/billing/webhook` | always `active`, no routes | provider checkout, webhooks, subscription state machine (4.5) |
+| `onSignup` | `({email, request}) -> {allow, reason?, plan?, orgName?}` | allow only when `RISULTA_SIGNUPS=open`, plan `default` | invite tokens, trial per domain, abuse checks, set trial |
+| `mailer` | `send({to, template, vars})` | none: links shown to the admin | EU provider adapter and templates over the queue |
+| `events` | `orgCreated, siteCreated, quotaThreshold(80/100/stored cap/seen cap), samplingStarted, orgLocked` | no-op | owner emails, ops alerts |
+| `ingestGuard` | `(site, ctx) -> allow\|drop`, synchronous and cheap | allow | ban list, abuse rules |
+| `migrations` | list of `{version, sql}` run after core, own `cloud_*` tables | none | billing and abuse tables |
+| `schedule` | `(ctx) -> void`, runs inside the time-budgeted tick (3.5) | none | trial expiry and cancellation purge schedule (4.6), billing reconcile |
+| `operator` | `authorize(request) -> boolean` for operator routes | operator token env var | operator token plus audit log |
+
+Hook rules: the interface carries a `hooksVersion`; core refuses to start on a mismatch. Failure policy is fixed in core and tested: `ingestGuard` and `quota.limits` **fail open** (last known limits), `billing.state` failure keeps the last known state, `onSignup` and `mailer` failures **fail closed** with a visible error. Core enforces the states (a `locked` org is read-only, a `canceled` org stops collecting); cloud only says which state an org is in. Hooks are the only extension point, so the isolation harness (2.3) runs against a core build with the default hooks **and** with a fake cloud hook set.
+
+### How risulta-cloud consumes risulta
+
+- **Core change needed:** `src/index.js` today builds a module-level `app` and exports `{fetch, scheduled}`. It becomes `createRisulta(hooks)` returning that same object, plus a default export built with the default hooks, so the self-hosted binary is unchanged. `package.json` gets `exports` for `risulta/app`, `risulta/public` (assets) and types.
+- **Recommendation: a package dependency, not a git submodule.** `risulta-cloud/package.json` pins `"risulta": "github:baronunread/risulta#v<x.y.z>"` (a tag, never a branch) and the lockfile records the commit. Reasons: Bun resolves and bundles it like any dependency, the pin and its diff are one reviewable line, there is no second checkout to forget to update, and nothing invites an in-place edit of app code. A submodule would work but makes local edits easy, which is the thing the rule forbids. Verify in M3b that the Sproutboat build bundles the dependency and that `assets.directory` can point at `node_modules/risulta/public` (otherwise a prebuild copy step).
+- **Entry point.** `risulta-cloud/src/index.js`: `import { createRisulta } from "risulta/app"; export default createRisulta({quota, billing, onSignup, mailer, events, ingestGuard, migrations, schedule, operator});`. Its `sproutboat.jsonc` (bindings, crons, secrets, hosts) lives in cloud; core's stays the self-hosted one.
+- **Release flow.** (1) Change merged in `risulta`, CI green (including the isolation harness). (2) Tag `vX.Y.Z`; the existing release workflow builds the self-hosted binaries as today. (3) A PR in `risulta-cloud` bumps the pin (Renovate or a one-line script) and runs the cloud tests plus a staging deploy and smoke test on Cloud. (4) Merge, then deploy to production (a tag in `risulta-cloud` triggers the deploy). Schema migrations ship inside the pinned core and run at startup, so every core release must keep the additive-migration rule from `docs/migrations-and-rollups.md`, and a rollback pins the previous tag (downgrade needs the paired pre-upgrade backup, as today).
+- **License check (needs a lawyer, not engineering).** AGPL section 13 binds licensees who run a modified version for users. The copyright holder is not bound by the AGPL for their own code, but anyone else who contributes to `risulta` under the AGPL makes the combined hosted program subject to it. If outside contributions are accepted, either require a CLA that lets risulta.dev run the combination, or accept offering the combined source. Decide before the first outside PR is merged.
+
+
 
 ### 1.1 Schema (migration 8, additive, one PR)
 
 ```
-orgs         (id, slug UNIQUE, name, plan, status, trial_ends_at, comped_until, created_at)
-subscriptions(org_id PRIMARY KEY, provider, customer_ref, subscription_ref, status, plan, period_end, cancel_at)
+orgs         (id, slug UNIQUE, name, plan, status, created_at)      (plan is an opaque id; limits come from the quota hook)
 org_sampling (org_id, day, rate_permille, PRIMARY KEY (org_id, day))        (4.4)
 usage_monthly(org_id, month, seen, stored, dropped, PRIMARY KEY (org_id, month))
+```
+
+Billing state (`cloud_subscriptions`, trial end, comped-until, provider refs) is **not** in the core schema: `risulta-cloud` creates its own `cloud_*` tables through the `migrations` hook. All of the above is `risulta`.
+
+```
 memberships  (org_id, user_id, role CHECK IN ('owner','admin','viewer'), PRIMARY KEY (org_id, user_id))
 invitations  (id, org_id, email, role, site_ids, token_hash UNIQUE, expires_at, accepted_at, invited_by)
 email_tokens (token_hash PRIMARY KEY, user_id, kind CHECK IN ('verify','reset'), expires_at, used_at)
@@ -52,7 +86,7 @@ site_users   unchanged: a viewer is limited to the sites listed here
 | Abuse limits | Login and signup counters move out of process memory (they reset on every sleep/wake and are per process): use two new `ratelimiters` bindings (`AUTH_IP`, `AUTH_EMAIL`) plus a D1 failure table for lockout. |
 | Password hashing | Today an iterated HMAC-SHA-256 chain, 20,000 rounds [R]. That is not memory-hard. The runtime has verify-only `scryptVerify`, no hash side. Needs a Cloud feature (section 6.2) before a public launch; until then raise rounds and accept the risk for invite-only alpha. Login costs about 77 ms [R, `performance/2026-10-06-cli-comparison`: first login 76.6 ms] so a signup burst of 30/s would saturate one core: keep the `AUTH_IP` limiter strict. |
 
-**Email (decided 2026-11-08): an EU-based transactional provider over its HTTP API, not a platform binding.** The platform has no email binding [R]. `src/mailer.js` exposes one `send({to, template, vars})` behind a provider interface, calls the provider with `fetch` through the egress service, keeps the API key in `secrets`, and queues sends (`MAIL` queue) for retry, with inline send as the fallback. It needs verifying on Cloud in M0: egress allowlist for the provider host, a TLS handshake (BearSSL) to it, and that a queue consumer can wake a sleeping app. Self-hosted without a provider keeps today's behaviour (links shown to the admin).
+**Email (decided 2026-11-08): an EU-based transactional provider over its HTTP API, not a platform binding.** The platform has no email binding [R]. The `mailer` hook (`risulta`) exposes one `send({to, template, vars})` behind a provider interface; the provider adapter and templates are in `risulta-cloud`. The adapter calls the provider with `fetch` through the egress service, keeps the API key in `secrets`, and queues sends (`MAIL` queue) for retry, with inline send as the fallback. It needs verifying on Cloud in M0: egress allowlist for the provider host, a TLS handshake (BearSSL) to it, and that a queue consumer can wake a sleeping app. Self-hosted without a provider keeps today's behaviour (links shown to the admin).
 
 | Provider | EU data location | API | Price (all [E], verify before choosing) | Deliverability |
 | --- | --- | --- | --- | --- |
@@ -169,9 +203,9 @@ What it does today [R]: `scheduled()` forks and execs the full binary; the child
 
 ### 4.1 Plans, trial, quotas, rate limits, abuse
 
-- **Plans and trial (proposal [E]).** `orgs.plan` plus a `plans` table in code (not D1): sites, pageviews per month, members, read keys, retention. Plan sizes in 3.2. Plausible-style: a **30-day free trial, no card required**, on Starter quotas (10 sites capped to 3 during the trial), then a paid plan chosen by monthly pageviews. No card keeps signup friction low but invites abuse: one trial per hashed site domain ever, verified email before the first site, per-IP signup limits, and trial sites that never connect a tracker are purged at day 45.
-- **Comped alpha invitees.** Alpha A orgs are created `plan = growth`, `comped_until = <date>`, no subscription, on the **real quotas** of that plan, so quota, sampling and retention code runs against real limits from the first user. The operator can change plan or extend `comped_until` from the operator routes.
-- **Usage counting.** In-memory per-site counters of pageviews **seen** (accepted after validation, before sampling) and **stored**, flushed to `usage_monthly` every 10 s and at sleep; an `over_quota` flag per org refreshed by the cron and cached in process. This avoids a second hot-row write per event. Quota is billed on **seen**, not stored.
+- **Plans and trial (proposal [E]).** Mechanism in `risulta` (the `quota` hook, enforced in core); catalog, trial state and numbers in `cloud`. The plan catalog is code in `risulta-cloud`, not a D1 table, with: sites, pageviews per month, members, read keys, retention. Plan sizes in 3.2. Plausible-style: a **30-day free trial, no card required**, on Starter quotas (10 sites capped to 3 during the trial), then a paid plan chosen by monthly pageviews. No card keeps signup friction low but invites abuse: one trial per hashed site domain ever, verified email before the first site, per-IP signup limits, and trial sites that never connect a tracker are purged at day 45.
+- **Comped alpha invitees (`cloud`).** Alpha A orgs are created `plan = growth`, `comped_until = <date>`, no subscription, on the **real quotas** of that plan, so quota, sampling and retention code runs against real limits from the first user. The operator can change plan or extend `comped_until` from the operator routes.
+- **Usage counting (`risulta`).** In-memory per-site counters of pageviews **seen** (accepted after validation, before sampling) and **stored**, flushed to `usage_monthly` every 10 s and at sleep; an `over_quota` flag per org refreshed by the cron and cached in process. This avoids a second hot-row write per event. Quota is billed on **seen**, not stored.
 - **Over quota: sampling (decided), specified in 4.4.**
 - **Rate limits per tenant.** Today only per-IP (240/60 s). Add `INGEST_SITE` keyed by site id (a fixed limit per binding means one limiter per plan class, since the limiter takes a static limit), a payload size cap, and caps on distinct paths and distinct event names per site per day (protects the dimension rollups from cardinality bombs).
 - **Abuse.** The tracker key is public, so anyone can post to any site that knows its domain string. Mitigations: per-site limits, trial-per-domain limit, `Origin` header must match the site domain when present, referrer-spam list, auto-pause of a site that is 10x over its plan with an owner email, an operator ban list, signup limits, verified email before first site, disposable-email blocklist.
@@ -181,14 +215,14 @@ What it does today [R]: `scheduled()` forks and execs the full binary; the child
 
 Unauthenticated login counters and the per-IP limiter must key on the **real client IP**. If the Cloud edge does not supply `request.cf.clientIp` (or the trusted-proxy equivalent), every visitor hashes to the same ID and one limiter bucket blocks everyone. This is the first thing M0 tests.
 
-### 4.3 Export, delete, GDPR
+### 4.3 Export, delete, GDPR (export and delete in `risulta`; privacy, DPA and subprocessor pages in `cloud`)
 
 - **Export (per org).** Cursor-paged JSON Lines for raw events (`/api/sites/:id/export?after=<id>`, 50,000 rows per page, fits 2 s CPU) plus the existing CSV reports; account data as JSON. Later: queue-built archive in R2 with a signed link.
 - **Delete.** Site delete and org delete are queued, chunked deletes (about 5k rows per tick, behind the trigger guard in 3.3), with a tombstone so the UI shows "deleting". User deletion keeps the "not last owner" rule. Deleted data leaves LTX backups when the backup retention window expires: state that window in the privacy page.
 - **GDPR.** Customers are controllers, risulta.dev is processor: publish a **privacy policy**, a **DPA** with standard clauses, a **subprocessor list** (the hosting provider, the backup object store, the email provider; backup storage must be an EU location, and the Cloud backup backend is still undecided), a **data-location statement** (EU, Falkenstein), a **retention table** (events and visitor-level rollups 90 days in the alpha, then per plan as in 4.6; accounts until deletion plus the backup window; post-cancellation schedule from 4.6; email logs 30 days), a **subprocessor** entry for the billing provider (and, if a merchant of record, who is seller of record), and a breach procedure. The product itself is cookie-free and stores no raw IP or UA, which is the basis for "no consent banner needed", but that statement is the customer's to make and needs a lawyer's review. Legal text is a human task, not an engineering one.
 - **Alpha honesty.** A status page on separate infrastructure (not on Sproutboat Cloud itself), a banner and a terms line: "Risulta runs on the Sproutboat Cloud closed alpha: no SLA, backups every 60 s, recovery from host loss can take up to 4 hours, and events sent during an outage are lost (tracker beacons are not retried)." Linking Cloud incidents is a platform ask (6.2).
 
-### 4.4 Over quota: sampling (decided 2026-11-08)
+### 4.4 Over quota: sampling (decided 2026-11-08; all `risulta`, so self-hosters can use quotas too)
 
 Instead of dropping or locking, keep a fraction of pageviews once an org is over quota and scale the numbers up. Specification:
 
@@ -200,7 +234,7 @@ Instead of dropping or locking, keep a fraction of pageviews once an org is over
 - **Notifying the owner.** Emails at 80% of quota (heads-up), at 100% (sampling starts tomorrow, with an upgrade link), at the stored cap and at the seen cap, plus an in-app banner for owners and admins and a weekly digest while sampling is on. Quota resets on the first of the month (UTC) and sampling returns to 100%.
 - **Self-hosted** never samples (no quotas).
 
-### 4.5 Billing (must exist before the first non-invited customer)
+### 4.5 Billing (must exist before the first non-invited customer; all `cloud`, behind the `billing` hook)
 
 Billing is no longer deferred: a provider, checkout, subscription state and the trial lifecycle must be live before the waitlist opens (M8). It stays **out of Alpha A**.
 
@@ -218,7 +252,7 @@ Billing is no longer deferred: a provider, checkout, subscription state and the 
 - **Subscription state machine** (`subscriptions.status`): `trialing` -> `active` -> `past_due` (provider dunning, 14 days of full service) -> `canceled` (service until `period_end`) -> `expired`. Comped orgs have no subscription and never enter it. Provider webhooks are the only writer of state; the app never trusts a client redirect.
 - **Plan changes** take effect at once for upgrades, at period end for downgrades; a downgrade below current sites or usage is refused with the numbers shown.
 
-### 4.6 Retention and cancellation (proposal [E])
+### 4.6 Retention and cancellation (proposal [E]; purge mechanisms in `risulta`, the schedule and policy in `cloud`)
 
 Plausible keeps data while you subscribe. Risulta has one writer shard (ceiling about 5 GiB, 3.2), and visitor-keyed rollups are about as large as raw events (3.3), so "keep everything while subscribed" is not affordable until the aggregate tier or time shards exist.
 
@@ -285,30 +319,38 @@ Raw-scan views (filtered cohorts, funnels, journeys) stay capped at 30 days in h
 
 ## 7. Milestones (PR-sized, estimates are [E], one engineer with agent help, working days)
 
-| # | Milestone | Size | Depends |
-| --- | --- | --- | --- |
-| M0 | **Platform-fit spike**: deploy v0.2.2 unchanged to Cloud as a single org. Verify client IP, fork+exec maintenance in the cgroup, cron delivery, `db.backup()` behaviour, memory under real ingest, wake/sleep, an external site sending real traffic, egress and TLS to an EU email API (with a deliverability seed test). Measure rollup size on a realistic seed and index/trigger variants. Output: a pass/fail list and numbers. | 3 d | none |
-| M1 | **Schema 8**: orgs, memberships, `sites.org_id`, per-org uniqueness, migration of admin/viewer/self-hosted to org 1. No behaviour change in `selfhosted`. | 4 d | M0 |
-| M2 | **Scoped DAL + isolation harness**: `src/data/`, `SiteHandle`, lint rule, route manifest, two-tenant fixture, cross-product and fuzz tests. Fix audit rows 1 to 6. This PR is the gate for everything hosted. | 8 d | M1 |
-| M3 | **Hosted mode flags**: `RISULTA_MODE`, close `/backups`, `/api/backup`, `trace`, `/metrics` to non-operators, host allowlist, `RISULTA_TRACKER_ORIGIN`, byte-capped caches, 30-day cap on raw-scan views, `funnels` out of default stats. | 3 d | M2 |
-| M4 | **Accounts**: signup (`invite` mode), email verify, invitations, reset, sessions list, auth limiters, `mailer.js` for the chosen EU provider + queue. | 8 d | M2, M0 |
-| M5 | **Plans, trial and quotas**: plan table, comped orgs, trial state, usage counters, per-site limiter, cardinality caps, stored cap (1.1 x quota) and seen cap (10 x), operator routes. | 6 d | M3 |
-| M6 | **Sampling (4.4)**: ingest decision, `org_sampling`, cron rate setter, scaled reads in the DAL, banner / `~` / hatched days, API fields, owner emails. | 7 d | M5, M4 |
-| M7 | **Data lifecycle**: trigger guard, chunked retention per plan, site/org delete, cursor export, cancellation and trial-expiry purge jobs (4.6), cron rework (3.5): in-process, time-budgeted, staggered. | 7 d | M5 |
-| M8 | **Billing (4.5)**: provider adapter, checkout, signed webhooks, subscription state machine, trial to paid, dunning/grace, customer portal link, tax setup, billing page, test-mode end-to-end. | 10 d | M5, M4, provider decision |
-| M9 | **Domains and tracker**: `app.` and `t.` hosts, snippet origin, proxy recipes with trusted-proxy handling, docs. | 3 d | M3 |
-| M10 | **Trust pages**: pricing, terms, refund policy, privacy, DPA, subprocessors (hosting, backups, email, billing), retention table, status page on separate infra, alpha banner. Legal review is outside the estimate. | 5 d | M4, M8 |
-| M11 | **Drills on Cloud**: two-org load test, restore at 1/2/5 GiB, deploy-with-migration under traffic, abuse test with no-card trials, sampling accuracy against seeded ground truth, billing webhooks in test mode, then close the checklist. | 5 d | M6, M7, M8, M9, M10 |
-| M12 | Later, sized after alpha data: aggregate tier and longer retention (4.6), time shards, custom-hostname automation, funnel precompute, Scale plan. | not estimated | alpha data |
+Repo column: `risulta` = open core, `cloud` = private `risulta-cloud`.
 
-Total M0 to M11: about **68 working days** [E], up from 47 (billing +10, sampling +7, trial/quota/lifecycle +4). M2, M6 and M8 are the large and risky ones.
+| # | Repo | Milestone | Size | Depends |
+| --- | --- | --- | --- | --- |
+| M0 | cloud (scripts in risulta) | **Platform-fit spike**: deploy v0.2.2 unchanged to Cloud as a single org. Verify client IP, fork+exec maintenance in the cgroup, cron delivery, `db.backup()` behaviour, memory under real ingest, wake/sleep, an external site sending real traffic, egress and TLS to an EU email API (with a deliverability seed test). Measure rollup size on a realistic seed and index/trigger variants. Output: a pass/fail list and numbers. | 3 d | none |
+| M1 | risulta | **Schema 8**: orgs, memberships, `sites.org_id`, per-org uniqueness, migration of admin/viewer/self-hosted to org 1. No behaviour change in `selfhosted`. | 4 d | M0 |
+| M2 | risulta | **Scoped DAL + isolation harness**: `src/data/`, `SiteHandle`, lint rule, route manifest, two-tenant fixture, cross-product and fuzz tests. Fix audit rows 1 to 6. Gate for everything hosted. | 8 d | M1 |
+| M3 | risulta | **Hosted mode and extension hooks**: `RISULTA_MODE`, close `/backups`, `/api/backup`, `trace`, `/metrics` to non-operators, host allowlist, `RISULTA_TRACKER_ORIGIN`, byte-capped caches, 30-day cap on raw-scan views, `funnels` out of default stats; **`createRisulta(hooks)`**, the hook interface with self-hosted defaults, `hooksVersion`, failure-policy tests, harness run with a fake hook set. | 5 d | M2 |
+| M3b | cloud | **`risulta-cloud` scaffold**: repo layout, pinned `risulta` dependency, entry point, `sproutboat.jsonc`, secrets setup, CI, staging deploy and the release flow (pin bump, smoke test, tag-to-deploy). | 3 d | M3 |
+| M4a | risulta | **Accounts**: signup, email verify, invitations, reset, sessions list, auth limiters, `mailer` hook, `onSignup` hook, org and email events. | 6 d | M2, M3 |
+| M4b | cloud | **Email provider adapter** (EU, over fetch plus queue), templates, invite-token signup policy for Alpha A, deliverability seed test, SPF/DKIM/DMARC. | 2 d | M4a, M3b, M0 |
+| M5a | risulta | **Quota engine**: usage counters, per-site limiter, cardinality caps, stored cap (1.1 x quota) and seen cap (10 x), `quota` hook consumption, operator routes with `operator` hook. | 4 d | M3 |
+| M5b | cloud | **Plan catalog and trial state**: Starter and Growth limits, comped orgs, trial record and per-domain trial rule, `quota` and `onSignup` implementations, `cloud_*` migrations. | 2 d | M5a, M3b |
+| M6 | risulta | **Sampling (4.4)**: ingest decision, `org_sampling`, cron rate setter, scaled reads in the DAL, banner / `~` / hatched days, API fields, owner events. | 7 d | M5a |
+| M7a | risulta | **Data lifecycle**: trigger guard, chunked retention from `quota.limits`, site/org delete, cursor export, purge API, cron rework (3.5): in-process, time-budgeted, staggered, `schedule` hook. | 6 d | M5a |
+| M7b | cloud | **Lifecycle policy**: trial-expiry and cancellation schedule (4.6) on the `schedule` hook, reminder emails. | 1 d | M7a, M4b |
+| M8 | cloud | **Billing (4.5)**: provider adapter, checkout, signed webhooks, subscription state machine, trial to paid, dunning, portal link, tax setup, billing page via `billing.routes`, test-mode end-to-end. | 10 d | M5b, M4b, provider decision |
+| M9a | risulta | **Tracker hosts**: host allowlist for `t.` and custom hosts, snippet origin, trusted-proxy handling for tenant proxies. | 2 d | M3 |
+| M9b | cloud | **Domains deploy**: `app.` and `t.` hostnames, DNS, proxy recipes for customers (published on the marketing site). | 1 d | M9a, M3b |
+| M10 | cloud | **Trust and marketing pages**: risulta.dev site, pricing, terms, refund policy, privacy, DPA, subprocessors (hosting, backups, email, billing), retention table, status page on separate infra, alpha banner. Legal review is outside the estimate. | 5 d | M4b, M8 |
+| M10b | cloud | **Abuse tooling and runbooks**: ban list on `ingestGuard`, trial-abuse report, suspend/unsuspend, incident, restore and deploy runbooks. | 3 d | M5b |
+| M11 | cloud (fixes in risulta) | **Drills on Cloud**: two-org load test, restore at 1/2/5 GiB, deploy-with-migration under traffic, abuse test with no-card trials, sampling accuracy against seeded ground truth, billing webhooks in test mode, then close the checklist. | 5 d | M6, M7a, M7b, M8, M9b, M10, M10b |
+| M12 | risulta (Scale plan in cloud) | Later, sized after alpha data: aggregate tier and longer retention (4.6), time shards, custom-hostname automation, funnel precompute, Scale plan. | not estimated | alpha data |
 
-Order: M0 to M3, then M4 and M9 in parallel with M5, then M6, M7 and M8, then M10, M11.
+Totals [E]: **risulta** about 42 d (M1, M2, M3, M4a, M5a, M6, M7a, M9a), **risulta-cloud** about 35 d (M0, M3b, M4b, M5b, M7b, M8, M9b, M10, M10b, M11), together about **77 working days**, up from 69 (the earlier "68" was an addition slip; hooks +2, cloud scaffold +3, abuse tooling and runbooks +3). M2, M6 and M8 are the large and risky ones.
+
+Order: M0 to M3, then M3b, then M4a, M5a and M9a in parallel, then M4b, M5b, M6, M7a, M8, M9b, M10b, then M7b, M10, M11. Core work is never blocked on cloud work except through the hook interface fixed in M3.
 
 ### What ships for the first real users
 
-- **Alpha A (about 34 d: M0 to M5 + M9):** invite-only, around 10 orgs we know, **comped** on real Growth quotas, with the stored and seen caps live (over-quota beyond the cap is handled by the operator by hand, sampling not yet built), proxy recipes for custom domains, an "alpha, no SLA" banner. No billing, no trial. Isolation harness green is a hard gate.
-- **Alpha B / first non-invited customers (about 68 d: through M11):** waitlist signups start a 30-day no-card trial, then pay through the billing provider. Sampling, per-plan retention and cancellation purge, export and delete, trust pages, restore and abuse drills all passed. Capacity limited to the alpha fleet budget (about 40 orgs, 1.5 M pageviews a month).
+- **Alpha A (about 40 d: M0 to M3, M3b, M4a, M4b, M5a, M5b, M9a, M9b):** invite-only, around 10 orgs we know, **comped** on real Growth quotas, with the stored and seen caps live (over-quota beyond the cap is handled by the operator by hand, sampling not yet built), proxy recipes for custom domains, an "alpha, no SLA" banner. No billing, no trial. Isolation harness green is a hard gate.
+- **Alpha B / first non-invited customers (about 77 d: through M11):** waitlist signups start a 30-day no-card trial, then pay through the billing provider. Sampling, per-plan retention and cancellation purge, export and delete, trust pages, abuse tooling, restore and abuse drills all passed. Capacity limited to the alpha fleet budget (about 40 orgs, 1.5 M pageviews a month).
 
 ## 8. Decisions
 
@@ -317,16 +359,20 @@ Order: M0 to M3, then M4 and M9 in parallel with M5, then M6, M7 and M8, then M1
 1. **No free plan.** Paid-only like Plausible: a time-limited free trial, then paid plans by monthly pageviews. Alpha invitees are comped but on real paid-plan quotas. Billing (provider, checkout, subscription state) must exist before the first non-invited customer, and is not part of Alpha A (M8).
 2. **Email:** an EU-based transactional provider through its HTTP API, not a platform binding. Which provider is open below (recommendation: Scaleway TEM, verify).
 3. **Over quota: sample**, deterministic per visitor, scaled and clearly marked as estimates, with a hard cap (4.4).
+4. **Repo split: core + thin private repo.** Open `risulta` keeps the app and every self-hostable feature plus extension hooks; private `risulta-cloud` holds billing, the email adapter and templates, the marketing and legal site, deploy config, abuse tooling and runbooks, depends on a pinned `risulta` version and never forks app code. This doc moves to `risulta-cloud` once merged.
 
 **Still open (proposals in the doc):**
 
-4. Trial length and card: proposal 30 days, no card, Starter quotas (4.1).
-5. Plan sizes, site limits and prices: proposal Starter 10k, Growth 100k pageviews a month, Scale only after shards (3.2). Prices are not proposed here.
-6. Billing provider: Stripe (cheapest, you handle EU VAT) vs Paddle or Lemon Squeezy (merchant of record, higher fees). Recommendation: evaluate Paddle first (4.5).
-7. Email provider final pick after the M0 seed test: Scaleway TEM, Brevo or Lettermint (section 1.2).
-8. Retention per plan and the cancellation schedule (4.6): 90 days of raw data in the alpha, aggregate tier later, 30-day read-only and 90-day deletion after cancellation.
-9. The hosted cap of 30 days on raw-scan views (filtered cohorts, funnels, journeys).
-10. Where the status page lives, and who reviews the DPA, terms and privacy text.
+- **Consumption method:** package dependency pinned to a tag (recommended) vs git submodule (Repo split).
+- **Outside contributions and the AGPL:** CLA or offer the combined source; needs a lawyer before the first outside PR is merged (Repo split).
+
+- Trial length and card: proposal 30 days, no card, Starter quotas (4.1).
+- Plan sizes, site limits and prices: proposal Starter 10k, Growth 100k pageviews a month, Scale only after shards (3.2). Prices are not proposed here.
+- Billing provider: Stripe (cheapest, you handle EU VAT) vs Paddle or Lemon Squeezy (merchant of record, higher fees). Recommendation: evaluate Paddle first (4.5).
+- Email provider final pick after the M0 seed test: Scaleway TEM, Brevo or Lettermint (section 1.2).
+- Retention per plan and the cancellation schedule (4.6): 90 days of raw data in the alpha, aggregate tier later, 30-day read-only and 90-day deletion after cancellation.
+- The hosted cap of 30 days on raw-scan views (filtered cohorts, funnels, journeys).
+- Where the status page lives, and who reviews the DPA, terms and privacy text.
 
 ## 9. Top risks
 
@@ -334,4 +380,4 @@ Order: M0 to M3, then M4 and M9 in parallel with M5, then M6, M7 and M8, then M1
 2. **One host, one shard, RTO 4 h.** Host loss drops events for hours and a 5 GiB shard may restore slowly. Mitigation: fleet budget, restore drill in M11, honest status messaging, Cloud ask for buffering or a warm standby.
 3. **32 MiB and 2 s against raw-event read paths.** Funnels, journeys and filtered views already hit 2.4 to 2.7 s on 100k events per site. Mitigation: read caps, `funnels` out of default stats, byte-capped caches, precompute later.
 4. **Unverified platform behaviours**: client IP, fork+exec in the cgroup, email egress and TLS, cron semantics. A wrong answer on client IP breaks both analytics and the limiter. Mitigation: M0 first, before any hosted code.
-5. **Signup abuse (no-card trial), billing readiness and email deliverability.** A no-card trial on a new domain invites spam sites and a blocklisted sender, and the first paying customer cannot arrive before checkout, webhooks and VAT handling work (68 days of work, 10 of them billing). Mitigation: invite-only comped alpha first, one trial per domain, verified email before the first site, per-IP and per-site limits, SPF/DKIM/DMARC from day one, merchant of record to remove VAT filing, billing built and drilled in test mode before the waitlist.
+5. **Signup abuse (no-card trial), billing readiness and email deliverability.** A no-card trial on a new domain invites spam sites and a blocklisted sender, and the first paying customer cannot arrive before checkout, webhooks and VAT handling work (about 77 days of work, 10 of them billing). Mitigation: invite-only comped alpha first, one trial per domain, verified email before the first site, per-IP and per-site limits, SPF/DKIM/DMARC from day one, merchant of record to remove VAT filing, billing built and drilled in test mode before the waitlist.
