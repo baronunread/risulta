@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix="risulta-verify-") as scratch:
             base = f"http://127.0.0.1:{port}"
             env = os.environ.copy()
             env.pop("SB_TRUSTED_PROXIES", None)
-            env.update(SB_DATA_DIR=str(state), PORT=str(port),
+            env.update(SB_DATA_DIR=str(state), PORT=str(port), SB_SQLITE_EXCLUSIVE="0",
                        BASE=base, EXPECT_TRUST=str(trust), RISULTA_VERIFY_BINARY=str(binary),
                        RISULTA_BASE_URL=base,
                        RISULTA_ADMIN_EMAIL="admin@example.com",

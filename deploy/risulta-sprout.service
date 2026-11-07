@@ -7,6 +7,9 @@ Wants=network-online.target
 Type=simple
 User=risulta-sprout
 Group=risulta-sprout
+# Built-in maintenance runs in a second process on the same database, which the
+# default EXCLUSIVE SQLite locking (sproutboat 0.12.4+) would refuse.
+Environment=SB_SQLITE_EXCLUSIVE=0
 EnvironmentFile=/etc/risulta-sprout/risulta-sprout.env
 ExecStart=/usr/local/bin/risulta-sprout
 Restart=on-failure

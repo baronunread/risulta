@@ -36,12 +36,17 @@ mode, see [release channels and recovery](deploy/NIGHTLIES.md).
 
 ```sh
 sproutboat build --standalone            # -> dist/risulta-sprout
-SB_DATA_DIR=/var/lib/risulta-sprout PORT=8099 ./dist/risulta-sprout
+SB_SQLITE_EXCLUSIVE=0 SB_DATA_DIR=/var/lib/risulta-sprout PORT=8099 ./dist/risulta-sprout
 ```
 
 The first admin account comes from `RISULTA_ADMIN_EMAIL` /
 `RISULTA_ADMIN_PASSWORD` in the environment, read once while the user table
 is empty. Open the printed address and sign in.
+
+`SB_SQLITE_EXCLUSIVE=0` is required: built-in maintenance (rollups, scheduled
+backups) runs in a second process on the same database, and sproutboat 0.12.4+
+opens SQLite in EXCLUSIVE locking mode by default, which locks that process out.
+The systemd unit sets it.
 
 ## Website navigation
 
