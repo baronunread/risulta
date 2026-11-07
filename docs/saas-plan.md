@@ -203,7 +203,7 @@ What it does today [R]: `scheduled()` forks and execs the full binary; the child
 
 ### 4.1 Plans, trial, quotas, rate limits, abuse
 
-- **Plans and trial (proposal [E]).** Mechanism in `risulta` (the `quota` hook, enforced in core); catalog, trial state and numbers in `cloud`. The plan catalog is code in `risulta-cloud`, not a D1 table, with: sites, pageviews per month, members, read keys, retention. Plan sizes in 3.2. Plausible-style: a **30-day free trial, no card required**, on Starter quotas (10 sites capped to 3 during the trial), then a paid plan chosen by monthly pageviews. No card keeps signup friction low but invites abuse: one trial per hashed site domain ever, verified email before the first site, per-IP signup limits, and trial sites that never connect a tracker are purged at day 45.
+- **Plans and trial (trial decided, sizes proposed [E]).** Mechanism in `risulta` (the `quota` hook, enforced in core); catalog, trial state and numbers in `cloud`. The plan catalog is code in `risulta-cloud`, not a D1 table, with: sites, pageviews per month, members, read keys, retention. Plan sizes in 3.2. Plausible-style: a **30-day free trial, no card required (decided 2026-11-08)**, on Starter quotas (10 sites capped to 3 during the trial), then a paid plan chosen by monthly pageviews. No card keeps signup friction low but invites abuse: one trial per hashed site domain ever, verified email before the first site, per-IP signup limits, and trial sites that never connect a tracker are purged at day 45.
 - **Comped alpha invitees (`cloud`).** Alpha A orgs are created `plan = growth`, `comped_until = <date>`, no subscription, on the **real quotas** of that plan, so quota, sampling and retention code runs against real limits from the first user. The operator can change plan or extend `comped_until` from the operator routes.
 - **Usage counting (`risulta`).** In-memory per-site counters of pageviews **seen** (accepted after validation, before sampling) and **stored**, flushed to `usage_monthly` every 10 s and at sleep; an `over_quota` flag per org refreshed by the cron and cached in process. This avoids a second hot-row write per event. Quota is billed on **seen**, not stored.
 - **Over quota: sampling (decided), specified in 4.4.**
@@ -234,23 +234,59 @@ Instead of dropping or locking, keep a fraction of pageviews once an org is over
 - **Notifying the owner.** Emails at 80% of quota (heads-up), at 100% (sampling starts tomorrow, with an upgrade link), at the stored cap and at the seen cap, plus an in-app banner for owners and admins and a weekly digest while sampling is on. Quota resets on the first of the month (UTC) and sampling returns to 100%.
 - **Self-hosted** never samples (no quotas).
 
-### 4.5 Billing (must exist before the first non-invited customer; all `cloud`, behind the `billing` hook)
+### 4.5 Billing: Polar (decided 2026-11-08; all `cloud`, behind the `billing` hook)
 
-Billing is no longer deferred: a provider, checkout, subscription state and the trial lifecycle must be live before the waitlist opens (M8). It stays **out of Alpha A**.
+Billing is no longer deferred: checkout, subscription state and the trial lifecycle must be live before the waitlist opens (M8). It stays **out of Alpha A**. Provider: **Polar (polar.sh), merchant of record.** Alternatives considered and not chosen: Stripe + Stripe Tax (cheapest, but you register and file EU VAT yourself), Paddle and Lemon Squeezy (also merchants of record).
 
-- **Provider choice is a decision for the user.** The trade-off is who is the seller of record for EU VAT.
+Facts below were read from the public docs on 2026-11-08 (`polar.sh/docs`, `docs.polar.sh` redirects there). The pages were summarised by a fetch tool, so **everything is unverified until M8 starts and the exact pages are re-read**; items the docs did not cover are marked "not documented".
 
-| | Stripe (+ Stripe Tax) | Paddle | Lemon Squeezy |
-| --- | --- | --- | --- |
-| Seller of record | You | Paddle (merchant of record) | Lemon Squeezy (merchant of record, owned by Stripe) |
-| EU VAT / OSS filing | You register, collect and file (Stripe Tax computes, does not file) | Paddle collects, files and remits | Same as Paddle |
-| Fee (verify) | roughly 1.5% + 0.25 EUR per EU card, plus Tax | roughly 5% + 0.50 USD | roughly 5% + 0.50 USD |
-| Control and invoices | Full control, own invoices, own checkout design | Invoices issued by Paddle, less control, payout delays | Same, smaller company, roadmap tied to Stripe |
-| Fit | Cheapest, most work, most flexible | Plausible uses it; least tax work for a solo founder | Simple, but the Stripe acquisition makes its future less clear |
+**Trial without a card: Polar cannot do it, so the trial is ours.** Polar's trials page says customers "won't be charged until the trial period ends" but "We'll still collect their payment information at checkout", and it describes no card-free trial. Therefore:
+- The 30-day trial is **our own state** in `risulta-cloud` (`cloud_trials(org_id, started_at, ends_at)`), created by the `onSignup` hook. Polar knows nothing about it.
+- Polar is involved **only at conversion**: a "Subscribe" button creates a checkout session and redirects to Polar's hosted checkout. Polar's own trial feature is **not used** (trial override off on every product and link).
 
-  **Recommendation (verify): evaluate Paddle first.** For a one-person EU product, a merchant of record removes VAT registration and filing, and Plausible is a working precedent for this exact model. Pay about 3 to 4 points more in fees. Keep the `billing` module behind an interface (`createCheckout(org, plan)`, `portalUrl(org)`, `handleWebhook(req)`, `entitlements(org)`) so Stripe can be swapped in. Webhooks need a public signed endpoint (`/api/billing/webhook`, HMAC verified with `crypto.subtle`, idempotent by event id).
-- **Subscription state machine** (`subscriptions.status`): `trialing` -> `active` -> `past_due` (provider dunning, 14 days of full service) -> `canceled` (service until `period_end`) -> `expired`. Comped orgs have no subscription and never enter it. Provider webhooks are the only writer of state; the app never trusts a client redirect.
-- **Plan changes** take effect at once for upgrades, at period end for downgrades; a downgrade below current sites or usage is refused with the numbers shown.
+**Products and prices.** One Polar product per plan per interval (Starter and Growth, monthly and yearly: four products), each a **fixed recurring price**. Billing cycle and pricing type are locked at product creation (docs), so decide intervals first. The map `polar_product_id -> plan` lives in cloud config, one per environment. Archived products keep renewing for existing subscribers and old subscribers keep their price (docs), which gives clean grandfathering.
+
+**Pageviews are tiered plans, not metered usage: confirmed, no metered billing.** Polar's metered pricing bills consumption (docs cite API calls and tokens) and the docs do not describe volume tiers for it. Our over-quota path is sampling (4.4), so there is nothing to meter or invoice after the fact. Revisit only if overage billing is ever wanted.
+
+**Checkout.** Server side, `POST /v1/checkouts` (SDK `polar.checkouts.create`), fields per the docs: `products` (the one product chosen), `external_customer_id` (**our org id**, which Polar exposes as `customer.external_id`, unique per Polar organization and **immutable once set**, so it must be the stable org id, never a slug), `customer_ip_address` (forward the visitor's IP so Polar picks country and currency), `customer_billing_address.country` (optional with the IP). Prefilled email via `customer_email` and `success_url`, `metadata` (org id, plan) are standard but **not confirmed on the pages read**. Use the hosted checkout redirect. Embedded checkout: not documented on the pages read, treat as a later option.
+
+**Customer portal.** Polar's hosted portal: view subscriptions and orders, download and edit invoices (a customer can add a company name or **VAT number**), download receipts, cancel, **update the payment method** (hosted portal only, the main recovery path from failed renewals), and, if enabled in Polar settings, change plan, pause and resume. Risulta's billing page links to a **pre-authenticated portal link** created through the customer sessions API for the `external_customer_id` (endpoint not confirmed on the pages read). Enable plan change in the portal so upgrades and downgrades need no custom UI; proration behaviour is **not documented** on the pages read, check the proration page.
+
+**Webhooks.** One public endpoint `/api/billing/webhook` (mounted by the `billing.routes` hook):
+- **Signature:** the docs say Polar sends `webhook-id`, `webhook-timestamp` and `webhook-signature` (the Standard Webhooks scheme). A twist: secrets created before a cut-over date in 2026 use Polar's own HMAC encoding (key is the base64 of the UTF-8 bytes of the full `whsec_...` string) and newer secrets use plain Standard Webhooks, with the SDK trying both. Our verifier is written on `crypto.subtle` HMAC-SHA-256 (the runtime supports it), tries both key forms, rejects timestamps older than 5 minutes, compares in constant time, and returns 403 on failure. The official `@polar-sh/sdk` `validateEvent` is used **in tests only** (under Bun) as an oracle against our verifier with recorded sandbox payloads. Reason for a hand-written client rather than the SDK in the app: the SDK is an npm package built for Node and the Porffor-compiled runtime has no Node built-ins beyond `path`, `url` and `querystring`; the REST calls we need (create checkout, create customer session, get subscription) are three `fetch` calls.
+- **Respond fast:** Polar times out at 10 s and recommends answering within 2 s. The handler verifies, stores the raw event in `cloud_webhook_events` keyed by `webhook-id`, answers 202, and processes through the queue (or the next tick of the `schedule` hook). Unknown event types also get 202.
+- **Retries and disablement:** up to 10 retries with exponential backoff; **10 consecutive non-2xx responses disable the endpoint** and re-enabling is manual in Polar's settings, so failure to answer for a few minutes can silently stop billing. Alert on any non-2xx we return, and run a **reconcile job** (hourly, via `schedule`) that lists subscriptions through the API and repairs drift.
+- **Idempotency and ordering: not documented.** So: dedupe on `webhook-id`; never trust event order; on **every** subscription event, handle it by re-fetching the subscription (`GET /v1/subscriptions/{id}`) and writing its current status, period end and cancel flag, which makes duplicates and reordering harmless.
+
+**Events mapped to our subscription state machine** (`cloud_subscriptions.status`; core sees only the `billing.state` result):
+
+| Polar event (per docs) | Our transition |
+| --- | --- |
+| `checkout.expired` | none (stay `trialing` or `locked`) |
+| `subscription.created` | store the subscription for the org (by `external_id`); not yet service |
+| `subscription.active` | `active`, plan from the product map; end of our own trial |
+| `subscription.updated` (catch-all: cancel, uncancel, cycle, past_due, revoke, plan change) | re-fetch and set from the current object |
+| `subscription.cycled` and `order.paid` | renewal: extend `period_end`, record the order for the billing page |
+| `subscription.past_due` | `past_due` (full service; Polar runs automated payment recovery) |
+| status `unpaid` (retries exhausted; revoked benefits unless a grace period is configured) | treat as `canceled`, start the 4.6 clock |
+| `subscription.canceled` (cancellation requested, access to period end) | `canceling`: keep `active` service until `period_end`, banner to the owner |
+| `subscription.uncanceled` (listed under `subscription.updated`) | back to `active` |
+| `subscription.revoked` (ended for good: at period end after cancel, or immediate) | `expired`, start the 4.6 clock |
+| `subscription.paused` / `subscription.resumed` | not offered (portal pause disabled); if received, treat as `locked` / `active` |
+| `order.refunded`, `refund.*`, `customer.deleted` | notify the operator; no automatic state change |
+
+Our own states in `billing.state`: `trialing` (our trial), `active`, `past_due`, `canceled` (service ended, 4.6), `locked`. Polar's own trial status is never used. Comped orgs have no subscription and never enter the machine. Provider webhooks and the reconcile job are the only writers; a client redirect from checkout is never trusted (the success page only polls our state).
+
+**API and SDK.** REST base `https://api.polar.sh/v1`, **sandbox** `https://sandbox-api.polar.sh/v1`, bearer **Organization Access Token** (kept in `secrets`, never in logs). Rate limit 500 requests per minute per organization in production, 100 in sandbox (429 with `Retry-After`): far above our use. TypeScript SDK is `@polar-sh/sdk` (Python `polar-sdk`); the import path shown in the docs was a dated subpath, unverified. We use plain `fetch` (above).
+
+**Sandbox.** A fully separate server, user account, organization, products and tokens (a production token does not work there). Stripe test cards work (4242 4242 4242 4242), and customer emails in the sandbox go only to organization members. The staging deploy of `risulta-cloud` points at the sandbox with its own webhook secret; production uses the live organization. M8 and M11 run the full flow in the sandbox: checkout, trial conversion, renewal, failed payment, cancel, uncancel, revoke, duplicate and reordered webhooks, refund, endpoint disablement drill.
+
+**What Polar changes in the plan (unverified, check at M8):**
+- **Fees are higher for EU buyers than the headline.** Docs: Starter tier 5% + 50 cents per transaction, plus **1.5% on non-US cards** (every EU customer), so about **6.5% + 50 cents**; Pro tier ($20/month) 3.8% + 40 cents. Payout costs pass through from Stripe: $2 a month while payouts are active, 0.25% + 25 cents per payout, 0.25% cross-border conversion for the EU. Chargebacks cost $15 each, refunds do not return the fee. On illustrative prices of 9, 19 and 59 euros a month that is roughly **12%, 9% and 7%** of the price after the fixed part, so cheap plans and monthly-only billing are expensive; offer yearly plans and set the lowest price with this in mind. Currency support (EUR prices): not documented on the pages read.
+- **EU VAT: handled by Polar.** As merchant of record Polar takes the liability, registers, collects (Stripe Tax) and remits, has an EU OSS number, and supports B2B reverse charge when the buyer adds a VAT number. **You still owe your own income tax** where you live. Polar issues the invoices and receipts, so the terms and the DPA subprocessor list must name Polar (and Stripe behind it) and say that Polar, not risulta.dev, is seller of record.
+- **Payouts:** schedule, minimum, supported payout countries and any reserve on new accounts are **not documented on the pages read**. Confirm for your country and legal entity before committing to Polar.
+- **Webhook endpoint disablement after 10 failures** is an operational risk (above) and needs monitoring and a runbook in M10b.
+- **No card-free trial** is a product constraint already handled by the own-trial design; conversion therefore needs a visible in-app path, because Polar will not email trial users.
 
 ### 4.6 Retention and cancellation (proposal [E]; purge mechanisms in `risulta`, the schedule and policy in `cloud`)
 
@@ -268,7 +304,7 @@ Raw-scan views (filtered cohorts, funnels, journeys) stay capped at 30 days in h
 
 1. **Trial ends without payment:** day 0 dashboard locked (read-only banner with upgrade link), collection continues for 14 days so a late purchase loses nothing, then collection stops (202, discarded). Data and export stay available until day 60, then the org's data is deleted after a reminder email at day 45 and day 55.
 2. **Active subscription canceled:** service until `period_end`. Then 30 days of read-only plus **export**, collection off. Reminder emails at 7 and 25 days. Deletion at day 90 after `period_end` (reminders at 60 and 80), unless resubscribed.
-3. **Payment failure:** provider dunning for 14 days at full service, then treated as cancel (step 2 clock starts).
+3. **Payment failure:** Polar's automated recovery runs while the subscription is `past_due` (full service; the retry schedule is not documented, set a grace period in Polar to match about 14 days). Status `unpaid` is treated as cancel (step 2 clock starts).
 4. **Any time:** the owner can export (4.3) and delete immediately. Deletion runs in chunks (3.3) and confirms by email. Deleted data leaves LTX backups when the backup retention window ends: stated on the privacy page (4.3).
 5. **Comped orgs** follow step 2 when `comped_until` passes without a subscription.
 
@@ -335,7 +371,7 @@ Repo column: `risulta` = open core, `cloud` = private `risulta-cloud`.
 | M6 | risulta | **Sampling (4.4)**: ingest decision, `org_sampling`, cron rate setter, scaled reads in the DAL, banner / `~` / hatched days, API fields, owner events. | 7 d | M5a |
 | M7a | risulta | **Data lifecycle**: trigger guard, chunked retention from `quota.limits`, site/org delete, cursor export, purge API, cron rework (3.5): in-process, time-budgeted, staggered, `schedule` hook. | 6 d | M5a |
 | M7b | cloud | **Lifecycle policy**: trial-expiry and cancellation schedule (4.6) on the `schedule` hook, reminder emails. | 1 d | M7a, M4b |
-| M8 | cloud | **Billing (4.5)**: provider adapter, checkout, signed webhooks, subscription state machine, trial to paid, dunning, portal link, tax setup, billing page via `billing.routes`, test-mode end-to-end. | 10 d | M5b, M4b, provider decision |
+| M8 | cloud | **Billing on Polar (4.5)**: thin REST client, product map, checkout and portal-link creation, signed-webhook endpoint with verifier, event store, queue processing, reconcile job, subscription state machine, own-trial to paid conversion, billing page via `billing.routes`, sandbox end-to-end. Merchant of record removes tax setup. | 8 d | M5b, M4b |
 | M9a | risulta | **Tracker hosts**: host allowlist for `t.` and custom hosts, snippet origin, trusted-proxy handling for tenant proxies. | 2 d | M3 |
 | M9b | cloud | **Domains deploy**: `app.` and `t.` hostnames, DNS, proxy recipes for customers (published on the marketing site). | 1 d | M9a, M3b |
 | M10 | cloud | **Trust and marketing pages**: risulta.dev site, pricing, terms, refund policy, privacy, DPA, subprocessors (hosting, backups, email, billing), retention table, status page on separate infra, alpha banner. Legal review is outside the estimate. | 5 d | M4b, M8 |
@@ -343,32 +379,34 @@ Repo column: `risulta` = open core, `cloud` = private `risulta-cloud`.
 | M11 | cloud (fixes in risulta) | **Drills on Cloud**: two-org load test, restore at 1/2/5 GiB, deploy-with-migration under traffic, abuse test with no-card trials, sampling accuracy against seeded ground truth, billing webhooks in test mode, then close the checklist. | 5 d | M6, M7a, M7b, M8, M9b, M10, M10b |
 | M12 | risulta (Scale plan in cloud) | Later, sized after alpha data: aggregate tier and longer retention (4.6), time shards, custom-hostname automation, funnel precompute, Scale plan. | not estimated | alpha data |
 
-Totals [E]: **risulta** about 42 d (M1, M2, M3, M4a, M5a, M6, M7a, M9a), **risulta-cloud** about 35 d (M0, M3b, M4b, M5b, M7b, M8, M9b, M10, M10b, M11), together about **77 working days**, up from 69 (the earlier "68" was an addition slip; hooks +2, cloud scaffold +3, abuse tooling and runbooks +3). M2, M6 and M8 are the large and risky ones.
+Totals [E]: **risulta** about 42 d (M1, M2, M3, M4a, M5a, M6, M7a, M9a), **risulta-cloud** about 33 d (M0, M3b, M4b, M5b, M7b, M8, M9b, M10, M10b, M11), together about **75 working days** (was 77: Polar as merchant of record takes M8 from 10 to 8 days, since there is no tax setup and no Stripe-style dunning to build; M8 still carries the webhook, reconcile and sandbox work). M2, M6 and M8 are the large and risky ones.
 
 Order: M0 to M3, then M3b, then M4a, M5a and M9a in parallel, then M4b, M5b, M6, M7a, M8, M9b, M10b, then M7b, M10, M11. Core work is never blocked on cloud work except through the hook interface fixed in M3.
 
 ### What ships for the first real users
 
 - **Alpha A (about 40 d: M0 to M3, M3b, M4a, M4b, M5a, M5b, M9a, M9b):** invite-only, around 10 orgs we know, **comped** on real Growth quotas, with the stored and seen caps live (over-quota beyond the cap is handled by the operator by hand, sampling not yet built), proxy recipes for custom domains, an "alpha, no SLA" banner. No billing, no trial. Isolation harness green is a hard gate.
-- **Alpha B / first non-invited customers (about 77 d: through M11):** waitlist signups start a 30-day no-card trial, then pay through the billing provider. Sampling, per-plan retention and cancellation purge, export and delete, trust pages, abuse tooling, restore and abuse drills all passed. Capacity limited to the alpha fleet budget (about 40 orgs, 1.5 M pageviews a month).
+- **Alpha B / first non-invited customers (about 75 d: through M11):** waitlist signups start a 30-day no-card trial, then pay through the billing provider. Sampling, per-plan retention and cancellation purge, export and delete, trust pages, abuse tooling, restore and abuse drills all passed. Capacity limited to the alpha fleet budget (about 40 orgs, 1.5 M pageviews a month).
 
 ## 8. Decisions
 
 **Decided (2026-11-08):**
 
-1. **No free plan.** Paid-only like Plausible: a time-limited free trial, then paid plans by monthly pageviews. Alpha invitees are comped but on real paid-plan quotas. Billing (provider, checkout, subscription state) must exist before the first non-invited customer, and is not part of Alpha A (M8).
+1. **No free plan, and a 30-day trial without a card** (Plausible does the same). Paid-only: after the trial, paid plans by monthly pageviews. Alpha invitees are comped but on real paid-plan quotas. Billing (provider, checkout, subscription state) must exist before the first non-invited customer, and is not part of Alpha A (M8).
 2. **Email:** an EU-based transactional provider through its HTTP API, not a platform binding. Which provider is open below (recommendation: Scaleway TEM, verify).
 3. **Over quota: sample**, deterministic per visitor, scaled and clearly marked as estimates, with a hard cap (4.4).
 4. **Repo split: core + thin private repo.** Open `risulta` keeps the app and every self-hostable feature plus extension hooks; private `risulta-cloud` holds billing, the email adapter and templates, the marketing and legal site, deploy config, abuse tooling and runbooks, depends on a pinned `risulta` version and never forks app code. This doc moves to `risulta-cloud` once merged.
+
+5. **Billing provider: Polar (polar.sh), merchant of record**, integrated in `risulta-cloud` (4.5). Polar cannot run a trial without a card, so the trial is our own state and Polar is used only at conversion.
 
 **Still open (proposals in the doc):**
 
 - **Consumption method:** package dependency pinned to a tag (recommended) vs git submodule (Repo split).
 - **Outside contributions and the AGPL:** CLA or offer the combined source; needs a lawyer before the first outside PR is merged (Repo split).
 
-- Trial length and card: proposal 30 days, no card, Starter quotas (4.1).
+- Trial quotas: proposal Starter quotas, 3 sites (4.1).
 - Plan sizes, site limits and prices: proposal Starter 10k, Growth 100k pageviews a month, Scale only after shards (3.2). Prices are not proposed here.
-- Billing provider: Stripe (cheapest, you handle EU VAT) vs Paddle or Lemon Squeezy (merchant of record, higher fees). Recommendation: evaluate Paddle first (4.5).
+- Polar prerequisites to verify at M8 start: payout country, schedule and minimum, EUR pricing, and the unverified API details in 4.5. Price points given the fee structure (yearly plans).
 - Email provider final pick after the M0 seed test: Scaleway TEM, Brevo or Lettermint (section 1.2).
 - Retention per plan and the cancellation schedule (4.6): 90 days of raw data in the alpha, aggregate tier later, 30-day read-only and 90-day deletion after cancellation.
 - The hosted cap of 30 days on raw-scan views (filtered cohorts, funnels, journeys).
@@ -380,4 +418,4 @@ Order: M0 to M3, then M3b, then M4a, M5a and M9a in parallel, then M4b, M5b, M6,
 2. **One host, one shard, RTO 4 h.** Host loss drops events for hours and a 5 GiB shard may restore slowly. Mitigation: fleet budget, restore drill in M11, honest status messaging, Cloud ask for buffering or a warm standby.
 3. **32 MiB and 2 s against raw-event read paths.** Funnels, journeys and filtered views already hit 2.4 to 2.7 s on 100k events per site. Mitigation: read caps, `funnels` out of default stats, byte-capped caches, precompute later.
 4. **Unverified platform behaviours**: client IP, fork+exec in the cgroup, email egress and TLS, cron semantics. A wrong answer on client IP breaks both analytics and the limiter. Mitigation: M0 first, before any hosted code.
-5. **Signup abuse (no-card trial), billing readiness and email deliverability.** A no-card trial on a new domain invites spam sites and a blocklisted sender, and the first paying customer cannot arrive before checkout, webhooks and VAT handling work (about 77 days of work, 10 of them billing). Mitigation: invite-only comped alpha first, one trial per domain, verified email before the first site, per-IP and per-site limits, SPF/DKIM/DMARC from day one, merchant of record to remove VAT filing, billing built and drilled in test mode before the waitlist.
+5. **Signup abuse (no-card trial), billing readiness and email deliverability.** A no-card trial on a new domain invites spam sites and a blocklisted sender, and the first paying customer cannot arrive before checkout, webhooks and VAT handling work (about 75 days of work, 8 of them billing). Mitigation: invite-only comped alpha first, one trial per domain, verified email before the first site, per-IP and per-site limits, SPF/DKIM/DMARC from day one, merchant of record to remove VAT filing, billing built and drilled in test mode before the waitlist.
