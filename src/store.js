@@ -180,11 +180,16 @@ export async function siteSalt(db, siteId, day) {
 // round-trip) over the true UTF-8 bytes, matching the Bun app's visitor
 // hashes for the same inputs; async only, so callers await it.
 export async function visitorId(db, site, request) {
+  return await visitorFor(db, site.id, clientIp(request), request.headers.get("user-agent") || "");
+}
+
+// The same hash from an explicit address and agent: used when a linked
+// instance forwards an event without having hashed it itself.
+export async function visitorFor(db, siteId, ip, userAgent) {
   const day = dayString();
-  let salt = cachedSiteSalt(site.id, day);
-  if (salt === undefined) salt = await siteSalt(db, site.id, day);
-  const ua = (request.headers.get("user-agent") || "").slice(0, 512);
-  const input = new Uint8Array(utf8Bytes(salt + "" + clientIp(request) + "" + ua));
+  let salt = cachedSiteSalt(siteId, day);
+  if (salt === undefined) salt = await siteSalt(db, siteId, day);
+  const input = new Uint8Array(utf8Bytes(salt + "" + String(ip).slice(0, 45) + "" + String(userAgent).slice(0, 512)));
   const digest = await crypto.subtle.digest("SHA-256", input);
   return bytesToHex(new Uint8Array(digest)).slice(0, 24);
 }

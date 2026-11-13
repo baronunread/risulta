@@ -15,7 +15,9 @@
     "RISULTA_BASE_URL",
     "RISULTA_LOG_LEVEL",
     "RISULTA_TRACKER_ORIGIN",
-    "RISULTA_TRACKER_HOSTS"
+    "RISULTA_TRACKER_HOSTS",
+    "RISULTA_CLOUD_ORIGIN",
+    "RISULTA_CLOUD_ALLOW_LOOPBACK_HTTP"
   ],
   "triggers": { "crons": ["* * * * *"] },
   "assets": {

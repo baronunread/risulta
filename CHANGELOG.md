@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Move to risulta.dev, and back. An admin can link an instance to a risulta.dev account (a browser sign-in
+  and a consent screen; nothing is moved by linking), then press one button: "Move everything" copies
+  every website with its goals, funnels, notes and history, and the people as invitations. The tracker keys
+  stay the same, so nothing changes on any page: the old instance keeps receiving all the traffic and
+  forwards it. No event is lost or stored twice while it moves. "Move back" returns everything, and
+  "Download data" gives a versioned bundle of everything that any Risulta can import. Websites cannot be
+  added or renamed on an instance that has moved. The bundle format is in docs/move-bundle.md. An instance
+  that never links has no new tables and no new behaviour. A linked instance forwards the traffic to the
+  tracker host the target names at link time; control calls stay on the app host.
 - Runs on the current Sproutboat runtime (sproutboat 0.54, compatibility date 2026-11-18) in the
   standard Workers style: `fetch(request, env, ctx)` and `scheduled(controller, env, ctx)`, D1 calls
   that return Promises, and `db.batch()` for every multi-statement write (D1 has no BEGIN or COMMIT).

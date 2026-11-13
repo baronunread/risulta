@@ -8,18 +8,21 @@
 // Implemented in core (each is optional, and each failure is contained):
 //   hooksVersion   must equal HOOKS_VERSION; core refuses to start on a mismatch
 //   backupFiles    publish and prune backup files (the standalone binary supplies it)
-//   quota          { limits(orgId, env) -> { sites, ... } }  `sites` caps websites (fails open). `env` is the
-//                  request's bindings: a host reads its own tables with it
+//   quota          { limits(orgId, env) -> { sites, retentionDays, moveWindow, moveMaxEvents, ... } } (fails open;
+//                  `env` is the request's bindings, so a host can read its own tables).
+//                  Core enforces `sites` (new websites, and the sites a move brings in) and gives `retentionDays`,
+//                  `moveWindow` and `moveMaxEvents` to the move feature; the other numbers are the host's
 //   ingestGuard    (site, info) -> "allow" | "drop"   synchronous and cheap (fails open)
 //   events         { siteCreated({ orgId, site }) }   notification, errors are logged
 //   migrations     [{ version, sql }]  extra tables of the host, run after core's own,
 //                  kept in their own ledger (`host_migrations`) in the shared store
 //   schedule       (info) -> void   runs inside the time-budgeted tick, errors are logged
-//   blobs          { put(key, text), get(key), delete(key) }  object storage for move parts
-//   jobs           { enqueue(job) }   how a host wakes the move steps (default: the tick)
+//   blobs          (env) -> { put(key, text), get(key), delete(key) }  where bundle parts wait (default: the shared
+//                  database). A function of env, because a host's storage is a binding that arrives with the request
 //
 // Accepted and carried, not consumed yet (the features they belong to are not in core):
-//   billing, onSignup, mailer, operator
+//   jobs (waking a background step: moves are driven by the tick and the page poll), billing, onSignup,
+//   mailer, operator
 // Unknown keys are refused, so a typo is not a silently ignored hook.
 import { splitStatements } from "./sql.ts";
 
@@ -27,7 +30,7 @@ export const HOOKS_VERSION = 1;
 
 const KNOWN = ["hooksVersion", "backupFiles", "quota", "billing", "onSignup", "mailer", "events", "ingestGuard", "migrations", "schedule", "blobs", "jobs", "operator"];
 
-const UNLIMITED = Object.freeze({ sites: null, pageviews: null, members: null, readKeys: null, retentionDays: null });
+const UNLIMITED = Object.freeze({ sites: null, pageviews: null, members: null, readKeys: null, retentionDays: null, moveWindow: null, moveMaxEvents: null });
 
 export function resolveHooks(options) {
   const given = options || {};
