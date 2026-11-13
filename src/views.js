@@ -4,6 +4,13 @@ import { siteSlug } from "./sites.ts";
 import { homeCards } from "./home.js";
 import { chart, dateSeries, hourSeries } from "./chart.js";
 import { avatarFor } from "./avatar.js";
+
+// Backups are files on the server. A deployment without file access (the
+// Workers build on Sproutboat Cloud) hides every backup page and control.
+let backupsEnabled = true;
+export function setBackupsEnabled(enabled) {
+  backupsEnabled = !!enabled;
+}
 import { dayStringFromMs, escapeHtml, fmtInt } from "./util.js";
 
 function oneDecimal(value) {
@@ -35,7 +42,7 @@ function topbar(user, site, sites) {
   return '<header class="topbar"><div class="shell topbar-inner"><a class="brand" href="/" aria-label="Risulta home">' + MARK + "<span>Risulta</span></a>" + switcher +
     '<nav class="nav" aria-label="Account"><details class="account-menu"><summary aria-label="Account menu"><span class="avatar" aria-hidden="true">' + avatarFor(user.display_name || user.email) + '</span><span class="account-trigger-email">' + escapeHtml(user.email) + "</span></summary>" +
     '<div class="account-panel"><span class="account-email">' + escapeHtml(user.email) + '</span><a href="/">Websites</a><a href="/account">Account settings</a>' +
-    (user.role === "admin" ? '<a href="/users">Users</a><a href="/backups">Backups</a>' : "") +
+    (user.role === "admin" ? '<a href="/users">Users</a>' + (backupsEnabled ? '<a href="/backups">Backups</a>' : "") : "") +
     '<form method="post" action="/logout"><input type="hidden" name="csrf" value="' + user.csrf + '"><button class="link-button" type="submit">Log out</button></form>' +
     "</div></details></nav></div></header>";
 }
@@ -326,13 +333,13 @@ export function usersPage(admin, users, sites, backup) {
       '<section class="card users-panel" aria-labelledby="existing-users-title"><div class="users-head"><div><h2 id="existing-users-title">Existing users</h2><p>' +
       users.length + " account" + (users.length === 1 ? "" : "s") + "</p></div></div>" +
       '<ol class="user-list">' + records + "</ol></section></div>" +
-      '<section class="card settings-section backup-shortcut" aria-labelledby="backup-title"><div class="backup-section-heading"><h2 id="backup-title">Database backup</h2><a class="report-link" href="/backups">Schedule and history &rarr;</a></div>' +
+      (backupsEnabled ? '<section class="card settings-section backup-shortcut" aria-labelledby="backup-title"><div class="backup-section-heading"><h2 id="backup-title">Database backup</h2><a class="report-link" href="/backups">Schedule and history &rarr;</a></div>' +
       '<p class="hint" id="backup-help">Create a snapshot in the server&#39;s backups directory. This does not download a file.</p>' +
       '<form class="form" method="post" action="/api/backup" data-backup-form>' +
       '<input type="hidden" name="csrf" value="' + escapeHtml(admin.csrf) + '">' +
       '<button class="button" type="submit" aria-describedby="backup-help">Create backup</button></form>' +
       '<p class="backup-feedback" data-backup-feedback data-kind="' + (backup === "success" ? "success" : "error") + '">' + escapeHtml(backupMessage) + '</p>' +
-      '<div data-backup-toast role="status" aria-live="polite" aria-atomic="true"></div></section></main>',
+      '<div data-backup-toast role="status" aria-live="polite" aria-atomic="true"></div></section>' : "") + '</main>',
     null,
     [],
   );

@@ -1,8 +1,8 @@
 {
   "$schema": "https://sproutboat.com/schema.json",
   "name": "risulta-sprout",
-  "main": "src/index.js",
-  "compatibility_date": "2026-09-07",
+  "main": "src/standalone.js",
+  "compatibility_date": "2026-11-18",
   "vars": {
     "SITE_NAME": "Risulta Sprout"
   },

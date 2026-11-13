@@ -92,10 +92,6 @@ let databaseErrors = 0;
 runInNewContext(route, {
   SCHEMA_VERSION: 5,
   app: { post: (_path, callback) => { handler = callback; } },
-  env: { DB: {
-    backup: () => { backups++; if (failBackup) throw new Error("disk"); return { path: "backups/test.sqlite", bytes: 4096 }; },
-    prepare: () => ({ first: () => ({ n: 2 }) }),
-  } },
   bodyOf: (req) => req.bodyText,
   csrfValid, csrfValue,
   json: (data, status = 200) => new Response(JSON.stringify(data), { status }),
@@ -108,7 +104,10 @@ async function post(role, token, html) {
     "content-type": "application/x-www-form-urlencoded", accept: html ? "text/html" : "application/json",
   } });
   req.bodyText = new URLSearchParams({ csrf: token }).toString();
-  return handler({ get: () => ({ role, csrf: admin.csrf }), req: { raw: req } });
+  return handler({ get: () => ({ role, csrf: admin.csrf }), req: { raw: req }, env: { DB: {
+    backup: () => { backups++; if (failBackup) throw new Error("disk"); return { path: "backups/test.sqlite", bytes: 4096 }; },
+    prepare: () => ({ first: () => ({ n: 2 }) }),
+  } } });
 }
 assert.equal((await post("viewer", admin.csrf, true)).status, 403);
 assert.equal((await post("admin", "wrong", false)).status, 403);

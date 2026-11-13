@@ -17,13 +17,13 @@ export function widgetAllowed(ip, now) {
   return true;
 }
 
-export function widgetData(db, key, now) {
-  const site = db.prepare("SELECT sites.id,sites.domain FROM sites JOIN public_widgets ON public_widgets.site_id=sites.id WHERE sites.public_key=? AND public_widgets.enabled=1").bind(key).first();
+export async function widgetData(db, key, now) {
+  const site = await db.prepare("SELECT sites.id,sites.domain FROM sites JOIN public_widgets ON public_widgets.site_id=sites.id WHERE sites.public_key=? AND public_widgets.enabled=1").bind(key).first();
   if (!site) return null;
   const cached = snapshots.get(site.id);
   if (cached && cached.db === db && now - cached.at < 30) return cached.data;
   const today = Math.floor(now / 86400) * 86400;
-  const rows = db.prepare("SELECT cast(ts/86400 AS INTEGER)*86400 AS day,count(*) AS pageviews,count(DISTINCT visitor) AS visitors FROM events WHERE site_id=? AND ts>=? AND ts<? AND name='pageview' GROUP BY day ORDER BY day").bind(site.id,today-6*86400,now+1).all().results;
+  const rows = (await db.prepare("SELECT cast(ts/86400 AS INTEGER)*86400 AS day,count(*) AS pageviews,count(DISTINCT visitor) AS visitors FROM events WHERE site_id=? AND ts>=? AND ts<? AND name='pageview' GROUP BY day ORDER BY day").bind(site.id,today-6*86400,now+1).all()).results;
   const days = [];
   let visitors = 0;
   let pageviews = 0;
@@ -35,7 +35,7 @@ export function widgetData(db, key, now) {
     visitors += value;
     pageviews += row ? Number(row.pageviews) : 0;
   }
-  const data = { domain:site.domain, current:siteCurrent(db,site.id), visitors, pageviews, days, updated:now };
+  const data = { domain:site.domain, current:await siteCurrent(db,site.id), visitors, pageviews, days, updated:now };
   if (snapshots.size >= 64) snapshots.delete(snapshots.keys().next().value);
   snapshots.set(site.id,{at:now,data,db});
   return data;

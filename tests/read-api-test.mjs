@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Database } from "bun:sqlite";
-import app from "../src/index.js";
+import { createRisulta } from "../src/index.js";
+import { d1 } from "./d1.mjs";
 import { readKeyHash } from "../src/read-api.js";
 
 // Sprout accepts string inputs to digest; Web Crypto in Bun accepts bytes.
@@ -9,20 +10,10 @@ crypto.subtle.digest = (algorithm, input) => nativeDigest(algorithm,
   input instanceof Uint8Array ? input : new TextEncoder().encode(String(input)));
 const sqlite = new Database(":memory:");
 // Exercise production SQL and routing against SQLite, using the D1 interface.
-const db = {
-  exec(sql) { sqlite.exec(sql); },
-  prepare(sql) {
-    let values = [];
-    const statement = sqlite.prepare(sql);
-    return {
-      bind(...args) { values = args; return this; },
-      first() { return statement.get(...values); },
-      all() { return { results: statement.all(...values) }; },
-      run() { const result = statement.run(...values); return { meta: { last_row_id: result.lastInsertRowid } }; },
-    };
-  },
-};
-globalThis.env = { DB: db, RISULTA_LOG_LEVEL: "info" };
+const db = d1(sqlite);
+const env = { DB: db, RISULTA_LOG_LEVEL: "info" };
+const worker = createRisulta({ backupFiles: { publish() {}, remove() { return true; } } });
+const app = { fetch: (request) => worker.fetch(request, env, {}) };
 const logs = [];
 const originalLog = console.error;
 console.error = (...args) => logs.push(args.join(" "));
@@ -33,8 +24,8 @@ try {
   await request("/healthz");
   sqlite.exec("INSERT INTO users (id,email,password_hash,role,created_at) VALUES (1,'admin@test','unused','admin',0),(2,'viewer@test','unused','viewer',0); INSERT INTO sites (id,name,domain,public_key,created_at) VALUES (1,'One','one.test','one',0),(2,'Two','two.test','two',0); INSERT INTO site_users VALUES (2,1,'viewer');");
   const expires = Math.floor(Date.now() / 1000) + 3600;
-  sqlite.prepare("INSERT INTO sessions VALUES (?,1,'csrf',0,?)").run(await readKeyHash("admin"), expires);
-  sqlite.prepare("INSERT INTO sessions VALUES (?,2,'viewer-csrf',0,?)").run(await readKeyHash("viewer"), expires);
+  await sqlite.prepare("INSERT INTO sessions VALUES (?,1,'csrf',0,?)").run(await readKeyHash("admin"), expires);
+  await sqlite.prepare("INSERT INTO sessions VALUES (?,2,'viewer-csrf',0,?)").run(await readKeyHash("viewer"), expires);
   const admin = { cookie: "risulta_session=admin", "x-csrf-token": "csrf" };
   const viewer = { cookie: "risulta_session=viewer", "x-csrf-token": "viewer-csrf" };
   const keys = "/api/sites/1/read-keys";
@@ -53,7 +44,7 @@ try {
   const bearer = { authorization: "Bearer " + key.token };
   const listed = await (await request(keys, "GET", admin)).json();
   assert.deepEqual(listed, [{ id: key.id, site_id: 1, created_at: key.created_at }]);
-  sqlite.prepare("INSERT INTO events (site_id,ts,name,path,visitor) VALUES (1,?,'pageview','/home','v')").run(Math.floor(Date.now() / 1000));
+  await sqlite.prepare("INSERT INTO events (site_id,ts,name,path,visitor) VALUES (1,?,'pageview','/home','v')").run(Math.floor(Date.now() / 1000));
   for (const endpoint of ["stats", "report"]) {
     const response = await request("/api/sites/1/" + endpoint, "GET", bearer);
     assert.equal(response.status, 200);
