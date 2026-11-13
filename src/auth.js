@@ -115,7 +115,7 @@ export async function hashPassword(password) {
 }
 
 async function digestHexString(message) {
-  const digest = await crypto.subtle.digest("SHA-256", String(message));
+  const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(utf8Bytes(String(message))));
   return bytesToHex(new Uint8Array(digest));
 }
 
@@ -189,7 +189,7 @@ export async function verifyPassword(password, encoded) {
 }
 
 async function tokenHash(token) {
-  const digest = await crypto.subtle.digest("SHA-256", String(token));
+  const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(utf8Bytes(String(token))));
   return bytesToHex(new Uint8Array(digest));
 }
 

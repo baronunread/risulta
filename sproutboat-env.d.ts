@@ -8,7 +8,7 @@
 
 declare global {
   /**
-   * Bindings from sproutboat.jsonc, for project "risulta-sprout".
+   * Bindings from sproutboat.jsonc, for project "risulta".
    *
    * The same object is passed as the second handler argument: fetch(request, env, ctx).
    * D1 (from 2026-10-24), KV (2026-10-25) and R2 (2026-10-26) return Promises, as on
@@ -16,8 +16,14 @@ declare global {
    * the calls are synchronous. `await` works at every date.
    */
   const env: {
-    /** vars: "Risulta Sprout" */
+    /** vars: "Risulta" */
     SITE_NAME: string;
+    /** vars: "https://app.risulta.dev" */
+    RISULTA_BASE_URL: string;
+    /** vars: "https://t.risulta.dev" */
+    RISULTA_TRACKER_ORIGIN: string;
+    /** vars: "t.risulta.dev,stats.brnr.dev" */
+    RISULTA_TRACKER_HOSTS: string;
     /** secret, set with `sproutboat secrets put` */
     RISULTA_ADMIN_EMAIL: string;
     /** secret, set with `sproutboat secrets put` */
@@ -25,9 +31,7 @@ declare global {
     /** secret, set with `sproutboat secrets put` */
     RISULTA_ADMIN_PASSWORD: string;
     /** secret, set with `sproutboat secrets put` */
-    RISULTA_BASE_URL: string;
-    /** secret, set with `sproutboat secrets put` */
-    RISULTA_LOG_LEVEL: string;
+    RISULTA_IMPORT_TOKEN: string;
     DB: D1DatabaseAsync;
     /** rate limit: 240 per 60s */
     INGEST: RateLimit;

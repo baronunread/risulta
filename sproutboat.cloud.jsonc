@@ -1,0 +1,30 @@
+{
+  // Sproutboat Cloud (the Workers build). The self-hosted binary is built from
+  // sproutboat.jsonc; both run the same app, this entry has no native code and
+  // leaves backups to the platform. Deploy with: sproutboat deploy -c sproutboat.cloud.jsonc
+  "$schema": "https://sproutboat.com/schema.json",
+  "name": "risulta",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-18",
+  "vars": {
+    "SITE_NAME": "Risulta",
+    "RISULTA_BASE_URL": "https://app.risulta.dev",
+    "RISULTA_TRACKER_ORIGIN": "https://t.risulta.dev",
+    "RISULTA_TRACKER_HOSTS": "t.risulta.dev,stats.brnr.dev"
+  },
+  "d1_databases": ["DB"],
+  "ratelimiters": [{ "binding": "INGEST", "limit": 240, "period": 60 }],
+  "secrets": [
+    "RISULTA_ADMIN_EMAIL",
+    "RISULTA_ADMIN_DISPLAY_NAME",
+    "RISULTA_ADMIN_PASSWORD",
+    "RISULTA_IMPORT_TOKEN"
+  ],
+  "triggers": { "crons": ["* * * * *"] },
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS",
+    "not_found_handling": "none",
+    "run_sprout_first": true
+  }
+}

@@ -255,11 +255,14 @@ async function exportSites(c, json) {
 async function exportEvents(c, json) {
   const key = String(c.req.query("site") || "");
   const after = Number(c.req.query("after") || 0);
+  // Rollback copies what the target collected since the flip: by time, because
+  // the delta import gives older events newer ids.
+  const sinceTs = Number(c.req.query("since_ts") || 0);
   const limit = Math.min(MAX_CHUNK, Math.max(1, Number(c.req.query("limit") || 1000)));
   if (!KEY.test(key) || !isInt(after)) return json({ error: "site and after are required" }, 400);
   const site = await shared(c.env).prepare("SELECT id FROM sites WHERE public_key = ?").bind(key).first();
   if (!site) return json({ error: "unknown site" }, 404);
-  const rows = (await store(c.env, DEFAULT_ORG).prepare("SELECT id, ts, name, path, referrer, visitor, source, medium, campaign, content, term, value FROM events WHERE site_id = ? AND id > ? ORDER BY id LIMIT ?").bind(site.id, after, limit).all()).results;
+  const rows = (await store(c.env, DEFAULT_ORG).prepare("SELECT id, ts, name, path, referrer, visitor, source, medium, campaign, content, term, value FROM events WHERE site_id = ? AND id > ? AND ts >= ? ORDER BY id LIMIT ?").bind(site.id, after, sinceTs, limit).all()).results;
   const lines = rows.map((r) => JSON.stringify([Number(r.id), Number(r.ts), r.name, r.path, r.referrer, r.visitor, r.source, r.medium, r.campaign, r.content, r.term, r.value === null ? null : Number(r.value)]));
   const last = rows.length ? Number(rows[rows.length - 1].id) : after;
   const body = JSON.stringify({ after, last, count: rows.length }) + "\n" + lines.join("\n") + (lines.length ? "\n" : "");
