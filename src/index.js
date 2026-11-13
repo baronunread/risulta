@@ -3,6 +3,8 @@ import { INGEST_CORS, ingestPreflight, createDomainMismatchLogger } from "./inge
 import { widgetAllowed, widgetData, widgetPage } from "./public-widgets.js";
 import { runMaintenance } from "./maintenance.js";
 import { shared, store, orgOfSite, listOrgs, DEFAULT_ORG } from "./data.js";
+import { resolveHooks, orgLimits, ingestAllowed, emit, runSchedule, runHostMigrations } from "./hooks.js";
+export { HOOKS_VERSION } from "./hooks.js";
 import { analyticsTrace, tracedAnalyticsResponse } from "./analytics-trace.js";
 import { cachedAnalytics } from "./analytics-cache.js";
 import { SCHEMA_VERSION } from "./migrations.ts";
@@ -275,12 +277,20 @@ app.use("*", (c, next) => {
 
 // The schema is made once; after that this layer awaits nothing (each await costs
 // real time in this runtime, and every request passes through here).
+let hostReady = false;
 async function warm(c, next) {
   await ensureBackupSchema(shared(c.env));
   await ensureReady(shared(c.env), store(c.env, DEFAULT_ORG), c.env);
+  await ensureHost(c.env);
   return next();
 }
-app.use("*", (c, next) => (isReady() && backupSchemaReady() ? next() : warm(c, next)));
+// The host's own tables (the migrations hook) are made once, after core's.
+async function ensureHost(env) {
+  if (hostReady) return;
+  await runHostMigrations(shared(env), hooks.migrations);
+  hostReady = true;
+}
+app.use("*", (c, next) => (isReady() && backupSchemaReady() && hostReady ? next() : warm(c, next)));
 
 app.get("/healthz", () => new Response("ok\n", { headers: { "x-risulta-schema-version": String(SCHEMA_VERSION), "x-risulta-maintenance": "builtin" } }));
 
@@ -361,6 +371,7 @@ app.post("/api/event/:key{[A-Za-z0-9_-]+}", async (c) => {
   }
   const parts = splitPathAndAttribution(input.path);
   if (parts.path.charAt(0) !== "/") { incrementCounter("events_rejected_total"); return eventJson({ error: "path must start with /" }, 400); }
+  if (!ingestAllowed(hooks, site, { request })) return eventJson({ ok: true }, 202); // dropped by the host, answered like a stored event
   const throttle = ingestThrottle(c.env, request);
   if (!throttle.allowed) {
     incrementCounter("rate_limits_total");
@@ -723,12 +734,18 @@ app.post("/api/sites", async (c) => {
     if (wantsJson) return json({ error: "domain already registered" }, 409);
     return redirect("/sites/new?error=domain-registered");
   }
+  const limits = await orgLimits(hooks, orgOfSite(null), c.env);
+  if (limits.sites !== null && Number((await shared(c.env).prepare("SELECT count(*) AS n FROM sites").first()).n) >= limits.sites) {
+    if (wantsJson) return json({ error: "site limit reached" }, 402);
+    return redirect("/sites/new?error=site-limit");
+  }
   const publicKey = randomHex(16);
   const slug = await availableSiteSlug(shared(c.env), domain);
   const res = await shared(c.env).prepare("INSERT INTO sites (name, domain, public_key, slug, created_at) VALUES (?, ?, ?, ?, ?)")
     .bind(name, domain, publicKey, slug, Math.floor(Date.now() / 1000))
     .run();
   siteByKey.set(publicKey, { id: Number(res.meta.last_row_id), domain });
+  await emit(hooks, "siteCreated", { orgId: orgOfSite(null), site: { id: Number(res.meta.last_row_id), name, domain, slug } });
   if (wantsJson) return json({ id: res.meta.last_row_id, name, domain, publicKey, slug }, 201);
   return redirect("/sites/" + slug + "/setup");
 });
@@ -1272,6 +1289,8 @@ async function runScheduled(env) {
     const result = await runMaintenance(shared(env), (orgId) => store(env, orgId), await listOrgs(shared(env)), backupFiles, Math.floor(startedAt / 1000));
     console.log(JSON.stringify({ type: "maintenance", backup: result.backup, days: result.days, ms: Date.now() - startedAt }));
     if (result.failed) incrementCounter("database_errors_total");
+    await ensureHost(env);
+    await runSchedule(hooks, { env, now: Math.floor(Date.now() / 1000), deadlineMs: startedAt + 5000 });
   } catch (error) {
     incrementCounter("database_errors_total");
     console.error("Maintenance failed: " + String(error));
@@ -1281,11 +1300,16 @@ async function runScheduled(env) {
 }
 
 // The Workers module shape: fetch(request, env, ctx) and scheduled(controller,
-// env, ctx). `options.backupFiles` is the one standalone-only capability
-// (publish and prune backup files); without it, backups are left to the host.
+// env, ctx). The argument is the hooks object (src/hooks.js, docs/hooks.md); with
+// none, this is the plain self-hosted app. `backupFiles` is the one standalone-only
+// capability (publish and prune backup files); without it, backups are left to the host.
+// One app per isolate: the hooks are module state.
+let hooks = resolveHooks();
 let backupFiles = null;
 export function createRisulta(options) {
-  backupFiles = options && options.backupFiles ? options.backupFiles : null;
+  hooks = resolveHooks(options);
+  backupFiles = hooks.backupFiles;
+  hostReady = false;
   setBackupsEnabled(!!backupFiles);
   return {
     async scheduled(controller, env) {

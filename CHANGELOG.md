@@ -8,9 +8,13 @@
 - Maintenance (the once-a-minute rollup and backup tick) now runs inside the web process, with a time
   budget, instead of a second process of the same binary. The standalone binary still publishes and
   prunes backup files; `SB_SQLITE_EXCLUSIVE=0` is no longer needed by the app.
-- A second entry point, `src/worker.js` with `sproutboat.workers.example.jsonc`, builds the same app for Sproutboat
-  Cloud: no native code, backups left to the platform (the backup pages and routes are absent there).
-  The self-hosted release is still built from `sproutboat.jsonc` and `src/standalone.js`.
+- A second entry point, `src/worker.js` (example config: `sproutboat.workers.example.jsonc`), builds the same
+  app for a Workers-style host such as Sproutboat Cloud: no native code, backups left to the platform (the
+  backup pages and routes are absent there). The self-hosted release is still built from `sproutboat.jsonc`
+  and `src/standalone.js`.
+- `createRisulta(hooks)` takes one optional hooks object (`docs/hooks.md`): `quota`, `ingestGuard`, `events`,
+  `migrations`, `schedule`, with safe defaults and a fixed failure policy, so a program that runs Risulta
+  for others depends on this package (`risulta/app`) instead of forking it.
 - Data layer: every events, goals, funnels, annotations, rollups and cache query goes through
   `store(env, orgId)`, and users, sessions, sites and read-API keys through `shared(env)`
   (`src/data.js`). Both are the one D1 today. A test runs the whole app with the two as separate
