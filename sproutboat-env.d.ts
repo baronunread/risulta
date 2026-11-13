@@ -32,6 +32,10 @@ declare global {
     RISULTA_TRACKER_ORIGIN: string;
     /** secret, set with `sproutboat secrets put` */
     RISULTA_TRACKER_HOSTS: string;
+    /** secret, set with `sproutboat secrets put` */
+    RISULTA_CLOUD_ORIGIN: string;
+    /** secret, set with `sproutboat secrets put` */
+    RISULTA_CLOUD_ALLOW_LOOPBACK_HTTP: string;
     DB: D1DatabaseAsync;
     /** rate limit: 240 per 60s */
     INGEST: RateLimit;

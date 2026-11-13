@@ -42,7 +42,7 @@ function topbar(user, site, sites) {
   return '<header class="topbar"><div class="shell topbar-inner"><a class="brand" href="/" aria-label="Risulta home">' + MARK + "<span>Risulta</span></a>" + switcher +
     '<nav class="nav" aria-label="Account"><details class="account-menu"><summary aria-label="Account menu"><span class="avatar" aria-hidden="true">' + avatarFor(user.display_name || user.email) + '</span><span class="account-trigger-email">' + escapeHtml(user.email) + "</span></summary>" +
     '<div class="account-panel"><span class="account-email">' + escapeHtml(user.email) + '</span><a href="/">Websites</a><a href="/account">Account settings</a>' +
-    (user.role === "admin" ? '<a href="/users">Users</a>' + (backupsEnabled ? '<a href="/backups">Backups</a>' : "") : "") +
+    (user.role === "admin" ? '<a href="/users">Users</a><a href="/cloud">risulta.dev</a>' + (backupsEnabled ? '<a href="/backups">Backups</a>' : "") : "") +
     '<form method="post" action="/logout"><input type="hidden" name="csrf" value="' + user.csrf + '"><button class="link-button" type="submit">Log out</button></form>' +
     "</div></details></nav></div></header>";
 }

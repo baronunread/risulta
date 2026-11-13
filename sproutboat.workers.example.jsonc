@@ -16,7 +16,10 @@
     // RISULTA_TRACKER_HOSTS serve only the tracker, collector and widget routes
     // (every other path answers 404 there). Remove both to serve everything from one host.
     "RISULTA_TRACKER_ORIGIN": "https://stats.example.com",
-    "RISULTA_TRACKER_HOSTS": "stats.example.com"
+    "RISULTA_TRACKER_HOSTS": "stats.example.com",
+    // Optional: the number of events per window an instance moving INTO this host is advised to use.
+    // The memory of a step is the size of a window, so a small host advises a small one.
+    "RISULTA_MOVE_WINDOW": "1000"
   },
   "d1_databases": ["DB"],
   "ratelimiters": [{ "binding": "INGEST", "limit": 240, "period": 60 }],

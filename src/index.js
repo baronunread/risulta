@@ -1,4 +1,8 @@
 import { annotationInput, siteAnnotations } from "./annotations.js";
+import { mountLinkRoutes, mountMoveRoutes, moveTick, gatewayWidgetData } from "./move/routes.js";
+import { collectEvent, kickFlush, instanceLocked } from "./move/gateway.js";
+import { countOrgSites } from "./move/registry.js";
+import { dbBlobs } from "./move/blobs.js";
 import { INGEST_CORS, ingestPreflight, createDomainMismatchLogger } from "./ingest-http.js";
 import { widgetAllowed, widgetData, widgetPage } from "./public-widgets.js";
 import { runMaintenance } from "./maintenance.js";
@@ -67,10 +71,11 @@ import {
   siteForKey,
   updateProfile,
   visitorId,
+  visitorFor,
   clientIp,
 } from "./store.js";
 import { incrementCounter, logRequest, metricsText, safeRoute, setLogLevel } from "./metrics.js";
-import { asciiJson, fmtInt, cachedEnv } from "./util.js";
+import { asciiJson, fmtInt, cachedEnv, optionalEnv } from "./util.js";
 import { escapeHtml } from "./util.js";
 import {
   accountPage,
@@ -99,6 +104,56 @@ import { GoalSchema, ProfileSchema, SiteSchema, validate } from "./validation.ts
 // The org store that holds this site's events (see data.js).
 function ev(c, site) {
   return store(c.env, orgOfSite(site));
+}
+
+// The move feature talks to the two handles only, like everything else. The host's hooks decide
+// where bundle parts wait (blobs) and what an org may receive (quota.limits).
+function moveCtx(env) {
+  return {
+    shared: shared(env), store: (orgId) => store(env, orgId), blobs: hooks.blobs ? hooks.blobs(env) : dbBlobs(shared(env)), visitorFor,
+    limits: {
+      move: async (orgId) => {
+        const limits = await orgLimits(hooks, orgId, env);
+        // A host with a small memory cap advises a small window to the instance that moves to it.
+        return { window: Number(optionalEnv(env, "RISULTA_MOVE_WINDOW")) || limits.moveWindow || 0, retentionDays: limits.retentionDays || 0, maxEvents: limits.moveMaxEvents || 0 };
+      },
+      canAddSite: async (orgId, count) => {
+        const limits = await orgLimits(hooks, orgId, env);
+        return limits.sites === null || (await countOrgSites(shared(env), orgId)) + count <= limits.sites;
+      },
+    },
+  };
+}
+
+async function widgetDataFor(c, key) {
+  const site = await siteForKey(shared(c.env), key);
+  if (site) {
+    const via = await gatewayWidgetData(moveCtx(c.env), site, key);
+    if (via !== undefined) return via;
+  }
+  return await widgetData(shared(c.env), store(c.env, DEFAULT_ORG), key, Math.floor(Date.now() / 1000));
+}
+
+function moveDeps() {
+  return {
+    ctx: (c) => moveCtx(c.env),
+    admin: async (c) => {
+      const session = c.get("session");
+      if (!session || session.role !== "admin") return null;
+      return { userId: session.user_id, orgId: DEFAULT_ORG, csrf: session.csrf, sessionHash: session.token_hash, email: session.email };
+    },
+    csrfOk: (c, body) => csrfValid(c.get("session"), csrfValue(c.req.raw, body)),
+    origin: (c) => publicOrigin(c.env, c.req.raw, new URL(c.req.url)),
+    // The permanent tracker host: a linked instance forwards a moved website's traffic here.
+    forwardOrigin: (c) => optionalEnv(c.env, "RISULTA_TRACKER_ORIGIN"),
+    cloudOrigin: (c) => optionalEnv(c.env, "RISULTA_CLOUD_ORIGIN") || "https://app.risulta.dev",
+    // Plain http is allowed only for a loopback address, and only when asked for (local rehearsals).
+    allowHttpFor: (c) => optionalEnv(c.env, "RISULTA_CLOUD_ALLOW_LOOPBACK_HTTP") === "1",
+    version: "0.2.2",
+    page: (c, title, html) => new Response(pageShell(title, c.get("session"), html), { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } }),
+    orgInfo: async () => ({ slug: "default", name: "This instance" }),
+    widget: async (c, key) => await widgetData(shared(c.env), store(c.env, DEFAULT_ORG), key, Math.floor(Date.now() / 1000)),
+  };
 }
 
 function json(data, status, headers) {
@@ -259,7 +314,7 @@ const app = new Hono();
 // and cookies included, answers 404 there, so the session never lives on a host
 // whose pages a customer controls. Unset (the default, and every self-hosted
 // instance) nothing changes.
-const TRACKER_PATHS = /^\/(js\/[A-Za-z0-9_-]+\.js|api\/event\/[A-Za-z0-9_-]+|widget\.js|widget-frame\.js|widget-geist\.woff2|widget-geist-LICENSE\.txt|public\/(widget|data)\/[A-Za-z0-9_-]+|healthz|favicon\.ico)$/;
+const TRACKER_PATHS = /^\/(js\/[A-Za-z0-9_-]+\.js|api\/event\/[A-Za-z0-9_-]+|link\/fwd\/(events|public\/data\/[A-Za-z0-9_-]+)|widget\.js|widget-frame\.js|widget-geist\.woff2|widget-geist-LICENSE\.txt|public\/(widget|data)\/[A-Za-z0-9_-]+|healthz|favicon\.ico)$/;
 // Backup pages and routes exist only where the entry point supplies file
 // operations (the standalone binary); elsewhere the host owns backups.
 app.use("*", (c, next) => {
@@ -320,16 +375,17 @@ app.get("/widget-geist.woff2", (c) => c.env.ASSETS.fetch(c.req.raw));
 app.get("/widget-geist-LICENSE.txt", (c) => c.env.ASSETS.fetch(c.req.raw));
 app.get("/widget-frame.js", (c) => c.env.ASSETS.fetch(c.req.raw));
 app.get("/widget.js", (c) => c.env.ASSETS.fetch(c.req.raw));
+app.get("/import.js", (c) => c.env.ASSETS.fetch(c.req.raw));
 app.get("/public/widget/:key{[A-Za-z0-9_-]+}", async (c) => {
   if (!widgetAllowed(clientIp(c.req.raw),Math.floor(Date.now()/1000))) return json({error:"too many widget requests"},429,{"retry-after":"60"});
-  const data = await widgetData(shared(c.env), store(c.env, DEFAULT_ORG), c.req.param("key"), Math.floor(Date.now()/1000));
+  const data = await widgetDataFor(c, c.req.param("key"));
   const url = new URL(c.req.url);
   const size = ["small","medium","wide"].includes(url.searchParams.get("size")) ? url.searchParams.get("size") : "medium";
   return new Response(widgetPage(data,size,url.searchParams.get("theme")), {status:data ? 200 : 404,headers:{"content-type":"text/html;charset=utf-8","cache-control":"no-store","referrer-policy":"no-referrer","content-security-policy":"default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors *"}});
 });
 app.get("/public/data/:key{[A-Za-z0-9_-]+}", async (c) => {
   if (!widgetAllowed(clientIp(c.req.raw),Math.floor(Date.now()/1000))) return json({error:"too many widget requests"},429,{"retry-after":"60"});
-  const data = await widgetData(shared(c.env), store(c.env, DEFAULT_ORG), c.req.param("key"),Math.floor(Date.now()/1000));
+  const data = await widgetDataFor(c, c.req.param("key"));
   return json(data || {error:"public sharing unavailable"},data ? 200 : 404,{"access-control-allow-origin":"*","cache-control":"no-store"});
 });
 
@@ -378,15 +434,20 @@ app.post("/api/event/:key{[A-Za-z0-9_-]+}", async (c) => {
     return eventJson({ error: "too many analytics events, try again shortly" }, 429, { "retry-after": String(throttle.retryAfter) });
   }
   const ts = Math.floor(Date.now() / 1000);
-  await ev(c, site).prepare(
-    "INSERT INTO events (site_id, ts, name, path, referrer, visitor, source, medium, campaign, content, term, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  )
-    .bind(
-      site.id, ts, name, parts.path, referrerHost(input.referrer),
-      await visitorId(ev(c, site), site, request),
-      parts.source, parts.medium, parts.campaign, parts.content, parts.term, value,
-    )
-    .run();
+  const row = {
+    ts, name, path: parts.path, referrer: referrerHost(input.referrer), visitor: await visitorId(ev(c, site), site, request),
+    source: parts.source, medium: parts.medium, campaign: parts.campaign, content: parts.content, term: parts.term, value,
+  };
+  // The move feature's one touch on the hot path: stored as before when no move is under way.
+  const outcome = await collectEvent(moveCtx(c.env), orgOfSite(site), site, row, {
+    key: c.req.param("key"), ip: clientIp(request), ua: (request.headers.get("user-agent") || "").slice(0, 512),
+    origin: publicOrigin(c.env, request, new URL(request.url)), host: String(request.headers.get("host") || "").split(",")[0].trim(),
+  });
+  if (outcome === "queued") {
+    let waitUntil = null;
+    try { waitUntil = c.executionCtx.waitUntil.bind(c.executionCtx); } catch { /* no execution context */ }
+    kickFlush(moveCtx(c.env), orgOfSite(site), waitUntil);
+  }
   incrementCounter("events_accepted_total");
   return eventJson({ ok: true }, 202);
 });
@@ -441,6 +502,10 @@ app.post("/login", async (c) => {
   return redirect("/", cookie);
 });
 
+// Move to risulta.dev: the routes that authenticate themselves (a signed link, a
+// single-use connect code) sit above the session gate; the admin pages below it.
+mountLinkRoutes(app, moveDeps());
+
 // Gates every route registered below this point: API callers get 401 JSON,
 // browsers get redirected to sign in.
 app.use("*", async (c, next) => {
@@ -463,6 +528,8 @@ app.use("*", async (c, next) => {
   c.set("session", session);
   await next();
 });
+
+mountMoveRoutes(app, moveDeps());
 
 app.post("/logout", async (c) => {
   const session = c.get("session");
@@ -729,6 +796,11 @@ app.post("/api/sites", async (c) => {
     if (wantsJson) return json({ error: messages[siteCheck.code] }, 400);
     return redirect("/sites/new?error=" + siteCheck.code);
   }
+  // After a move the target holds the list of websites: add them there, not here.
+  if (await instanceLocked(moveCtx(c.env))) {
+    if (wantsJson) return json({ error: "this instance has moved to risulta.dev: add websites there" }, 409);
+    return redirect("/sites/new?error=moved");
+  }
   const exists = await shared(c.env).prepare("SELECT id FROM sites WHERE domain = ?").bind(domain).first();
   if (exists) {
     if (wantsJson) return json({ error: "domain already registered" }, 409);
@@ -762,6 +834,11 @@ app.post("/api/sites/:id{[0-9]+}/domain", async (c) => {
   const id = Number(c.req.param("id"));
   const site = await shared(c.env).prepare("SELECT id, name, domain, public_key, slug FROM sites WHERE id = ?").bind(id).first();
   if (!site) return json({ error: "unknown site" }, 404);
+  // The moved target holds the domain the instance sent: change it there.
+  if (await instanceLocked(moveCtx(c.env))) {
+    if (wantsJson) return json({ error: "this instance has moved to risulta.dev: change the domain there" }, 409);
+    return redirect("/sites/" + site.slug + "/settings?error=domain-invalid");
+  }
   const domain = cleanDomain(parsed.value.domain);
   if (!validDomain(domain)) {
     if (wantsJson) return json({ error: "domain is invalid" }, 400);
@@ -1291,6 +1368,7 @@ async function runScheduled(env) {
     if (result.failed) incrementCounter("database_errors_total");
     await ensureHost(env);
     await runSchedule(hooks, { env, now: Math.floor(Date.now() / 1000), deadlineMs: startedAt + 5000 });
+    await moveTick(moveCtx(env), await listOrgs(shared(env)));
   } catch (error) {
     incrementCounter("database_errors_total");
     console.error("Maintenance failed: " + String(error));
