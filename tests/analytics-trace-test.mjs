@@ -4,8 +4,8 @@ import { analyticsTrace, tracedAnalyticsResponse } from '../src/analytics-trace.
 const sqlite=new Database(':memory:');
 const db={exec(sql){sqlite.exec(sql);},prepare(sql){const q=sqlite.query(sql);let args=[];return{bind(...values){args=values;return this;},first(){return q.get(...args);},all(){return{results:q.all(...args)};},run(){return q.run(...args);}};}};
 const trace=analyticsTrace(db);
-assert.equal(trace.db.prepare('SELECT ? AS value').bind('bound-secret').first().value,'bound-secret');
-for(let i=0;i<70;i++) assert.equal(trace.db.prepare('SELECT 1 AS n').first().n,1);
+assert.equal((await trace.db.prepare('SELECT ? AS value').bind('bound-secret').first()).value,'bound-secret');
+for(let i=0;i<70;i++) assert.equal((await trace.db.prepare('SELECT 1 AS n').first()).n,1);
 const timing=trace.finish(0);
 assert.equal(timing.spans.length,64);assert.equal(timing.dropped,7);
 assert.ok(timing.spans[0].plan.length>0);
@@ -17,7 +17,7 @@ assert.match(response.headers.get('server-timing'),/serialize;dur=/);
 assert.equal(response.headers.get('cache-control'),'no-store');
 assert.equal(payload.trace.spans.length,64);
 // Missing plan support does not prevent the original query from running.
-const unavailable={exec(sql){db.exec(sql);},prepare(sql){if(sql.startsWith('EXPLAIN'))throw new Error('unsupported');return db.prepare(sql);}};
-const fallback=analyticsTrace(unavailable);assert.equal(fallback.db.prepare('SELECT 2 AS n').first().n,2);
+const unavailable={async exec(sql){await db.exec(sql);},prepare(sql){if(sql.startsWith('EXPLAIN'))throw new Error('unsupported');return db.prepare(sql);}};
+const fallback=analyticsTrace(unavailable);assert.equal((await fallback.db.prepare('SELECT 2 AS n').first()).n,2);
 assert.deepEqual(fallback.finish(0).spans[0].plan,[]);
 sqlite.close();console.log('analytics tracing OK (plans, bounds, redaction, Unicode, timing and fallback)');

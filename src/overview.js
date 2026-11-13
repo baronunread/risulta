@@ -33,40 +33,40 @@ function fresh(timestamp, now, ttl) {
   return timestamp !== undefined && now >= timestamp && now - timestamp < ttl;
 }
 
-export function overviewAnalytics(db, site, range, includeGoals, now) {
+export async function overviewAnalytics(db, site, range, includeGoals, now) {
   now = now === undefined ? Date.now() : now;
   const entry = snapshot(db, site, range, now);
   if (!entry.traffic || !fresh(entry.trafficAt, now, 15000)) {
-    entry.traffic = dashboardTraffic(db, site, range, Math.floor(now / 1000));
+    entry.traffic = await dashboardTraffic(db, site, range, Math.floor(now / 1000));
     entry.trafficAt = now;
   }
   if (includeGoals && (!entry.goals || !fresh(entry.goalsAt, now, 60000))) {
-    entry.goals = overviewGoals(overviewScope(db, site.id, range.since, range.until, range.filters), site.id, range.since, range.until, Number(entry.traffic.summary.visitors));
+    entry.goals = await overviewGoals(overviewScope(db, site.id, range.since, range.until, range.filters), site.id, range.since, range.until, Number(entry.traffic.summary.visitors));
     entry.goalsAt = now;
   }
   // A traffic poll must not mutate the cached initial page's goal preview.
   return { ...entry.traffic, goals: includeGoals ? entry.goals : [] };
 }
 
-export function overviewComparison(db, site, range, now) {
+export async function overviewComparison(db, site, range, now) {
   now = now === undefined ? Date.now() : now;
   const entry = snapshot(db, site, range, now);
   if (!entry.comparison || !fresh(entry.comparisonAt, now, 15000)) {
-    entry.comparison = dashboardSummary(db, site, range, Math.floor(now / 1000));
+    entry.comparison = await dashboardSummary(db, site, range, Math.floor(now / 1000));
     entry.comparisonAt = now;
   }
   return entry.comparison;
 }
 
-export function measurementAnalytics(db, site, range, kind, now) {
+export async function measurementAnalytics(db, site, range, kind, now) {
   now = now === undefined ? Date.now() : now;
   const entry = snapshot(db, site, range, now);
   const key = kind === "goals" ? "goalReport" : "funnelReport";
   if (!entry[key] || !fresh(entry[key + "At"], now, 15000)) {
     const scoped = overviewScope(db, site.id, range.since, range.until, range.filters);
     if (kind === "goals") {
-      entry[key] = { goals: dashboardGoals(db, site, range, Math.floor(now / 1000)) };
-    } else entry[key] = siteFunnels(scoped, site.id, range.since, range.until);
+      entry[key] = { goals: await dashboardGoals(db, site, range, Math.floor(now / 1000)) };
+    } else entry[key] = await siteFunnels(scoped, site.id, range.since, range.until);
     entry[key + "At"] = now;
   }
   return entry[key];
@@ -74,34 +74,34 @@ export function measurementAnalytics(db, site, range, kind, now) {
 
 
 // HTML and API reports share authorized, versioned analytics results.
-export function reportAnalytics(db, site, range, input, cohort, now) {
+export async function reportAnalytics(db, site, range, input, cohort, now) {
   now = now === undefined ? Date.now() : now;
   const seconds = Math.floor(now / 1000);
-  return cachedAnalytics(db, site.id, "report", range, [input,cohort], seconds, false,
-    () => dashboardReport(db, site, range, input, cohort, seconds));
+  return await cachedAnalytics(db, site.id, "report", range, [input,cohort], seconds, false,
+    async () => await dashboardReport(db, site, range, input, cohort, seconds));
 }
 
-export function journeyAnalytics(db, site, range, input, now) {
+export async function journeyAnalytics(db, site, range, input, now) {
   now = now === undefined ? Date.now() : now;
   const entry = snapshot(db, site, range, now);
   const key = JSON.stringify(["journeys", input.visitor, input.limit, input.offset]);
-  return cachedReport(entry, key, now, () => siteJourneys(
+  return await cachedReport(entry, key, now, async () => await siteJourneys(
     overviewScope(db, site.id, range.since, range.until, range.filters),
     site.id, range.since, range.until, input,
   ));
 }
 
-function cachedReport(entry, key, now, read) {
+async function cachedReport(entry, key, now, read) {
   if (!entry.reports) entry.reports = [];
   for (let i = 0; i < entry.reports.length; i++) {
     const report = entry.reports[i];
     if (report.key === key) {
-      if (!fresh(report.at, now, 15000)) { report.value = read(); report.at = now; }
+      if (!fresh(report.at, now, 15000)) { report.value = await read(); report.at = now; }
       return { ...report.value };
     }
   }
+  const value = await read();
   if (entry.reports.length >= 8) entry.reports.shift();
-  const value = read();
   entry.reports.push({ key, at: now, value });
   return { ...value };
 }

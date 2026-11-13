@@ -23,9 +23,9 @@ const insert = sqlite.prepare("INSERT INTO events (site_id, ts, name, path, visi
 const add = (site, ts, name = "pageview", visitor = "a", path = "/") => insert.run(site, ts, name, path, visitor);
 
 try {
-  const empty = siteSummary(db, 1, 0, 172800);
+  const empty = await siteSummary(db, 1, 0, 172800);
   assert.deepEqual(empty, { pageviews: 0, visitors: 0, visits: 0 });
-  let analytics = siteAnalytics(db, { id: 1 }, 0, 172800);
+  let analytics = await siteAnalytics(db, { id: 1 }, 0, 172800);
   assert.deepEqual(analytics.summary, empty);
   assert.deepEqual(analytics.byDay, []);
   assert.deepEqual(analytics.byHour, []);
@@ -41,9 +41,9 @@ try {
   add(1, 50000, "signup", "c", "/custom-only"); // Custom-event-only journeys count as sessions.
   add(2, 101); // Same visitor on another site must not affect site 1.
 
-  const summary = siteSummary(db, 1, 0, 172800);
+  const summary = await siteSummary(db, 1, 0, 172800);
   assert.deepEqual(summary, { pageviews: 5, visitors: 2, visits: 6 });
-  analytics = siteAnalytics(db, { id: 1 }, 0, 172800);
+  analytics = await siteAnalytics(db, { id: 1 }, 0, 172800);
   assert.deepEqual(analytics.summary, summary);
   assert.deepEqual(analytics.byDay.map(({ day, pageviews, visitors, visits }) => ({ day, pageviews, visitors, visits })), [
     { day: "1970-01-01", pageviews: 3, visitors: 1, visits: 3 },
@@ -56,12 +56,12 @@ try {
   const today = new Date().toISOString().slice(0, 10);
   assert.equal(dateSeries(1, [{ day: today, visits: 4 }])[0].visits, 4);
   assert.deepEqual(hourSeries(analytics.byHour).slice(0, 3).map((row) => row.visits), [3, 2, 0]);
-  assert.deepEqual(siteSummary(db, 2, 0, 172800), { pageviews: 1, visitors: 1, visits: 1 });
+  assert.deepEqual(await siteSummary(db, 2, 0, 172800), { pageviews: 1, visitors: 1, visits: 1 });
 
   // The range start does not invent a visit; only the later 1801-second gap does.
-  assert.deepEqual(siteSummary(db, 1, 1900, 3702), { pageviews: 2, visitors: 1, visits: 1 });
+  assert.deepEqual(await siteSummary(db, 1, 1900, 3702), { pageviews: 2, visitors: 1, visits: 1 });
   // Strict threshold: a gap of 1801 seconds starts a session.
-  assert.deepEqual(siteSummary(db, 1, 3701, 4000), { pageviews: 1, visitors: 1, visits: 1 });
+  assert.deepEqual(await siteSummary(db, 1, 3701, 4000), { pageviews: 1, visitors: 1, visits: 1 });
 } finally {
   sqlite.close();
 }

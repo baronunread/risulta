@@ -3,9 +3,9 @@ import type { Database, SqlValue, TrafficSummary } from "../src/types.ts";
 import { rollupReport, rollupTraffic } from "../src/rollups.ts";
 import { SiteSchema, validate } from "../src/validation.ts";
 
-declare const nativeDatabase: D1Database;
+declare const nativeDatabase: D1DatabaseAsync;
 const database: Database = nativeDatabase;
-const traffic = rollupTraffic(database, 1, 0, 86400, 86400);
+const traffic = await rollupTraffic(database, 1, 0, 86400, 86400);
 const summary: TrafficSummary = traffic.summary;
 const views: number = summary.pageviews;
 const input = { name: "Shop", domain: "shop.example.com" };
@@ -29,7 +29,7 @@ void views;
 const invalidValue: SqlValue = { site: 1 };
 void invalidValue;
 // @ts-expect-error Database first() can return null.
-const row: TrafficSummary = database.prepare("SELECT * FROM events").first<TrafficSummary>();
+const row: TrafficSummary = await database.prepare("SELECT * FROM events").first<TrafficSummary>();
 void row;
 // @ts-expect-error Only supported acquisition dimensions can use rollups.
 rollupReport(database, 1, 0, 86400, 86400, "event", { limit: 50, offset: 0, sort: "visitors" });

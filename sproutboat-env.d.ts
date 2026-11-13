@@ -10,9 +10,10 @@ declare global {
   /**
    * Bindings from sproutboat.jsonc, for project "risulta-sprout".
    *
-   * The handler signature is fetch(request, ctx); env is only a global.
-   * Every call on these is synchronous, so `await` is allowed and does
-   * nothing.
+   * The same object is passed as the second handler argument: fetch(request, env, ctx).
+   * D1 (from 2026-10-24), KV (2026-10-25) and R2 (2026-10-26) return Promises, as on
+   * Workers, so a project at or after those dates gets the *Async types; before them
+   * the calls are synchronous. `await` works at every date.
    */
   const env: {
     /** vars: "Risulta Sprout" */
@@ -27,7 +28,11 @@ declare global {
     RISULTA_BASE_URL: string;
     /** secret, set with `sproutboat secrets put` */
     RISULTA_LOG_LEVEL: string;
-    DB: D1Database;
+    /** secret, set with `sproutboat secrets put` */
+    RISULTA_TRACKER_ORIGIN: string;
+    /** secret, set with `sproutboat secrets put` */
+    RISULTA_TRACKER_HOSTS: string;
+    DB: D1DatabaseAsync;
     /** rate limit: 240 per 60s */
     INGEST: RateLimit;
     /** static assets: public */

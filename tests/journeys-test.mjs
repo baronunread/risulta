@@ -24,7 +24,7 @@ const db = {
   },
 };
 
-const result = siteJourneys(db, 7, 0, 100000, { visitor: "", limit: 50, offset: 0 });
+const result = await siteJourneys(db, 7, 0, 100000, { visitor: "", limit: 50, offset: 0 });
 if (result.total !== 4) throw new Error(`expected 4 sessions, got ${result.total}`);
 if (result.rows[0].events.length !== 2 || result.rows[0].events[1].id !== 2) throw new Error("30-minute boundary must remain in the session");
 if (result.rows[1].events[0].id !== 3) throw new Error("a gap over 30 minutes must start a session");
@@ -34,7 +34,7 @@ if (!query.sql.includes("site_id = ?") || !query.sql.includes("ORDER BY visitor,
   throw new Error("query must be site-scoped, deterministically ordered, and bounded");
 }
 
-siteJourneys(db, 7, 0, 100000, { visitor: "a", limit: 5, offset: 0 });
+await siteJourneys(db, 7, 0, 100000, { visitor: "a", limit: 5, offset: 0 });
 if (!query.sql.includes("AND visitor = ?") || query.values[3] !== "a") throw new Error("visitor drilldown must filter before the bounded scan");
 if (!journeyInput(new URLSearchParams("visitor=xyz")).error) throw new Error("invalid visitor hash must be rejected");
 if (journeyInput(new URLSearchParams("limit=1000")).limit !== 100) throw new Error("page size must be capped");

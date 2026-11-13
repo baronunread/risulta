@@ -50,9 +50,10 @@ Release metadata advertises `rollup_schema_version` and `builtin_maintenance`.
 After matching schema and maintenance health checks, the installer disables old
 external worker timers. No Python runtime or separate worker package is needed.
 
-Every minute the web process starts a separate process of the same executable,
-with fresh SQLite connections. Only one maintenance child runs at a time. It
-checks the saved backup schedule and processes up to four completed site-days,
+Every minute the web process runs a maintenance tick of its own (the cron
+trigger, in process). A tick that is still running makes the next one a no-op.
+It checks the saved backup schedule and processes up to four completed site-days,
+within a time budget of about 1.2 s (the first day always runs),
 prioritizing recent dirty days and rotating across sites. Backfill is outside
 startup. Inspect errors with `journalctl -u risulta-sprout`.
 
@@ -61,8 +62,8 @@ Interruption retains old rows and dirty markers; retry replaces rows without
 double counting. Inserts, updates and deletes invalidate affected days,
 including site/day moves and removal of a day's last event. Raw events remain
 intact. SQLite serializes writes against collection. Large days can briefly
-delay collector writes; readers continue using WAL. Backups run in the child
-so snapshot I/O does not occupy the web process event loop.
+delay collector writes; readers continue using WAL. Rollup days are one batch (one
+transaction) each, so the budget bounds how long a tick holds the event loop.
 
 ## Upgrade recovery
 

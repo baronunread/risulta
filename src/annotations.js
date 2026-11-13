@@ -1,6 +1,6 @@
 import { dayStringFromMs } from "./util.js";
 
-export const ANNOTATION_SCHEMA = "CREATE TABLE IF NOT EXISTS annotations (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, ts INTEGER NOT NULL, text TEXT NOT NULL CHECK(length(text) BETWEEN 1 AND 240));CREATE INDEX IF NOT EXISTS idx_annotations_site_ts ON annotations(site_id,ts,id);";
+export const ANNOTATION_SCHEMA = "CREATE TABLE IF NOT EXISTS annotations (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL, ts INTEGER NOT NULL, text TEXT NOT NULL CHECK(length(text) BETWEEN 1 AND 240));CREATE INDEX IF NOT EXISTS idx_annotations_site_ts ON annotations(site_id,ts,id);";
 
 export function annotationInput(body) {
   const day = String(body.day || "");
@@ -13,9 +13,9 @@ export function annotationInput(body) {
   return { day, ts, text };
 }
 
-export function siteAnnotations(db, siteId, range) {
+export async function siteAnnotations(db, siteId, range) {
   const rows = range
-    ? db.prepare("SELECT id,ts,text FROM annotations WHERE site_id=? AND ts>=? AND ts<? ORDER BY ts,id LIMIT 500").bind(siteId, Math.floor(range.since / 86400) * 86400, range.until).all().results
-    : db.prepare("SELECT id,ts,text FROM annotations WHERE site_id=? ORDER BY ts DESC,id DESC LIMIT 500").bind(siteId).all().results;
+    ? (await db.prepare("SELECT id,ts,text FROM annotations WHERE site_id=? AND ts>=? AND ts<? ORDER BY ts,id LIMIT 500").bind(siteId, Math.floor(range.since / 86400) * 86400, range.until).all()).results
+    : (await db.prepare("SELECT id,ts,text FROM annotations WHERE site_id=? ORDER BY ts DESC,id DESC LIMIT 500").bind(siteId).all()).results;
   return rows.map((row) => ({ ...row, day: dayStringFromMs(Number(row.ts) * 1000) }));
 }

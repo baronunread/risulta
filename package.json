@@ -4,9 +4,18 @@
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./app": "./src/index.js",
+    "./worker": "./src/worker.js",
+    "./standalone": "./src/standalone.js",
+    "./public/*": "./public/*",
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "lint": "oxlint .",
-    "test": "bun tests/annotations-test.mjs && bun tests/daystring-test.mjs && bun tests/encoding-test.mjs && bun tests/backup-ui-test.mjs && bun tests/journeys-test.mjs && bun tests/visits-test.mjs && bun tests/funnels-test.mjs && bun tests/overview-test.mjs && bun tests/rollup-test.mjs && bun tests/analytics-cache-test.mjs && bun tests/analytics-trace-test.mjs && bun tests/site-navigation-test.mjs && bun tests/home-test.mjs && bun tests/chart-range-test.mjs && bun tests/read-api-test.mjs && bun tests/backup-schedule-test.mjs && bun tests/public-widgets-test.mjs && bun tests/ingest-http-test.mjs && bun tests/widget-polling-test.mjs && python3 tests/installer-test.py && python3 tests/installer-cli-test.py",
+    "test": "bun tests/annotations-test.mjs && bun tests/daystring-test.mjs && bun tests/encoding-test.mjs && bun tests/backup-ui-test.mjs && bun tests/journeys-test.mjs && bun tests/visits-test.mjs && bun tests/funnels-test.mjs && bun tests/overview-test.mjs && bun tests/rollup-test.mjs && bun tests/analytics-cache-test.mjs && bun tests/analytics-trace-test.mjs && bun tests/site-navigation-test.mjs && bun tests/home-test.mjs && bun tests/chart-range-test.mjs && bun tests/read-api-test.mjs && bun tests/backup-schedule-test.mjs && bun tests/public-widgets-test.mjs && bun tests/ingest-http-test.mjs && bun tests/widget-polling-test.mjs && bun tests/data-split-test.mjs && bun tests/hooks-test.mjs && python3 tests/installer-test.py && python3 tests/installer-cli-test.py",
     "check": "sproutboat check",
     "check:lock": "bun scripts/check-lock.mjs",
     "dev": "sproutboat dev --port 8099",
@@ -18,7 +27,7 @@
   "devDependencies": {
     "@oxlint/plugins": "1.87.0",
     "oxlint": "1.87.0",
-    "sproutboat": "^0.15.0",
+    "sproutboat": "^0.54.0",
     "style-doctor": "^0.3.0",
     "typescript": "^7.0.2"
   },

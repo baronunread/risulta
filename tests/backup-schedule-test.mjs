@@ -12,26 +12,26 @@ const files={publish(path){renameSync(path,path.slice(0,-8))},remove(path){if(!e
 try{
  sqlite.exec("PRAGMA journal_mode=WAL;CREATE TABLE backup_settings(id INTEGER PRIMARY KEY,frequency TEXT,hour INTEGER,minute INTEGER,retention INTEGER,runner_seen INTEGER);INSERT INTO backup_settings VALUES(1,'off',2,0,2,0);CREATE TABLE backup_history(id INTEGER PRIMARY KEY,created_at INTEGER,kind TEXT,status TEXT,path TEXT DEFAULT '',bytes INTEGER DEFAULT 0);CREATE TABLE events(id INTEGER PRIMARY KEY,path TEXT);INSERT INTO events VALUES(1,'/東京'),(2,'/checkout');");
  const monday=Date.UTC(2026,9,5,3)/1000;
- assert.equal(runScheduledBackup(db,files,monday),'not due');
+ assert.equal(await runScheduledBackup(db,files,monday),'not due');
  assert.equal(sqlite.query('SELECT runner_seen FROM backup_settings').get().runner_seen,monday);
  sqlite.exec("UPDATE backup_settings SET frequency='daily'");
- assert.equal(runScheduledBackup(db,files,monday-7200),'not due');
- assert.equal(runScheduledBackup(db,files,monday),'backup created');
- assert.equal(runScheduledBackup(db,files,monday),'already backed up');
+ assert.equal(await runScheduledBackup(db,files,monday-7200),'not due');
+ assert.equal(await runScheduledBackup(db,files,monday),'backup created');
+ assert.equal(await runScheduledBackup(db,files,monday),'already backed up');
  const snapshot=sqlite.query("SELECT path FROM backup_history WHERE status='success'").get().path;
  const restored=new Database(snapshot);assert.equal(restored.query('PRAGMA integrity_check').get().integrity_check,'ok');assert.deepEqual(restored.query('SELECT path FROM events ORDER BY id').all(),[{path:'/東京'},{path:'/checkout'}]);restored.close();
  const manual=join(root,'backups','manual.sqlite'),outside=join(root,'outside.sqlite'),link=join(root,'backups','AUTO-link.sqlite');writeFileSync(manual,'keep');writeFileSync(outside,'keep');symlinkSync(outside,link);
  for(const [kind,path] of [['manual',manual],['scheduled',outside],['scheduled',link]]) sqlite.query("INSERT INTO backup_history(created_at,kind,status,path,bytes) VALUES(0,?,'success',?,1)").run(kind,path);
- for(const day of [1,2,3])assert.equal(runScheduledBackup(db,files,monday+day*86400),'backup created');
+ for(const day of [1,2,3])assert.equal(await runScheduledBackup(db,files,monday+day*86400),'backup created');
  assert.ok(existsSync(manual));assert.ok(existsSync(outside));assert.ok(lstatSync(link).isSymbolicLink());
  assert.equal(sqlite.query("SELECT count(*) n FROM backup_history WHERE kind='scheduled' AND status='success' AND created_at>0").get().n,2);
  sqlite.exec("UPDATE backup_settings SET frequency='weekly'");
- assert.equal(runScheduledBackup(db,files,monday+4*86400),'not due');assert.equal(runScheduledBackup(db,files,monday+7*86400),'backup created');
+ assert.equal(await runScheduledBackup(db,files,monday+4*86400),'not due');assert.equal(await runScheduledBackup(db,files,monday+7*86400),'backup created');
  sqlite.exec("UPDATE backup_settings SET frequency='daily'");
- assert.throws(()=>runScheduledBackup(db,{...files,publish(){throw new Error('failure')}},monday+8*86400),/failure/);
+ await assert.rejects(() => runScheduledBackup(db,{...files,publish(){throw new Error('failure')}},monday+8*86400),/failure/);
  assert.equal(sqlite.query("SELECT status FROM backup_history ORDER BY id DESC LIMIT 1").get().status,'failed');
- assert.equal(runScheduledBackup(db,files,monday+8*86400),'backup created');
- sqlite.exec('UPDATE backup_settings SET retention=0');assert.throws(()=>runScheduledBackup(db,files,monday),/Invalid/);
- sqlite.exec('UPDATE backup_settings SET retention=2,hour=1.5');assert.throws(()=>runScheduledBackup(db,files,monday),/Invalid/);
+ assert.equal(await runScheduledBackup(db,files,monday+8*86400),'backup created');
+ sqlite.exec('UPDATE backup_settings SET retention=0');await assert.rejects(() => runScheduledBackup(db,files,monday),/Invalid/);
+ sqlite.exec('UPDATE backup_settings SET retention=2,hour=1.5');await assert.rejects(() => runScheduledBackup(db,files,monday),/Invalid/);
  console.log('built-in backup scheduling OK (UTC due time, weekly, restart deduplication, WAL snapshot, failure recovery and safe retention)');
 }finally{sqlite.close();rmSync(root,{recursive:true,force:true});}

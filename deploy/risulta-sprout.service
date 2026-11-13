@@ -7,6 +7,10 @@ Wants=network-online.target
 Type=simple
 User=risulta-sprout
 Group=risulta-sprout
+# Maintenance now runs in the web process. Kept so other tools (sqlite3) can read
+# the live database, and so a rollback to a binary that ran maintenance in a
+# second process still works.
+Environment=SB_SQLITE_EXCLUSIVE=0
 EnvironmentFile=/etc/risulta-sprout/risulta-sprout.env
 ExecStart=/usr/local/bin/risulta-sprout
 Restart=on-failure

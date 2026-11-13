@@ -1,17 +1,18 @@
-// Domain contracts at the synchronous SQL and analytics boundaries.
+// Domain contracts at the SQL and analytics boundaries. Every database call
+// returns a Promise, as on Workers D1; only prepare() and bind() are synchronous.
 export type SqlValue = string | number | boolean | null;
 
 export interface DatabaseStatement {
   bind(...values: SqlValue[]): DatabaseStatement;
-  first<T = Record<string, SqlValue>>(): T | null;
-  all<T = Record<string, SqlValue>>(): { results: T[] };
-  run(): { success: boolean; meta: { changes: number; last_row_id: number } };
+  first<T = Record<string, SqlValue>>(): Promise<T | null>;
+  all<T = Record<string, SqlValue>>(): Promise<{ results: T[] }>;
+  run(): Promise<{ success: boolean; meta: { changes: number; last_row_id: number } }>;
 }
 
 // Structural subset shared by native D1 and the scoped query/test adapters.
 export interface Database {
   prepare(sql: string): DatabaseStatement;
-  exec(sql: string): void;
+  batch(statements: DatabaseStatement[]): Promise<{ success: boolean; meta: { changes: number; last_row_id: number } }[]>;
 }
 
 export interface SiteAddress {

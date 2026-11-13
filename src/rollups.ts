@@ -12,43 +12,43 @@ export const ROLLUP_SCHEMA =
 // Return a completed-day boundary only when every historical day is covered.
 // A partial day and today's live data remain raw. Missing or dirty days fall
 // back to the existing query, including throughout an interrupted backfill.
-export function rollupBoundary(db: Database, siteId: number, since: number, until: number, now: number, stats = false): number {
+export async function rollupBoundary(db: Database, siteId: number, since: number, until: number, now: number, stats = false): Promise<number> {
   const today = Math.floor(now / 86400) * 86400;
   const end = Math.min(Math.floor(until / 86400) * 86400, today);
   if (since % 86400 !== 0 || end <= since) return 0;
   const table = stats ? "analytics_rollup_stats_days" : "analytics_rollup_days";
-  const state = db.prepare("SELECT (SELECT count(*) FROM " + table + " WHERE site_id = ? AND day >= ? AND day < ?) AS covered, (SELECT count(*) FROM analytics_rollup_dirty WHERE site_id = ? AND day >= ? AND day < ?) AS dirty")
-    .bind(siteId, since, end, siteId, since, end).first<{ covered: number; dirty: number }>()!;
+  const state = (await db.prepare("SELECT (SELECT count(*) FROM " + table + " WHERE site_id = ? AND day >= ? AND day < ?) AS covered, (SELECT count(*) FROM analytics_rollup_dirty WHERE site_id = ? AND day >= ? AND day < ?) AS dirty")
+    .bind(siteId, since, end, siteId, since, end).first<{ covered: number; dirty: number }>())!;
   return Number(state.covered) === (end - since) / 86400 && Number(state.dirty) === 0 ? end : 0;
 }
 
-export function rollupTraffic(db: Database, siteId: number, since: number, until: number, boundary: number): RollupTraffic {
-  const summary = db.prepare("SELECT coalesce(sum(pageviews), 0) AS pageviews, coalesce(sum(visits), 0) AS visits FROM analytics_rollup_visitors WHERE site_id = ? AND day >= ? AND day < ?")
-    .bind(siteId, since, boundary).first<TrafficSummary>()!;
-  const byDay = db.prepare("SELECT date(day, 'unixepoch') AS day, sum(pageviews) AS pageviews, count(CASE WHEN pageviews > 0 THEN 1 END) AS visitors, sum(visits) AS visits FROM analytics_rollup_visitors WHERE site_id = ? AND day >= ? AND day < ? GROUP BY day HAVING sum(pageviews) > 0 OR sum(visits) > 0 ORDER BY day")
-    .bind(siteId, since, boundary).all<DailyTraffic>().results;
-  summary.visitors = rollupVisitors(db, siteId, since, until, boundary);
+export async function rollupTraffic(db: Database, siteId: number, since: number, until: number, boundary: number): Promise<RollupTraffic> {
+  const summary = (await db.prepare("SELECT coalesce(sum(pageviews), 0) AS pageviews, coalesce(sum(visits), 0) AS visits FROM analytics_rollup_visitors WHERE site_id = ? AND day >= ? AND day < ?")
+    .bind(siteId, since, boundary).first<TrafficSummary>())!;
+  const byDay = (await db.prepare("SELECT date(day, 'unixepoch') AS day, sum(pageviews) AS pageviews, count(CASE WHEN pageviews > 0 THEN 1 END) AS visitors, sum(visits) AS visits FROM analytics_rollup_visitors WHERE site_id = ? AND day >= ? AND day < ? GROUP BY day HAVING sum(pageviews) > 0 OR sum(visits) > 0 ORDER BY day")
+    .bind(siteId, since, boundary).all<DailyTraffic>()).results;
+  summary.visitors = await rollupVisitors(db, siteId, since, until, boundary);
   return { summary, byDay };
 }
 
 // Keep imported identities exact across both the historical prefix and live tail.
-export function rollupVisitors(db: Database, siteId: number, since: number, until: number, boundary: number): number {
-  return Number(db.prepare("SELECT count(DISTINCT visitor) AS n FROM (SELECT visitor FROM analytics_rollup_visitors WHERE site_id = ? AND day >= ? AND day < ? AND pageviews > 0 UNION ALL SELECT visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview')")
-    .bind(siteId, since, boundary, siteId, boundary, until).first<{ n: number }>()!.n);
+export async function rollupVisitors(db: Database, siteId: number, since: number, until: number, boundary: number): Promise<number> {
+  return Number((await db.prepare("SELECT count(DISTINCT visitor) AS n FROM (SELECT visitor FROM analytics_rollup_visitors WHERE site_id = ? AND day >= ? AND day < ? AND pageviews > 0 UNION ALL SELECT visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview')")
+    .bind(siteId, since, boundary, siteId, boundary, until).first<{ n: number }>())!.n);
 }
 
-export function rollupTop(db: Database, siteId: number, since: number, until: number, boundary: number, dimension: AcquisitionDimension): TrafficLabel[] {
+export async function rollupTop(db: Database, siteId: number, since: number, until: number, boundary: number, dimension: AcquisitionDimension): Promise<TrafficLabel[]> {
   const column = dimension === "path" ? "path" : dimension === "source" ? "coalesce(nullif(source,''),'Direct / None')" : dimension === "medium" ? "coalesce(nullif(medium,''),'None')" : "coalesce(nullif(campaign,''),'None')";
-  return db.prepare("SELECT label, sum(pageviews) AS pageviews, count(DISTINCT visitor) AS visitors FROM (SELECT label, visitor, pageviews FROM analytics_rollup_dimensions WHERE site_id = ? AND day >= ? AND day < ? AND dimension = ? UNION ALL SELECT " + column + " AS label, visitor, 1 AS pageviews FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview') GROUP BY label ORDER BY visitors DESC, pageviews DESC, label LIMIT 8")
-    .bind(siteId, since, boundary, dimension, siteId, boundary, until).all<TrafficLabel>().results;
+  return (await db.prepare("SELECT label, sum(pageviews) AS pageviews, count(DISTINCT visitor) AS visitors FROM (SELECT label, visitor, pageviews FROM analytics_rollup_dimensions WHERE site_id = ? AND day >= ? AND day < ? AND dimension = ? UNION ALL SELECT " + column + " AS label, visitor, 1 AS pageviews FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview') GROUP BY label ORDER BY visitors DESC, pageviews DESC, label LIMIT 8")
+    .bind(siteId, since, boundary, dimension, siteId, boundary, until).all<TrafficLabel>()).results;
 }
 
-export function rollupReport(db: Database, siteId: number, since: number, until: number, boundary: number, dimension: AcquisitionDimension, bounds: ReportBounds): AcquisitionReport {
+export async function rollupReport(db: Database, siteId: number, since: number, until: number, boundary: number, dimension: AcquisitionDimension, bounds: ReportBounds): Promise<AcquisitionReport> {
   const column = dimension === "path" ? "path" : dimension === "source" ? "coalesce(nullif(source,''),'Direct / None')" : dimension === "medium" ? "coalesce(nullif(medium,''),'None')" : "coalesce(nullif(campaign,''),'None')";
   const grouped = "SELECT label, sum(pageviews) AS pageviews, count(DISTINCT visitor) AS visitors, sum(value) AS value FROM (SELECT label, visitor, pageviews, value FROM analytics_rollup_dimensions WHERE site_id = ? AND day >= ? AND day < ? AND dimension = ? UNION ALL SELECT " + column + " AS label, visitor, 1 AS pageviews, coalesce(value,0) AS value FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview') GROUP BY label";
   const args = [siteId, since, boundary, dimension, siteId, boundary, until];
-  const rows = db.prepare("SELECT *, count(*) OVER () AS total_rows FROM (" + grouped + ") ORDER BY " + bounds.sort + " DESC, label LIMIT ? OFFSET ?").bind(...args, bounds.limit, bounds.offset).all<ReportRow & { total_rows?: number }>().results;
-  const total = rows.length ? Number(rows[0].total_rows) : Number(db.prepare("SELECT count(*) AS n FROM (" + grouped + ")").bind(...args).first<{ n: number }>()!.n);
+  const rows = (await db.prepare("SELECT *, count(*) OVER () AS total_rows FROM (" + grouped + ") ORDER BY " + bounds.sort + " DESC, label LIMIT ? OFFSET ?").bind(...args, bounds.limit, bounds.offset).all<ReportRow & { total_rows?: number }>()).results;
+  const total = rows.length ? Number(rows[0].total_rows) : Number((await db.prepare("SELECT count(*) AS n FROM (" + grouped + ")").bind(...args).first<{ n: number }>())!.n);
   for (let i = 0; i < rows.length; i++) delete rows[i].total_rows;
   return { dimension, filters: {}, rows, total, ...bounds };
 }
@@ -60,22 +60,22 @@ export const STATS_ROLLUP_SCHEMA =
   "CREATE TABLE IF NOT EXISTS analytics_rollup_hours (site_id INTEGER NOT NULL, day INTEGER NOT NULL, hour INTEGER NOT NULL, visitor TEXT NOT NULL, pageviews INTEGER NOT NULL, visits INTEGER NOT NULL, PRIMARY KEY (site_id, day, hour, visitor)) WITHOUT ROWID;" +
   "CREATE TABLE IF NOT EXISTS analytics_rollup_events (site_id INTEGER NOT NULL, day INTEGER NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL, visitor TEXT NOT NULL, events INTEGER NOT NULL, value REAL NOT NULL, PRIMARY KEY (site_id, day, name, path, visitor)) WITHOUT ROWID;";
 
-export function rollupHours(db: Database, siteId: number, since: number, until: number, boundary: number): HourlyTraffic[] {
-  return db.prepare("WITH marked AS (SELECT ts, visitor, name, lag(ts) OVER (PARTITION BY visitor, date(ts,'unixepoch') ORDER BY ts) AS previous FROM events WHERE site_id = ? AND ts >= ? - 1800 AND ts < ?), " +
+export async function rollupHours(db: Database, siteId: number, since: number, until: number, boundary: number): Promise<HourlyTraffic[]> {
+  return (await db.prepare("WITH marked AS (SELECT ts, visitor, name, lag(ts) OVER (PARTITION BY visitor, date(ts,'unixepoch') ORDER BY ts) AS previous FROM events WHERE site_id = ? AND ts >= ? - 1800 AND ts < ?), " +
     "combined AS (SELECT hour, visitor, pageviews, visits FROM analytics_rollup_hours WHERE site_id = ? AND day >= ? AND day < ? UNION ALL " +
     "SELECT cast(strftime('%H',ts,'unixepoch') AS INTEGER), visitor, sum(name='pageview'), sum(CASE WHEN visitor!='' AND (previous IS NULL OR ts-previous>1800) THEN 1 ELSE 0 END) FROM marked WHERE ts >= ? GROUP BY 1, visitor) " +
     "SELECT hour, sum(pageviews) AS pageviews, count(DISTINCT CASE WHEN pageviews>0 THEN visitor END) AS visitors, sum(visits) AS visits FROM combined GROUP BY hour HAVING sum(pageviews)>0 OR sum(visits)>0 ORDER BY hour")
-    .bind(siteId, boundary, until, siteId, since, boundary, boundary).all<HourlyTraffic>().results;
+    .bind(siteId, boundary, until, siteId, since, boundary, boundary).all<HourlyTraffic>()).results;
 }
 
-export function rollupGoals(db: Database, siteId: number, since: number, until: number, boundary: number, visitors: number): GoalResult[] {
-  const rows = db.prepare("WITH configured AS (SELECT id,name,event_name,path FROM goals WHERE site_id = ?), " +
+export async function rollupGoals(db: Database, siteId: number, since: number, until: number, boundary: number, visitors: number): Promise<GoalResult[]> {
+  const rows = (await db.prepare("WITH configured AS (SELECT id,name,event_name,path FROM goals WHERE site_id = ?), " +
     "hits AS MATERIALIZED (SELECT 'pageview' AS name, label AS path, visitor, pageviews AS events, value FROM analytics_rollup_dimensions WHERE site_id = ? AND dimension = 'path' AND day >= ? AND day < ? AND 'pageview' IN (SELECT event_name FROM configured) AND ('' IN (SELECT path FROM configured WHERE event_name='pageview') OR label IN (SELECT path FROM configured WHERE event_name='pageview')) " +
     "UNION ALL SELECT name,path,visitor,events,value FROM analytics_rollup_events e WHERE site_id = ? AND day >= ? AND day < ? AND name IN (SELECT event_name FROM configured) AND (name IN (SELECT event_name FROM configured WHERE path='') OR (name,path) IN (SELECT event_name,path FROM configured WHERE path!='')) " +
     "UNION ALL SELECT name,path,visitor,1 AS events,coalesce(value,0) FROM events e WHERE site_id = ? AND ts >= ? AND ts < ? AND name IN (SELECT event_name FROM configured) AND (name IN (SELECT event_name FROM configured WHERE path='') OR (name,path) IN (SELECT event_name,path FROM configured WHERE path!=''))), " +
     "totals AS (SELECT name, '' AS path, sum(events) AS conversions, count(DISTINCT visitor) AS unique_conversions, sum(value) AS value FROM hits WHERE name IN (SELECT event_name FROM configured WHERE path='') GROUP BY name " +
     "UNION ALL SELECT name,path,sum(events),count(DISTINCT visitor),sum(value) FROM hits WHERE path IN (SELECT path FROM configured WHERE path!='') GROUP BY name,path) " +
     "SELECT g.name,g.event_name,g.path,coalesce(t.conversions,0) AS conversions,coalesce(t.unique_conversions,0) AS unique_conversions,coalesce(t.value,0) AS value FROM configured g LEFT JOIN totals t ON t.name=g.event_name AND t.path=g.path ORDER BY g.id")
-    .bind(siteId, siteId, since, boundary, siteId, since, boundary, siteId, boundary, until).all<Omit<GoalResult, 'conversion_rate'>>().results;
+    .bind(siteId, siteId, since, boundary, siteId, since, boundary, siteId, boundary, until).all<Omit<GoalResult, 'conversion_rate'>>()).results;
   return rows.map((row) => ({ ...row, conversion_rate: visitors ? Number(row.unique_conversions) / visitors : 0 }));
 }

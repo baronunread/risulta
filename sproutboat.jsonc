@@ -1,8 +1,8 @@
 {
   "$schema": "https://sproutboat.com/schema.json",
   "name": "risulta-sprout",
-  "main": "src/index.js",
-  "compatibility_date": "2026-09-07",
+  "main": "src/standalone.js",
+  "compatibility_date": "2026-11-18",
   "vars": {
     "SITE_NAME": "Risulta Sprout"
   },
@@ -13,7 +13,9 @@
     "RISULTA_ADMIN_DISPLAY_NAME",
     "RISULTA_ADMIN_PASSWORD",
     "RISULTA_BASE_URL",
-    "RISULTA_LOG_LEVEL"
+    "RISULTA_LOG_LEVEL",
+    "RISULTA_TRACKER_ORIGIN",
+    "RISULTA_TRACKER_HOSTS"
   ],
   "triggers": { "crons": ["* * * * *"] },
   "assets": {
