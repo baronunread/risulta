@@ -21,16 +21,16 @@ export function journeyInput(params) {
 // Call only after getSiteForUser. Filter before scanning so a visitor
 // drilldown has its own bounded scan, independent of the site's traffic.
 // The extra row detects truncation without an unbounded count query.
-export function siteJourneys(db, siteId, since, until, input) {
+export async function siteJourneys(db, siteId, since, until, input) {
   const values = [siteId, since, until];
   let where = "site_id = ? AND ts >= ? AND ts < ? AND visitor != ''";
   if (input.visitor) {
     where += " AND visitor = ?";
     values.push(input.visitor);
   }
-  const events = db.prepare(
+  const events = (await db.prepare(
     "SELECT id, visitor, ts, name, path, value FROM events WHERE " + where + " ORDER BY visitor, ts, id LIMIT ?",
-  ).bind(...values, JOURNEY_EVENT_LIMIT + 1).all().results;
+  ).bind(...values, JOURNEY_EVENT_LIMIT + 1).all()).results;
   const truncated = events.length > JOURNEY_EVENT_LIMIT;
   if (truncated) events.pop();
   const journeys = [];

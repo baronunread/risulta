@@ -252,3 +252,25 @@ export function dayStringFromMs(ms) {
   const day = d < 10 ? "0" + d : "" + d;
   return year + "-" + month + "-" + day;
 }
+
+// A secret that is declared but not set throws when read on the runtime;
+// treat that as "not configured".
+export function optionalEnv(env, name) {
+  try {
+    return env[name] || "";
+  } catch {
+    return "";
+  }
+}
+
+// Reading a declared secret is a call to the host (and throws when it is unset),
+// so the hot path reads each setting at most every 30 s per environment.
+const envCache = new Map();
+export function cachedEnv(env, name) {
+  const now = Date.now();
+  const hit = envCache.get(name);
+  if (hit && hit.env === env && now - hit.at < 30000) return hit.value;
+  const value = optionalEnv(env, name);
+  envCache.set(name, { env, at: now, value });
+  return value;
+}

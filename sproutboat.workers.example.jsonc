@@ -1,0 +1,35 @@
+{
+  // EXAMPLE: the Workers build (src/worker.js) on a Workers-style host such as
+  // Sproutboat Cloud. Copy this file, replace every example.com value with your
+  // own, and deploy with: sproutboat deploy -c <your copy>
+  // The self-hosted binary is built from sproutboat.jsonc instead. This entry has
+  // no native code and leaves backups to the platform.
+  "$schema": "https://sproutboat.com/schema.json",
+  "name": "risulta",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-18",
+  "vars": {
+    "SITE_NAME": "Risulta",
+    // Where the dashboard lives.
+    "RISULTA_BASE_URL": "https://analytics.example.com",
+    // Optional host split: the snippet is built from this origin, and the hosts in
+    // RISULTA_TRACKER_HOSTS serve only the tracker, collector and widget routes
+    // (every other path answers 404 there). Remove both to serve everything from one host.
+    "RISULTA_TRACKER_ORIGIN": "https://stats.example.com",
+    "RISULTA_TRACKER_HOSTS": "stats.example.com"
+  },
+  "d1_databases": ["DB"],
+  "ratelimiters": [{ "binding": "INGEST", "limit": 240, "period": 60 }],
+  "secrets": [
+    "RISULTA_ADMIN_EMAIL",
+    "RISULTA_ADMIN_DISPLAY_NAME",
+    "RISULTA_ADMIN_PASSWORD"
+  ],
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS",
+    "not_found_handling": "none",
+    "run_sprout_first": true
+  }
+}

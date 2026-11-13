@@ -11,7 +11,7 @@ export async function readKeyHash(token) {
 export async function createReadKey(db, siteId) {
   const token = "risulta_read_" + randomHex(32);
   const createdAt = Math.floor(Date.now() / 1000);
-  const result = db.prepare("INSERT INTO read_api_keys (site_id, token_hash, created_at) VALUES (?, ?, ?)")
+  const result = await db.prepare("INSERT INTO read_api_keys (site_id, token_hash, created_at) VALUES (?, ?, ?)")
     .bind(siteId, await readKeyHash(token), createdAt).run();
   return { id: Number(result.meta.last_row_id), site_id: siteId, created_at: createdAt, token };
 }
@@ -23,6 +23,6 @@ export async function readKeySite(db, request) {
   const header = request.headers.get("authorization") || "";
   if (!/^Bearer risulta_read_[0-9a-f]{64}$/i.test(header)) return null;
   const token = header.slice(7);
-  return db.prepare("SELECT sites.* FROM sites JOIN read_api_keys ON read_api_keys.site_id = sites.id WHERE sites.id = ? AND read_api_keys.token_hash = ?")
-    .bind(Number(match[1]), await readKeyHash(token)).first() || null;
+  return (await db.prepare("SELECT sites.* FROM sites JOIN read_api_keys ON read_api_keys.site_id = sites.id WHERE sites.id = ? AND read_api_keys.token_hash = ?")
+    .bind(Number(match[1]), await readKeyHash(token)).first()) || null;
 }

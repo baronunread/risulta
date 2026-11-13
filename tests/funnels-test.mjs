@@ -22,7 +22,7 @@ function expected(steps, since, until) {
   return counts;
 }
 for (const [since, until] of [[0,1500],[115,997],[1600,1800]]) {
-  const result = siteFunnels(db, 1, since, until);
+  const result = await siteFunnels(db, 1, since, until);
   assert.deepEqual(result.funnels[0].steps.map((step) => step.conversions), expected([{name:'pageview',path:''},{name:'signup',path:'/thanks'},{name:'purchase',path:''}], since, until));
   assert.deepEqual(result.funnels[1].steps.map((step) => step.conversions), expected([{name:'pageview',path:''},{name:'pageview',path:''}], since, until));
   assert.deepEqual(result.funnels[2].steps, []);
@@ -31,14 +31,14 @@ for (const [since, until] of [[0,1500],[115,997],[1600,1800]]) {
 sqlite.exec('DELETE FROM events');
 sqlite.transaction(() => { for (let i = 0; i < 50002; i++) insert.run(i + 1,1,i,'pageview','/','one'); })();
 sqlite.exec("UPDATE events SET name='signup',path='/thanks' WHERE id>50000");
-assert.equal(siteFunnels(db,1,0,50002).truncated,true);
-assert.equal(siteFunnels(db,1,0,50002).funnels[0].steps[1].conversions,0,'pruning cannot move events inside the cap');
-assert.equal(siteFunnels(db,1,0,49999).truncated,false);
-assert.deepEqual(siteFunnels(db,2,0,50002),{funnels:[],truncated:false});
+assert.equal((await siteFunnels(db,1,0,50002)).truncated,true);
+assert.equal((await siteFunnels(db,1,0,50002)).funnels[0].steps[1].conversions,0,'pruning cannot move events inside the cap');
+assert.equal((await siteFunnels(db,1,0,49999)).truncated,false);
+assert.deepEqual(await siteFunnels(db,2,0,50002),{funnels:[],truncated:false});
 sqlite.exec('DELETE FROM events');
 sqlite.transaction(() => { for (let i = 0; i < 70000; i++) insert.run(i + 1,i % 19 ? 1 : 2,Math.floor(i / 3),names[i % names.length],i % 3 ? '/thanks' : '/wrong','visitor' + (i % 103)); })();
 for (const [since,until] of [[0,24000],[3000,24000],[12000,24000]]) {
-  const result = siteFunnels(db,1,since,until);
+  const result = await siteFunnels(db,1,since,until);
   assert.deepEqual(result.funnels[0].steps.map((step) => step.conversions),expected([{name:'pageview',path:''},{name:'signup',path:'/thanks'},{name:'purchase',path:''}],since,until));
   assert.deepEqual(result.funnels[1].steps.map((step) => step.conversions),expected([{name:'pageview',path:''},{name:'pageview',path:''}],since,until));
 }

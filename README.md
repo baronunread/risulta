@@ -43,10 +43,11 @@ The first admin account comes from `RISULTA_ADMIN_EMAIL` /
 `RISULTA_ADMIN_PASSWORD` in the environment, read once while the user table
 is empty. Open the printed address and sign in.
 
-`SB_SQLITE_EXCLUSIVE=0` is required: built-in maintenance (rollups, scheduled
-backups) runs in a second process on the same database, and sproutboat 0.12.4+
-opens SQLite in EXCLUSIVE locking mode by default, which locks that process out.
-The systemd unit sets it.
+Built-in maintenance (rollups, scheduled backups) runs inside the web process on a
+once-a-minute tick, so the default EXCLUSIVE SQLite locking is fine. `SB_SQLITE_EXCLUSIVE=0`
+only matters if you want to read the live database with another tool such as
+`sqlite3`, or to roll back to a binary older than 0.3 (which ran maintenance in a
+second process). The systemd unit keeps it set for both reasons.
 
 ## Website navigation
 
@@ -105,7 +106,7 @@ Daily and hourly rollups accelerate unfiltered Overview, Reports, Goals and
 fresh stats/acquisition API reads. Full stats still compute ordered funnels
 from raw events. Schema upgrades run
 automatically. The binary processes up to four completed days per minute in
-a separate maintenance process. Uncovered or changed days fall back to raw events during
+the web process, within a time budget. Uncovered or changed days fall back to raw events during
 backfill. See [upgrade and recovery details](docs/migrations-and-rollups.md).
 
 TypeScript migration and validation commands: [docs/typescript.md](docs/typescript.md).

@@ -30,12 +30,16 @@ export function metricsText(loginRateLimitKeys) {
   return lines.join("\n") + "\n";
 }
 
+let configuredLevel = "info";
+
+// The level comes from the environment of the running request or tick, which
+// the entry point passes in (there is no global env).
+export function setLogLevel(value) {
+  configuredLevel = value ? String(value) : "info";
+}
+
 export function logLevel() {
-  try {
-    return env["RISULTA_LOG_LEVEL"] || "info";
-  } catch {
-    return "info";
-  }
+  return configuredLevel;
 }
 
 // One JSON record per response: method, normalized route, status, duration.

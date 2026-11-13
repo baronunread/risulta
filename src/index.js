@@ -1,16 +1,15 @@
 import { annotationInput, siteAnnotations } from "./annotations.js";
 import { INGEST_CORS, ingestPreflight, createDomainMismatchLogger } from "./ingest-http.js";
 import { widgetAllowed, widgetData, widgetPage } from "./public-widgets.js";
-import { startMaintenanceProcess, exitMaintenanceProcess, isMaintenanceChild } from "./native-workers.js";
-import { runRollups, runScheduledBackup } from "./maintenance.js";
-import { backupFiles } from "./backup-files.js";
+import { runMaintenance } from "./maintenance.js";
+import { shared, store, orgOfSite, listOrgs, DEFAULT_ORG } from "./data.js";
 import { analyticsTrace, tracedAnalyticsResponse } from "./analytics-trace.js";
 import { cachedAnalytics } from "./analytics-cache.js";
 import { SCHEMA_VERSION } from "./migrations.ts";
 import { siteSlug, availableSiteSlug } from "./sites.ts";
 import { reportAnalytics, journeyAnalytics, overviewAnalytics, overviewComparison, invalidateOverview, measurementAnalytics } from "./overview.js";
 import { createReadKey, readKeySite } from "./read-api.js";
-import { ensureBackupSchema, backupSettings, backupHistory, backupInput, saveBackupSettings, recordBackup } from "./backups.js";
+import { ensureBackupSchema, backupSchemaReady, backupSettings, backupHistory, backupInput, saveBackupSettings, recordBackup } from "./backups.js";
 // Risulta Sprout: request router. Thin by design (sproutboat-site shape):
 // domain rules live in domain.js, storage in store.js, auth in auth.js,
 // pages in views.js, charts in chart.js. Hono is routing only - never call
@@ -50,6 +49,8 @@ import {
   adminCount,
   createFunnel,
   ensureReady,
+  isReady,
+  cachedSiteForKey,
   getSiteForUser,
   listFunnels,
   listSitesForUser,
@@ -66,8 +67,8 @@ import {
   visitorId,
   clientIp,
 } from "./store.js";
-import { incrementCounter, logRequest, metricsText, safeRoute } from "./metrics.js";
-import { asciiJson, fmtInt } from "./util.js";
+import { incrementCounter, logRequest, metricsText, safeRoute, setLogLevel } from "./metrics.js";
+import { asciiJson, fmtInt, cachedEnv } from "./util.js";
 import { escapeHtml } from "./util.js";
 import {
   accountPage,
@@ -86,11 +87,17 @@ import {
   trackerFor,
   usersPage,
   backupsPage,
+  setBackupsEnabled,
   overviewGoalsFragment,
 } from "./views.js";
 import { journeyInput, siteJourneys } from "./journeys.js";
 import { avatarFor } from "./avatar.js";
 import { GoalSchema, ProfileSchema, SiteSchema, validate } from "./validation.ts";
+
+// The org store that holds this site's events (see data.js).
+function ev(c, site) {
+  return store(c.env, orgOfSite(site));
+}
 
 function json(data, status, headers) {
   const responseHeaders = { "content-type": "application/json" };
@@ -158,7 +165,7 @@ function redirect(to, cookie) {
 // verify.sh proves the 429 path. The binding returns { success, resetAt }
 // (epoch ms of the window roll), so Retry-After is exact.
 let ingestBindingWarned = false;
-function ingestThrottle(request) {
+function ingestThrottle(env, request) {
   const binding = env.INGEST;
   const limit = binding ? binding.limit : null;
   if (limit) {
@@ -213,7 +220,9 @@ function reportInput(q) {
 // (required behind a TLS-terminating proxy, where the request origin is
 // loopback); otherwise the request origin, which is correct for direct
 // loopback use.
-function publicOrigin(request, url) {
+function publicOrigin(env, request, url) {
+  const tracker = cachedEnv(env, "RISULTA_TRACKER_ORIGIN");
+  if (tracker) return String(tracker).replace(/\/$/, "");
   try {
     const configured = env["RISULTA_BASE_URL"];
     if (configured) return String(configured).replace(/\/$/, "");
@@ -223,9 +232,14 @@ function publicOrigin(request, url) {
   return url.origin;
 }
 
-function bodyOf(request) {
+// At the current compatibility date request.body is a stream, so the text is
+// read asynchronously. A string body (test doubles, older runtimes) is used as is.
+async function bodyOf(request) {
   const method = request.method;
-  return method === "POST" || method === "PUT" ? request.body || "" : "";
+  if (method !== "POST" && method !== "PUT") return "";
+  const body = request.body;
+  if (body && !(body instanceof ReadableStream)) return String(body);
+  return await request.text();
 }
 
 function wantsJsonFrom(request) {
@@ -238,13 +252,38 @@ function isSecure(request) {
 
 const app = new Hono();
 
-app.use("*", async (c, next) => {
-  ensureBackupSchema(env.DB);
-  await ensureReady(env.DB);
-  await next();
+// Hosts that serve only the tracker, collector and widget (RISULTA_TRACKER_HOSTS,
+// a comma list such as "stats.example.com"). Everything else, login
+// and cookies included, answers 404 there, so the session never lives on a host
+// whose pages a customer controls. Unset (the default, and every self-hosted
+// instance) nothing changes.
+const TRACKER_PATHS = /^\/(js\/[A-Za-z0-9_-]+\.js|api\/event\/[A-Za-z0-9_-]+|widget\.js|widget-frame\.js|widget-geist\.woff2|widget-geist-LICENSE\.txt|public\/(widget|data)\/[A-Za-z0-9_-]+|healthz|favicon\.ico)$/;
+// Backup pages and routes exist only where the entry point supplies file
+// operations (the standalone binary); elsewhere the host owns backups.
+app.use("*", (c, next) => {
+  const url = new URL(c.req.url);
+  const path = url.pathname;
+  const hosts = cachedEnv(c.env, "RISULTA_TRACKER_HOSTS");
+  if (hosts && !TRACKER_PATHS.test(path) && hosts.toLowerCase().split(",").map((h) => h.trim()).includes(url.host.toLowerCase())) {
+    return new Response("Not found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  if (!backupFiles && (path === "/backups" || path === "/api/backup" || path.indexOf("/api/backup/") === 0)) {
+    return path.indexOf("/api/") === 0 ? json({ error: "not found", path }, 404) : new Response("Not found", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  return next();
 });
 
+// The schema is made once; after that this layer awaits nothing (each await costs
+// real time in this runtime, and every request passes through here).
+async function warm(c, next) {
+  await ensureBackupSchema(shared(c.env));
+  await ensureReady(shared(c.env), store(c.env, DEFAULT_ORG), c.env);
+  return next();
+}
+app.use("*", (c, next) => (isReady() && backupSchemaReady() ? next() : warm(c, next)));
+
 app.get("/healthz", () => new Response("ok\n", { headers: { "x-risulta-schema-version": String(SCHEMA_VERSION), "x-risulta-maintenance": "builtin" } }));
+
 app.get("/favicon.ico", () => new Response("", { status: 204 }));
 
 app.get("/avatar.svg", (c) => {
@@ -261,33 +300,33 @@ app.get("/metrics", () =>
     headers: { "content-type": "text/plain; version=0.0.4", "cache-control": "no-store" },
   }));
 
-app.get("/style.css", (c) => env.ASSETS.fetch(c.req.raw));
-app.get("/dashboard.js", (c) => env.ASSETS.fetch(c.req.raw));
-app.get("/favicon-light.svg", (c) => env.ASSETS.fetch(c.req.raw));
-app.get("/favicon-dark.svg", (c) => env.ASSETS.fetch(c.req.raw));
-app.get("/site.webmanifest", (c) => env.ASSETS.fetch(c.req.raw));
+app.get("/style.css", (c) => c.env.ASSETS.fetch(c.req.raw));
+app.get("/dashboard.js", (c) => c.env.ASSETS.fetch(c.req.raw));
+app.get("/favicon-light.svg", (c) => c.env.ASSETS.fetch(c.req.raw));
+app.get("/favicon-dark.svg", (c) => c.env.ASSETS.fetch(c.req.raw));
+app.get("/site.webmanifest", (c) => c.env.ASSETS.fetch(c.req.raw));
 
-app.get("/widget-geist.woff2", (c) => env.ASSETS.fetch(c.req.raw));
-app.get("/widget-geist-LICENSE.txt", (c) => env.ASSETS.fetch(c.req.raw));
-app.get("/widget-frame.js", (c) => env.ASSETS.fetch(c.req.raw));
-app.get("/widget.js", (c) => env.ASSETS.fetch(c.req.raw));
-app.get("/public/widget/:key{[A-Za-z0-9_-]+}", (c) => {
+app.get("/widget-geist.woff2", (c) => c.env.ASSETS.fetch(c.req.raw));
+app.get("/widget-geist-LICENSE.txt", (c) => c.env.ASSETS.fetch(c.req.raw));
+app.get("/widget-frame.js", (c) => c.env.ASSETS.fetch(c.req.raw));
+app.get("/widget.js", (c) => c.env.ASSETS.fetch(c.req.raw));
+app.get("/public/widget/:key{[A-Za-z0-9_-]+}", async (c) => {
   if (!widgetAllowed(clientIp(c.req.raw),Math.floor(Date.now()/1000))) return json({error:"too many widget requests"},429,{"retry-after":"60"});
-  const data = widgetData(env.DB, c.req.param("key"), Math.floor(Date.now()/1000));
+  const data = await widgetData(shared(c.env), store(c.env, DEFAULT_ORG), c.req.param("key"), Math.floor(Date.now()/1000));
   const url = new URL(c.req.url);
   const size = ["small","medium","wide"].includes(url.searchParams.get("size")) ? url.searchParams.get("size") : "medium";
   return new Response(widgetPage(data,size,url.searchParams.get("theme")), {status:data ? 200 : 404,headers:{"content-type":"text/html;charset=utf-8","cache-control":"no-store","referrer-policy":"no-referrer","content-security-policy":"default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors *"}});
 });
-app.get("/public/data/:key{[A-Za-z0-9_-]+}", (c) => {
+app.get("/public/data/:key{[A-Za-z0-9_-]+}", async (c) => {
   if (!widgetAllowed(clientIp(c.req.raw),Math.floor(Date.now()/1000))) return json({error:"too many widget requests"},429,{"retry-after":"60"});
-  const data = widgetData(env.DB,c.req.param("key"),Math.floor(Date.now()/1000));
+  const data = await widgetData(shared(c.env), store(c.env, DEFAULT_ORG), c.req.param("key"),Math.floor(Date.now()/1000));
   return json(data || {error:"public sharing unavailable"},data ? 200 : 404,{"access-control-allow-origin":"*","cache-control":"no-store"});
 });
 
 // Tracker asset: public, cookieless, same behavior as the Bun app.
-app.get("/js/:key{[A-Za-z0-9_-]+\\.js}", (c) => {
+app.get("/js/:key{[A-Za-z0-9_-]+\\.js}", async (c) => {
   const key = c.req.param("key").slice(0, -3);
-  const site = siteForKey(env.DB, key);
+  const site = await siteForKey(shared(c.env), key);
   if (!site) return json({ error: "unknown site" }, 404);
   return new Response(trackerFor(key), { headers: { "content-type": "text/javascript;charset=utf-8" } });
 });
@@ -303,9 +342,11 @@ function eventJson(data, status, headers) {
 app.options("/api/event/:key{[A-Za-z0-9_-]+}", () => ingestPreflight());
 app.post("/api/event/:key{[A-Za-z0-9_-]+}", async (c) => {
   const request = c.req.raw;
-  const site = siteForKey(env.DB, c.req.param("key"));
+  const key = c.req.param("key");
+  let site = cachedSiteForKey(key);
+  if (site === undefined) site = await siteForKey(shared(c.env), key);
   if (!site) return eventJson({ error: "unknown site" }, 404);
-  const parsed = parseJson(bodyOf(request));
+  const parsed = parseJson(await bodyOf(request));
   if (!parsed.ok) { incrementCounter("events_rejected_total"); return eventJson({ error: "body must be JSON" }, 400); }
   const input = parsed.value;
   const name = String(input.name || "");
@@ -320,18 +361,18 @@ app.post("/api/event/:key{[A-Za-z0-9_-]+}", async (c) => {
   }
   const parts = splitPathAndAttribution(input.path);
   if (parts.path.charAt(0) !== "/") { incrementCounter("events_rejected_total"); return eventJson({ error: "path must start with /" }, 400); }
-  const throttle = ingestThrottle(request);
+  const throttle = ingestThrottle(c.env, request);
   if (!throttle.allowed) {
     incrementCounter("rate_limits_total");
     return eventJson({ error: "too many analytics events, try again shortly" }, 429, { "retry-after": String(throttle.retryAfter) });
   }
   const ts = Math.floor(Date.now() / 1000);
-  env.DB.prepare(
+  await ev(c, site).prepare(
     "INSERT INTO events (site_id, ts, name, path, referrer, visitor, source, medium, campaign, content, term, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   )
     .bind(
       site.id, ts, name, parts.path, referrerHost(input.referrer),
-      await visitorId(env.DB, site, request),
+      await visitorId(ev(c, site), site, request),
       parts.source, parts.medium, parts.campaign, parts.content, parts.term, value,
     )
     .run();
@@ -342,14 +383,14 @@ app.post("/api/event/:key{[A-Za-z0-9_-]+}", async (c) => {
 // Sign-in. Rate-limited per email; JSON callers get codes, forms get the
 // page re-rendered with an error.
 app.get("/login", async (c) => {
-  const existing = await readSession(env.DB, c.req.raw);
+  const existing = await readSession(shared(c.env), c.req.raw);
   if (existing) return redirect("/");
   return new Response(loginPage(""), { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
 app.post("/login", async (c) => {
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   if (!sameOriginHost(request)) {
     if (wantsJson) return json({ error: "forbidden" }, 403);
@@ -364,7 +405,7 @@ app.post("/login", async (c) => {
     if (wantsJson) return json({ error: "too many attempts, try later" }, 429);
     return new Response(loginPage("Too many attempts, try again later."), { headers: { "content-type": "text/html;charset=utf-8" } });
   }
-  const user = env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
+  const user = await shared(c.env).prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
   const check = user ? await verifyPassword(password, user.password_hash) : { ok: false, rehash: false };
   if (!user || !check.ok) {
     incrementCounter("auth_failures_total");
@@ -377,12 +418,12 @@ app.post("/login", async (c) => {
     // Legacy row (s2$ standalone or Bun scrypt$): upgrade to the current KDF
     // now that the password is proven.
     try {
-      env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(await hashPassword(password), user.id).run();
+      await shared(c.env).prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(await hashPassword(password), user.id).run();
     } catch {
       /* keep the legacy hash on failure */
     }
   }
-  const session = await createSession(env.DB, user.id);
+  const session = await createSession(shared(c.env), user.id);
   const secure = isSecure(request);
   const cookie = setSessionCookie(session.token, secure);
   if (wantsJson) return json({ ok: true }, 200, { "set-cookie": cookie });
@@ -395,14 +436,14 @@ app.use("*", async (c, next) => {
   const request = c.req.raw;
   const path = new URL(request.url).pathname;
   // Bearer credentials never become a session and are checked only here.
-  const readSite = await readKeySite(env.DB, request);
+  const readSite = await readKeySite(shared(c.env), request);
   if (readSite) {
     c.set("readSite", readSite);
     await next();
     c.header("cache-control", "no-store");
     return;
   }
-  const session = await readSession(env.DB, request);
+  const session = await readSession(shared(c.env), request);
   const apiRoute = path === "/api" || path.indexOf("/api/") === 0;
   if (!session) {
     if (apiRoute) return json({ error: "sign in required" }, 401);
@@ -415,10 +456,10 @@ app.use("*", async (c, next) => {
 app.post("/logout", async (c) => {
   const session = c.get("session");
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   if (!csrfValid(session, csrfValue(request, body))) return wantsJson ? json({ error: "csrf mismatch" }, 403) : redirect("/login");
-  await destroySession(env.DB, request);
+  await destroySession(shared(c.env), request);
   const secure = isSecure(request);
   const expired = expiredSessionCookie(secure);
   if (wantsJson) return json({ ok: true }, 200, { "set-cookie": expired });
@@ -430,9 +471,9 @@ app.get("/api/session", (c) => {
   return json({ id: session.user_id, email: session.email, displayName: session.display_name, role: session.role, csrf: session.csrf });
 });
 
-app.get("/", (c) => {
+app.get("/", async (c) => {
   const session = c.get("session");
-  const overviews = homeOverviews(env.DB, session, Math.floor(Date.now() / 1000));
+  const overviews = await homeOverviews(shared(c.env), (orgId) => store(c.env, orgId), session, Math.floor(Date.now() / 1000));
   return new Response(homePage(session, overviews), { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
@@ -454,17 +495,17 @@ app.get("/account", (c) => {
 app.post("/api/account/password", async (c) => {
   const session = c.get("session");
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   const parsed = inputFrom(body, wantsJson);
   if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
   const current = String(parsed.value.current || "");
   const next = String(parsed.value.password || "");
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
-  const user = env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
+  const user = await shared(c.env).prepare("SELECT * FROM users WHERE id = ?").bind(session.user_id).first();
   if (!user || !(await verifyPassword(current, user.password_hash)).ok) return json({ error: "current password is wrong" }, 403);
   if (next.length < 12) return json({ error: "new password needs 12+ characters" }, 400);
-  changePassword(env.DB, session, await hashPassword(next));
+  await changePassword(shared(c.env), session, await hashPassword(next));
   if (wantsJson) return json({ ok: true });
   return redirect("/account?changed=1");
 });
@@ -472,7 +513,7 @@ app.post("/api/account/password", async (c) => {
 app.post("/api/account/profile", async (c) => {
   const session = c.get("session");
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   const parsed = inputFrom(body, wantsJson);
   if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
@@ -486,7 +527,7 @@ app.post("/api/account/profile", async (c) => {
     return redirect("/account?profile=" + profileCheck.code);
   }
   try {
-    updateProfile(env.DB, session.user_id, displayName, email);
+    await updateProfile(shared(c.env), session.user_id, displayName, email);
   } catch {
     if (wantsJson) return json({ error: "email already registered" }, 409);
     return redirect("/account?profile=email-registered");
@@ -498,7 +539,7 @@ app.post("/api/account/profile", async (c) => {
 app.post("/api/account/delete", async (c) => {
   const session = c.get("session");
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   const parsed = inputFrom(body, wantsJson);
   if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
@@ -508,29 +549,29 @@ app.post("/api/account/delete", async (c) => {
     if (wantsJson) return json({ error: "type DELETE to confirm account deletion" }, 400);
     return redirect("/account");
   }
-  const target = env.DB.prepare("SELECT role FROM users WHERE id = ?").bind(session.user_id).first();
+  const target = await shared(c.env).prepare("SELECT role FROM users WHERE id = ?").bind(session.user_id).first();
   if (!target) return json({ error: "unknown user" }, 404);
-  if (target.role === "admin" && adminCount(env.DB) < 2) {
+  if (target.role === "admin" && (await adminCount(shared(c.env))) < 2) {
     if (wantsJson) return json({ error: "cannot delete the last administrator" }, 400);
     return redirect("/account");
   }
-  removeUser(env.DB, session.user_id);
-  await destroySession(env.DB, request);
+  await removeUser(shared(c.env), session.user_id);
+  await destroySession(shared(c.env), request);
   const secure = isSecure(request);
   const expired = expiredSessionCookie(secure);
   if (wantsJson) return json({ ok: true }, 200, { "set-cookie": expired });
   return redirect("/login", expired);
 });
 
-app.get("/users", (c) => {
+app.get("/users", async (c) => {
   const session = c.get("session");
   if (session.role !== "admin") return redirect("/");
-  const users = env.DB.prepare(
+  const users = (await shared(c.env).prepare(
     "SELECT users.id, users.email, users.display_name, users.role, users.created_at, group_concat(sites.name, ', ') AS sites " +
       "FROM users LEFT JOIN site_users ON site_users.user_id = users.id LEFT JOIN sites ON sites.id = site_users.site_id " +
       "GROUP BY users.id ORDER BY users.created_at, users.id",
-  ).all().results;
-  const sites = env.DB.prepare("SELECT id, name, domain FROM sites ORDER BY name COLLATE NOCASE").all().results;
+  ).all()).results;
+  const sites = (await shared(c.env).prepare("SELECT id, name, domain FROM sites ORDER BY name COLLATE NOCASE").all()).results;
   return new Response(usersPage(session, users, sites, new URL(c.req.raw.url).searchParams.get("backup")), { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
@@ -538,7 +579,7 @@ app.post("/api/users", async (c) => {
   const session = c.get("session");
   const isAdmin = session.role === "admin";
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
@@ -574,7 +615,7 @@ app.post("/api/users", async (c) => {
   }
   let userId = 0;
   try {
-    userId = await createUser(env.DB, email, password, role, siteIds, displayName);
+    userId = await createUser(shared(c.env), email, password, role, siteIds, displayName);
   } catch {
     if (wantsJson) return json({ error: "email already registered" }, 409);
     return redirect("/users");
@@ -587,18 +628,18 @@ app.post("/api/users/:id{[0-9]+}/delete", async (c) => {
   const session = c.get("session");
   const isAdmin = session.role === "admin";
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
   const targetId = Number(c.req.param("id"));
   if (targetId === session.user_id) return json({ error: "cannot delete yourself" }, 400);
-  const target = env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(targetId).first();
+  const target = await shared(c.env).prepare("SELECT * FROM users WHERE id = ?").bind(targetId).first();
   if (!target) return json({ error: "unknown user" }, 404);
-  if (target.role === "admin" && adminCount(env.DB) < 2) {
+  if (target.role === "admin" && (await adminCount(shared(c.env))) < 2) {
     return json({ error: "cannot delete the last administrator" }, 400);
   }
-  removeUser(env.DB, targetId);
+  await removeUser(shared(c.env), targetId);
   if (wantsJson) return json({ ok: true });
   return redirect("/users");
 });
@@ -607,7 +648,7 @@ app.use("/sites/*", async (c, next) => {
   const url = new URL(c.req.url);
   const match = /^\/sites\/([0-9]+)(\/.*)?$/.exec(url.pathname);
   if (match && c.req.method === "GET") {
-    const site = getSiteForUser(env.DB, Number(match[1]), c.get("session"));
+    const site = await getSiteForUser(shared(c.env), Number(match[1]), c.get("session"));
     if (site && site.slug) {
       let suffix = match[2] || "";
       if (suffix === "/conversions") suffix = (url.searchParams.get("error") || "").indexOf("funnel-") === 0 ? "/funnels" : "/goals";
@@ -617,10 +658,10 @@ app.use("/sites/*", async (c, next) => {
   await next();
 });
 
-app.get("/sites/:id{[a-z0-9-]+}", (c) => {
+app.get("/sites/:id{[a-z0-9-]+}", async (c) => {
   const session = c.get("session");
   const url = new URL(c.req.url);
-  const site = getSiteForUser(env.DB, c.req.param("id"), session);
+  const site = await getSiteForUser(shared(c.env), c.req.param("id"), session);
   if (!site) {
     return new Response(pageShell("Not found", session, '<main class="shell" id="main"><h1>Unknown site</h1></main>', null, []),
       { status: 404, headers: { "content-type": "text/html;charset=utf-8" } });
@@ -637,33 +678,33 @@ app.get("/sites/:id{[a-z0-9-]+}", (c) => {
   range.filters = reportInput(url.searchParams).filters;
   delete range.filters.event;
   range.acquisition = ["source", "campaign", "medium"].indexOf(url.searchParams.get("acquisition")) >= 0 ? url.searchParams.get("acquisition") : "source";
-  const analytics = overviewAnalytics(env.DB, site, range, true);
+  const analytics = await overviewAnalytics(ev(c, site), site, range, true);
   // Previous-period comparison: the summary for the immediately preceding
   // window of the same length, like the Bun app.
-  const comparison = overviewComparison(env.DB, site, { ...range, since: range.since - days * 86400, until: range.since });
-  const sites = listSitesForUser(env.DB, session);
-  return new Response(sitePage(session, site, sites, analytics, range, days, metric, publicOrigin(c.req.raw, url), comparison, siteAnnotations(env.DB, site.id, range)),
+  const comparison = await overviewComparison(ev(c, site), site, { ...range, since: range.since - days * 86400, until: range.since });
+  const sites = await listSitesForUser(shared(c.env), session);
+  return new Response(sitePage(session, site, sites, analytics, range, days, metric, publicOrigin(c.env, c.req.raw, url), comparison, await siteAnnotations(ev(c, site), site.id, range)),
     { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
-function setupRoute(c, partial) {
+async function setupRoute(c, partial) {
   const session = c.get("session");
-  const site = getSiteForUser(env.DB, c.req.param("id"), session);
+  const site = await getSiteForUser(shared(c.env), c.req.param("id"), session);
   if (!site) return new Response("Unknown site", { status: 404 });
-  const received = !!env.DB.prepare("SELECT ts FROM events WHERE site_id=? AND name='pageview' ORDER BY ts DESC LIMIT 1").bind(site.id).first();
-  const content = partial ? trackerStatus(site, received) : setupPage(session, site, listSitesForUser(env.DB, session), publicOrigin(c.req.raw, new URL(c.req.url)), received);
+  const received = !!(await ev(c, site).prepare("SELECT ts FROM events WHERE site_id=? AND name='pageview' ORDER BY ts DESC LIMIT 1").bind(site.id).first());
+  const content = partial ? trackerStatus(site, received) : setupPage(session, site, await listSitesForUser(shared(c.env), session), publicOrigin(c.env, c.req.raw, new URL(c.req.url)), received);
   return new Response(content, { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 }
-app.get("/sites/:id{[a-z0-9-]+}/setup", (c) => setupRoute(c, false));
-app.get("/sites/:id{[a-z0-9-]+}/partials/setup", (c) => setupRoute(c, true));
+app.get("/sites/:id{[a-z0-9-]+}/setup", async (c) => await setupRoute(c, false));
+app.get("/sites/:id{[a-z0-9-]+}/partials/setup", async (c) => await setupRoute(c, true));
 
-app.get("/api/sites", (c) => json(listSitesForUser(env.DB, c.get("session"))));
+app.get("/api/sites", async (c) => json(await listSitesForUser(shared(c.env), c.get("session"))));
 
 app.post("/api/sites", async (c) => {
   const session = c.get("session");
   const isAdmin = session.role === "admin";
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
@@ -677,14 +718,14 @@ app.post("/api/sites", async (c) => {
     if (wantsJson) return json({ error: messages[siteCheck.code] }, 400);
     return redirect("/sites/new?error=" + siteCheck.code);
   }
-  const exists = env.DB.prepare("SELECT id FROM sites WHERE domain = ?").bind(domain).first();
+  const exists = await shared(c.env).prepare("SELECT id FROM sites WHERE domain = ?").bind(domain).first();
   if (exists) {
     if (wantsJson) return json({ error: "domain already registered" }, 409);
     return redirect("/sites/new?error=domain-registered");
   }
   const publicKey = randomHex(16);
-  const slug = availableSiteSlug(env.DB, domain);
-  const res = env.DB.prepare("INSERT INTO sites (name, domain, public_key, slug, created_at) VALUES (?, ?, ?, ?, ?)")
+  const slug = await availableSiteSlug(shared(c.env), domain);
+  const res = await shared(c.env).prepare("INSERT INTO sites (name, domain, public_key, slug, created_at) VALUES (?, ?, ?, ?, ?)")
     .bind(name, domain, publicKey, slug, Math.floor(Date.now() / 1000))
     .run();
   siteByKey.set(publicKey, { id: Number(res.meta.last_row_id), domain });
@@ -692,29 +733,29 @@ app.post("/api/sites", async (c) => {
   return redirect("/sites/" + slug + "/setup");
 });
 
-app.post("/api/sites/:id{[0-9]+}/domain", (c) => {
+app.post("/api/sites/:id{[0-9]+}/domain", async (c) => {
   const session = c.get("session");
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   if (session.role !== "admin") return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
   const parsed = inputFrom(body, wantsJson);
   if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
   const id = Number(c.req.param("id"));
-  const site = env.DB.prepare("SELECT id, name, domain, public_key, slug FROM sites WHERE id = ?").bind(id).first();
+  const site = await shared(c.env).prepare("SELECT id, name, domain, public_key, slug FROM sites WHERE id = ?").bind(id).first();
   if (!site) return json({ error: "unknown site" }, 404);
   const domain = cleanDomain(parsed.value.domain);
   if (!validDomain(domain)) {
     if (wantsJson) return json({ error: "domain is invalid" }, 400);
     return redirect("/sites/" + site.slug + "/settings?error=domain-invalid");
   }
-  const exists = env.DB.prepare("SELECT id FROM sites WHERE domain = ? AND id <> ?").bind(domain, id).first();
+  const exists = await shared(c.env).prepare("SELECT id FROM sites WHERE domain = ? AND id <> ?").bind(domain, id).first();
   if (exists) {
     if (wantsJson) return json({ error: "domain already registered" }, 409);
     return redirect("/sites/" + site.slug + "/settings?error=domain-registered");
   }
-  env.DB.prepare("UPDATE sites SET domain = ? WHERE id = ?").bind(domain, id).run();
+  await shared(c.env).prepare("UPDATE sites SET domain = ? WHERE id = ?").bind(domain, id).run();
   siteByKey.set(site.public_key, { id, domain });
   if (wantsJson) return json({ id, name: site.name, domain, publicKey: site.public_key, slug: site.slug });
   return redirect("/sites/" + site.slug + "/settings?saved=1");
@@ -735,53 +776,53 @@ function measurementError(url, error) {
 }
 
 // Credential management stays behind the session gate and admin boundary.
-app.get("/api/sites/:id{[0-9]+}/read-keys", (c) => {
+app.get("/api/sites/:id{[0-9]+}/read-keys", async (c) => {
   const session = c.get("session");
   if (session.role !== "admin") return json({ error: "forbidden" }, 403);
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = await getSiteForUser(shared(c.env), Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
-  return json(env.DB.prepare("SELECT id, site_id, created_at FROM read_api_keys WHERE site_id = ? ORDER BY id").bind(site.id).all().results, 200, { "cache-control": "no-store" });
+  return json((await shared(c.env).prepare("SELECT id, site_id, created_at FROM read_api_keys WHERE site_id = ? ORDER BY id").bind(site.id).all()).results, 200, { "cache-control": "no-store" });
 });
 
 app.post("/api/sites/:id{[0-9]+}/read-keys", async (c) => {
   const session = c.get("session");
   if (session.role !== "admin") return json({ error: "forbidden" }, 403);
   const request = c.req.raw;
-  if (!csrfValid(session, csrfValue(request, bodyOf(request)))) return json({ error: "csrf mismatch" }, 403);
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  if (!csrfValid(session, csrfValue(request, await bodyOf(request)))) return json({ error: "csrf mismatch" }, 403);
+  const site = await getSiteForUser(shared(c.env), Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
-  return json(await createReadKey(env.DB, site.id), 201, { "cache-control": "no-store" });
+  return json(await createReadKey(shared(c.env), site.id), 201, { "cache-control": "no-store" });
 });
 
-app.post("/api/sites/:id{[0-9]+}/read-keys/:keyId{[0-9]+}/revoke", (c) => {
+app.post("/api/sites/:id{[0-9]+}/read-keys/:keyId{[0-9]+}/revoke", async (c) => {
   const session = c.get("session");
   if (session.role !== "admin") return json({ error: "forbidden" }, 403);
   const request = c.req.raw;
-  if (!csrfValid(session, csrfValue(request, bodyOf(request)))) return json({ error: "csrf mismatch" }, 403);
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  if (!csrfValid(session, csrfValue(request, await bodyOf(request)))) return json({ error: "csrf mismatch" }, 403);
+  const site = await getSiteForUser(shared(c.env), Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
   const keyId = Number(c.req.param("keyId"));
-  const key = env.DB.prepare("SELECT id FROM read_api_keys WHERE site_id = ? AND id = ?").bind(site.id, keyId).first();
+  const key = await shared(c.env).prepare("SELECT id FROM read_api_keys WHERE site_id = ? AND id = ?").bind(site.id, keyId).first();
   if (!key) return json({ error: "unknown key" }, 404);
-  env.DB.prepare("DELETE FROM read_api_keys WHERE site_id = ? AND id = ?").bind(site.id, keyId).run();
+  await shared(c.env).prepare("DELETE FROM read_api_keys WHERE site_id = ? AND id = ?").bind(site.id, keyId).run();
   return json({ ok: true }, 200, { "cache-control": "no-store" });
 });
 
 // Goals per site (writes are admin-only; reads follow site access).
-app.get("/api/sites/:id{[0-9]+}/goals", (c) => {
+app.get("/api/sites/:id{[0-9]+}/goals", async (c) => {
   const session = c.get("session");
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = await getSiteForUser(shared(c.env), Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
-  return json(env.DB.prepare("SELECT id, name, event_name, path, created_at FROM goals WHERE site_id = ? ORDER BY id").bind(site.id).all().results);
+  return json((await ev(c, site).prepare("SELECT id, name, event_name, path, created_at FROM goals WHERE site_id = ? ORDER BY id").bind(site.id).all()).results);
 });
 
 app.post("/api/sites/:id{[0-9]+}/goals", async (c) => {
   const session = c.get("session");
   const isAdmin = session.role === "admin";
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = await getSiteForUser(shared(c.env), Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
@@ -802,34 +843,34 @@ app.post("/api/sites/:id{[0-9]+}/goals", async (c) => {
     return redirect(measurementError(goalUrl, goalCheck.code));
   }
   try {
-    env.DB.prepare("INSERT INTO goals (site_id, name, event_name, path, created_at) VALUES (?, ?, ?, ?, ?)")
+    await ev(c, site).prepare("INSERT INTO goals (site_id, name, event_name, path, created_at) VALUES (?, ?, ?, ?, ?)")
       .bind(site.id, name, eventName, goalPath, Math.floor(Date.now() / 1000))
       .run();
   } catch {
     if (wantsJson) return json({ error: "goal name already exists for this site" }, 409);
     return redirect(measurementError(goalUrl, "goal-name-registered"));
   }
-  invalidateOverview(env.DB, site.id);
+  invalidateOverview(ev(c, site), site.id);
   if (wantsJson) return json({ ok: true, name, eventName, path: goalPath }, 201);
   return redirect(goalUrl);
 });
 
 // Funnels per site: ordered goal sequences with per-step conversions. Writes
 // are admin-only; reads follow site access (via analytics).
-app.get("/api/sites/:id{[0-9]+}/funnels", (c) => {
+app.get("/api/sites/:id{[0-9]+}/funnels", async (c) => {
   const session = c.get("session");
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = await getSiteForUser(shared(c.env), Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
-  return json(listFunnels(env.DB, site.id));
+  return json(await listFunnels(ev(c, site), site.id));
 });
 
 app.post("/api/sites/:id{[0-9]+}/funnels", async (c) => {
   const session = c.get("session");
   const isAdmin = session.role === "admin";
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = await getSiteForUser(shared(c.env), Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
@@ -851,7 +892,7 @@ app.post("/api/sites/:id{[0-9]+}/funnels", async (c) => {
     if (wantsJson) return json({ error: "name is required" }, 400);
     return redirect(measurementError(settingsUrl, "funnel-name-required"));
   }
-  const siteGoals = env.DB.prepare("SELECT id FROM goals WHERE site_id = ?").bind(site.id).all().results;
+  const siteGoals = (await ev(c, site).prepare("SELECT id FROM goals WHERE site_id = ?").bind(site.id).all()).results;
   const validIds = new Set(siteGoals.map((g) => g.id));
   const seen = new Set();
   let stepsOk = goalIds.length >= 2;
@@ -867,101 +908,101 @@ app.post("/api/sites/:id{[0-9]+}/funnels", async (c) => {
     return redirect(measurementError(settingsUrl, "funnel-steps-invalid"));
   }
   try {
-    createFunnel(env.DB, site.id, name, goalIds);
+    await createFunnel(ev(c, site), site.id, name, goalIds);
   } catch {
     if (wantsJson) return json({ error: "unable to save this funnel" }, 409);
     return redirect(measurementError(settingsUrl, "funnel-save-failed"));
   }
-  invalidateOverview(env.DB, site.id);
+  invalidateOverview(ev(c, site), site.id);
   if (wantsJson) return json({ ok: true, name }, 201);
   return redirect(settingsUrl);
 });
 
-app.post("/api/sites/:id{[0-9]+}/public-widget", (c) => {
+app.post("/api/sites/:id{[0-9]+}/public-widget", async (c) => {
   const session = c.get("session");
   if (session.role !== "admin") return json({error:"forbidden"},403);
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   if (!csrfValid(session,csrfValue(request,body))) return json({error:"csrf mismatch"},403);
-  const site = getSiteForUser(env.DB,Number(c.req.param("id")),session);
+  const site = await getSiteForUser(shared(c.env),Number(c.req.param("id")),session);
   if (!site) return json({error:"unknown site"},404);
   const parsed = inputFrom(body,wantsJsonFrom(request));
   if (!parsed.ok) return json({error:"invalid body"},400);
   const enabled = parsed.value.enabled === "1" || parsed.value.enabled === true ? 1 : 0;
-  env.DB.prepare("INSERT INTO public_widgets(site_id,enabled) VALUES(?,?) ON CONFLICT(site_id) DO UPDATE SET enabled=excluded.enabled").bind(site.id,enabled).run();
+  await shared(c.env).prepare("INSERT INTO public_widgets(site_id,enabled) VALUES(?,?) ON CONFLICT(site_id) DO UPDATE SET enabled=excluded.enabled").bind(site.id,enabled).run();
   return wantsJsonFrom(request) ? json({ok:true,enabled:enabled===1}) : redirect("/sites/"+siteSlug(site)+"/settings");
 });
 
 // Site configuration keeps the existing site identity and analytics.
-function annotationWrite(c, removing) {
+async function annotationWrite(c, removing) {
   const session = c.get("session");
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   if (session.role !== "admin") return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = await getSiteForUser(shared(c.env), Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
   const annotationId = Number(c.req.param("annotationId") || 0);
-  if (annotationId && !env.DB.prepare("SELECT id FROM annotations WHERE id=? AND site_id=?").bind(annotationId, site.id).first()) return json({ error: "unknown annotation" }, 404);
+  if (annotationId && !(await ev(c, site).prepare("SELECT id FROM annotations WHERE id=? AND site_id=?").bind(annotationId, site.id).first())) return json({ error: "unknown annotation" }, 404);
   const returnUrl = "/sites/" + siteSlug(site) + "/settings";
   if (removing) {
-    env.DB.prepare("DELETE FROM annotations WHERE id=? AND site_id=?").bind(annotationId, site.id).run();
+    await ev(c, site).prepare("DELETE FROM annotations WHERE id=? AND site_id=?").bind(annotationId, site.id).run();
   } else {
     const parsed = inputFrom(body, wantsJson);
     if (!parsed.ok) return json({ error: "invalid body" }, 400);
     const input = annotationInput(parsed.value);
     if (input.error) return wantsJson ? json({ error: input.error }, 400) : redirect(returnUrl + "?error=annotation-invalid");
-    if (annotationId) env.DB.prepare("UPDATE annotations SET ts=?,text=? WHERE id=? AND site_id=?").bind(input.ts, input.text, annotationId, site.id).run();
+    if (annotationId) await ev(c, site).prepare("UPDATE annotations SET ts=?,text=? WHERE id=? AND site_id=?").bind(input.ts, input.text, annotationId, site.id).run();
     else {
-      const total = Number(env.DB.prepare("SELECT count(*) AS n FROM annotations WHERE site_id=?").bind(site.id).first().n);
+      const total = Number((await ev(c, site).prepare("SELECT count(*) AS n FROM annotations WHERE site_id=?").bind(site.id).first()).n);
       if (total >= 500) return wantsJson ? json({ error: "This website has reached its 500-note limit." }, 409) : redirect(returnUrl + "?error=annotation-limit");
-      env.DB.prepare("INSERT INTO annotations(site_id,ts,text) VALUES(?,?,?)").bind(site.id, input.ts, input.text).run();
+      await ev(c, site).prepare("INSERT INTO annotations(site_id,ts,text) VALUES(?,?,?)").bind(site.id, input.ts, input.text).run();
     }
   }
   return wantsJson ? json({ ok: true }) : redirect(returnUrl + "?annotation=saved#annotations");
 }
-app.post("/api/sites/:id{[0-9]+}/annotations", (c) => annotationWrite(c, false));
-app.post("/api/sites/:id{[0-9]+}/annotations/:annotationId{[0-9]+}", (c) => annotationWrite(c, false));
-app.post("/api/sites/:id{[0-9]+}/annotations/:annotationId{[0-9]+}/delete", (c) => annotationWrite(c, true));
+app.post("/api/sites/:id{[0-9]+}/annotations", async (c) => await annotationWrite(c, false));
+app.post("/api/sites/:id{[0-9]+}/annotations/:annotationId{[0-9]+}", async (c) => await annotationWrite(c, false));
+app.post("/api/sites/:id{[0-9]+}/annotations/:annotationId{[0-9]+}/delete", async (c) => await annotationWrite(c, true));
 
-app.get("/sites/:id{[a-z0-9-]+}/settings", (c) => {
+app.get("/sites/:id{[a-z0-9-]+}/settings", async (c) => {
   const session = c.get("session");
-  const site = getSiteForUser(env.DB, c.req.param("id"), session);
+  const site = await getSiteForUser(shared(c.env), c.req.param("id"), session);
   if (!site) return new Response("Unknown site", { status: 404 });
   const url = new URL(c.req.url);
   const error = url.searchParams.get("error") === "domain-invalid" ? "Enter a valid hostname." :
     url.searchParams.get("error") === "domain-registered" ? "That hostname is already used by another website." :
     url.searchParams.get("error") === "annotation-invalid" ? "Choose a valid date and write a note between 1 and 240 characters." :
     url.searchParams.get("error") === "annotation-limit" ? "This website has reached its 500-note limit." : "";
-  return new Response(siteSettingsPage(session, site, listSitesForUser(env.DB, session), error, url.searchParams.has("saved"), env.DB.prepare("SELECT enabled FROM public_widgets WHERE site_id=?").bind(site.id).first(), publicOrigin(c.req.raw, url), siteAnnotations(env.DB, site.id), { size: ["small", "medium", "wide"].includes(url.searchParams.get("size")) ? url.searchParams.get("size") : "medium", theme: ["light", "dark", "auto"].includes(url.searchParams.get("theme")) ? url.searchParams.get("theme") : "auto" }),
+  return new Response(siteSettingsPage(session, site, await listSitesForUser(shared(c.env), session), error, url.searchParams.has("saved"), await shared(c.env).prepare("SELECT enabled FROM public_widgets WHERE site_id=?").bind(site.id).first(), publicOrigin(c.env, c.req.raw, url), await siteAnnotations(ev(c, site), site.id), { size: ["small", "medium", "wide"].includes(url.searchParams.get("size")) ? url.searchParams.get("size") : "medium", theme: ["light", "dark", "auto"].includes(url.searchParams.get("theme")) ? url.searchParams.get("theme") : "auto" }),
     { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
-function measurementRoute(c, kind) {
+async function measurementRoute(c, kind) {
   const session = c.get("session");
-  const site = getSiteForUser(env.DB, c.req.param("id"), session);
+  const site = await getSiteForUser(shared(c.env), c.req.param("id"), session);
   if (!site) return new Response("Unknown site", { status: 404 });
   const url = new URL(c.req.url);
   const range = parseRange(url.searchParams, Math.floor(Date.now() / 1000));
   if (range.error) return new Response(range.error, { status: 400 });
   range.filters = reportInput(url.searchParams).filters;
   delete range.filters.event;
-  const configuredGoals = env.DB.prepare("SELECT id, name, event_name, path FROM goals WHERE site_id = ? ORDER BY id").bind(site.id).all().results;
-  const result = measurementAnalytics(env.DB, site, range, kind);
+  const configuredGoals = (await ev(c, site).prepare("SELECT id, name, event_name, path FROM goals WHERE site_id = ? ORDER BY id").bind(site.id).all()).results;
+  const result = await measurementAnalytics(ev(c, site), site, range, kind);
   const goals = result.goals || [];
   const funnels = result.funnels || [];
   const truncated = result.truncated || false;
-  return new Response(measurementPage(session, site, listSitesForUser(env.DB, session), configuredGoals, goals, funnels, truncated, range, kind, url.searchParams.get("error") || ""),
+  return new Response(measurementPage(session, site, await listSitesForUser(shared(c.env), session), configuredGoals, goals, funnels, truncated, range, kind, url.searchParams.get("error") || ""),
     { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 }
-app.get("/sites/:id{[a-z0-9-]+}/goals", (c) => measurementRoute(c, "goals"));
-app.get("/sites/:id{[a-z0-9-]+}/funnels", (c) => measurementRoute(c, "funnels"));
+app.get("/sites/:id{[a-z0-9-]+}/goals", async (c) => await measurementRoute(c, "goals"));
+app.get("/sites/:id{[a-z0-9-]+}/funnels", async (c) => await measurementRoute(c, "funnels"));
 
-app.get("/sites/:id{[a-z0-9-]+}/partials/live", (c) => {
+app.get("/sites/:id{[a-z0-9-]+}/partials/live", async (c) => {
   const session = c.get("session");
   const url = new URL(c.req.url);
-  const site = getSiteForUser(env.DB, c.req.param("id"), session);
+  const site = await getSiteForUser(shared(c.env), c.req.param("id"), session);
   if (!site) return json({ error: "unknown site" }, 404);
   const now = Math.floor(Date.now() / 1000);
   const range = parseRange(url.searchParams, now);
@@ -972,23 +1013,23 @@ app.get("/sites/:id{[a-z0-9-]+}/partials/live", (c) => {
   range.filters = reportInput(url.searchParams).filters;
   delete range.filters.event;
   range.acquisition = ["source", "campaign", "medium"].indexOf(url.searchParams.get("acquisition")) >= 0 ? url.searchParams.get("acquisition") : "source";
-  const analytics = overviewAnalytics(env.DB, site, range, false);
-  const comparison = overviewComparison(env.DB, site, { ...range, since: range.since - days * 86400, until: range.since });
+  const analytics = await overviewAnalytics(ev(c, site), site, range, false);
+  const comparison = await overviewComparison(ev(c, site), site, { ...range, since: range.since - days * 86400, until: range.since });
   const oobCurrent = '<strong id="live-current-value" data-current hx-swap-oob="true">' + fmtInt(analytics.current) + "</strong>";
-  return new Response(oobCurrent + liveFragment(site, analytics, range, days, metric, comparison, siteAnnotations(env.DB, site.id, range)),
+  return new Response(oobCurrent + liveFragment(site, analytics, range, days, metric, comparison, await siteAnnotations(ev(c, site), site.id, range)),
     { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
 // Goal previews refresh independently from the five-second traffic poll.
-app.get("/sites/:id{[a-z0-9-]+}/partials/goals", (c) => {
-  const site = getSiteForUser(env.DB, c.req.param("id"), c.get("session"));
+app.get("/sites/:id{[a-z0-9-]+}/partials/goals", async (c) => {
+  const site = await getSiteForUser(shared(c.env), c.req.param("id"), c.get("session"));
   if (!site) return json({ error: "unknown site" }, 404);
   const q = new URL(c.req.url).searchParams;
   const range = parseRange(q, Math.floor(Date.now() / 1000));
   if (range.error) return json({ error: range.error }, 400);
   range.filters = reportInput(q).filters;
   delete range.filters.event;
-  const analytics = overviewAnalytics(env.DB, site, range, true);
+  const analytics = await overviewAnalytics(ev(c, site), site, range, true);
   return new Response(overviewGoalsFragment(site, analytics.goals, range, rangeDays(range)),
     { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 });
@@ -997,46 +1038,46 @@ app.get("/sites/:id{[a-z0-9-]+}/partials/goals", (c) => {
 // conversion goals, and an explicit or period-based range. Per-day rows
 // carry their own distinct counts; multi-day totals are visitor-days only
 // in the per-day breakdown, never summed.
-app.get("/api/sites/:id{[0-9]+}/stats", (c) => {
+app.get("/api/sites/:id{[0-9]+}/stats", async (c) => {
   const session = c.get("session");
   const url = new URL(c.req.url);
-  const site = c.get("readSite") || getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = c.get("readSite") || (await getSiteForUser(shared(c.env), Number(c.req.param("id")), session));
   if (!site) return json({ error: "unknown site" }, 404);
   const tracing = url.searchParams.get("trace") === "1";
   if (tracing && (!session || session.role !== "admin")) return json({ error: "forbidden" }, 403);
-  const trace = tracing ? analyticsTrace(env.DB) : null;
-  const db = trace ? trace.db : env.DB;
+  const trace = tracing ? analyticsTrace(ev(c, site)) : null;
+  const db = trace ? trace.db : ev(c, site);
   const fresh = tracing || url.searchParams.get("fresh") === "1";
   const now = Math.floor(Date.now() / 1000);
   const range = parseRange(url.searchParams, now);
   if (range.error) return json({ error: range.error }, 400);
   const sections = statsInput(url.searchParams);
   if (sections.error) return json({ error: sections.error }, 400);
-  const analytics = cachedAnalytics(db, site.id, "stats", range, sections, now, fresh, () => siteStats(db, site, range, now, sections, fresh));
-  analytics.current = siteCurrent(db, site.id);
+  const analytics = await cachedAnalytics(db, site.id, "stats", range, sections, now, fresh, async () => await siteStats(db, site, range, now, sections, fresh));
+  analytics.current = await siteCurrent(db, site.id);
   const payload = { site: { id: site.id, name: site.name, domain: site.domain }, range: range.label, ...analytics };
   return trace ? tracedAnalyticsResponse(payload, trace) : json(payload);
 });
 
 // Bounded report with exact-match filters, sortable and paginated, as JSON
 // or CSV download. Generated synchronously; no job queue exists.
-app.get("/api/sites/:id{[0-9]+}/report", (c) => {
+app.get("/api/sites/:id{[0-9]+}/report", async (c) => {
   const session = c.get("session");
   const url = new URL(c.req.url);
-  const site = c.get("readSite") || getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = c.get("readSite") || (await getSiteForUser(shared(c.env), Number(c.req.param("id")), session));
   if (!site) return json({ error: "unknown site" }, 404);
   const tracing = url.searchParams.get("trace") === "1";
   if (tracing && (!session || session.role !== "admin")) return json({ error: "forbidden" }, 403);
   if (tracing && url.searchParams.get("format") === "csv") return json({ error: "Tracing requires JSON format" }, 400);
-  const trace = tracing ? analyticsTrace(env.DB) : null;
-  const db = trace ? trace.db : env.DB;
+  const trace = tracing ? analyticsTrace(ev(c, site)) : null;
+  const db = trace ? trace.db : ev(c, site);
   const fresh = tracing || url.searchParams.get("fresh") === "1";
   const now = Math.floor(Date.now() / 1000);
   const range = parseRange(url.searchParams, now);
   if (range.error) return json({ error: range.error }, 400);
   const input = reportInput(url.searchParams);
   const cohort = url.searchParams.get("cohort") === "1";
-  const report = cachedAnalytics(db, site.id, "report", range, [input,cohort], now, fresh, () => dashboardReport(db, site, range, input, cohort, now));
+  const report = await cachedAnalytics(db, site.id, "report", range, [input,cohort], now, fresh, async () => await dashboardReport(db, site, range, input, cohort, now));
   if (String(url.searchParams.get("format") || "") === "csv") {
     return new Response(reportCsv(report), {
       headers: {
@@ -1051,10 +1092,10 @@ app.get("/api/sites/:id{[0-9]+}/report", (c) => {
 
 // Full HTML report: dimension tabs, exact-match filters, sortable table,
 // pagination, CSV download. Same bounded query as the JSON report.
-app.get("/sites/:id{[a-z0-9-]+}/reports", (c) => {
+app.get("/sites/:id{[a-z0-9-]+}/reports", async (c) => {
   const session = c.get("session");
   const url = new URL(c.req.url);
-  const site = getSiteForUser(env.DB, c.req.param("id"), session);
+  const site = await getSiteForUser(shared(c.env), c.req.param("id"), session);
   if (!site) {
     return new Response(pageShell("Not found", session, '<main class="shell" id="main"><h1>Unknown site</h1></main>', null, []),
       { status: 404, headers: { "content-type": "text/html;charset=utf-8" } });
@@ -1068,31 +1109,31 @@ app.get("/sites/:id{[a-z0-9-]+}/reports", (c) => {
   const days = rangeDays(range);
   const input = reportInput(url.searchParams);
   range.filters = input.filters;
-  const report = reportAnalytics(env.DB, site, range, input, url.searchParams.get("cohort") === "1");
+  const report = await reportAnalytics(ev(c, site), site, range, input, url.searchParams.get("cohort") === "1");
   report.filters = input.filters;
   report.cohort = url.searchParams.get("cohort") === "1";
   range.filters = input.filters;
-  const sites = listSitesForUser(env.DB, session);
+  const sites = await listSitesForUser(shared(c.env), session);
   return new Response(reportsPage(session, site, sites, report, range, days),
     { headers: { "content-type": "text/html;charset=utf-8" } });
 });
 
 // Authenticated, site-scoped read over existing events. No collector changes.
-app.get("/api/sites/:id{[0-9]+}/journeys", (c) => {
+app.get("/api/sites/:id{[0-9]+}/journeys", async (c) => {
   const session = c.get("session");
-  const site = getSiteForUser(env.DB, Number(c.req.param("id")), session);
+  const site = await getSiteForUser(shared(c.env), Number(c.req.param("id")), session);
   if (!site) return json({ error: "unknown site" }, 404);
   const params = new URL(c.req.url).searchParams;
   const range = parseRange(params, Math.floor(Date.now() / 1000));
   const input = journeyInput(params);
   if (range.error || input.error) return json({ error: range.error || input.error }, 400);
   return json({ site: { id: site.id, name: site.name, domain: site.domain }, range,
-    ...siteJourneys(overviewScope(env.DB, site.id, range.since, range.until, reportInput(params).filters), site.id, range.since, range.until, input) }, 200, { "cache-control": "no-store" });
+    ...(await siteJourneys(overviewScope(ev(c, site), site.id, range.since, range.until, reportInput(params).filters), site.id, range.since, range.until, input)) }, 200, { "cache-control": "no-store" });
 });
 
-app.get("/sites/:id{[a-z0-9-]+}/reports/journeys", (c) => {
+app.get("/sites/:id{[a-z0-9-]+}/reports/journeys", async (c) => {
   const session = c.get("session");
-  const site = getSiteForUser(env.DB, c.req.param("id"), session);
+  const site = await getSiteForUser(shared(c.env), c.req.param("id"), session);
   const params = new URL(c.req.url).searchParams;
   const range = parseRange(params, Math.floor(Date.now() / 1000));
   const input = journeyInput(params);
@@ -1105,8 +1146,8 @@ app.get("/sites/:id{[a-z0-9-]+}/reports/journeys", (c) => {
   }
   range.filters = reportInput(params).filters;
   delete range.filters.event;
-  const report = journeyAnalytics(env.DB, site, range, input);
-  return new Response(journeysPage(session, site, listSitesForUser(env.DB, session), report, range),
+  const report = await journeyAnalytics(ev(c, site), site, range, input);
+  return new Response(journeysPage(session, site, await listSitesForUser(shared(c.env), session), report, range),
     { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 });
 
@@ -1119,19 +1160,25 @@ app.post("/api/backup", async (c) => {
   const session = c.get("session");
   const isAdmin = session.role === "admin";
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const htmlForm = (request.headers.get("content-type") || "").indexOf("application/x-www-form-urlencoded") === 0 &&
     (request.headers.get("accept") || "").indexOf("text/html") >= 0;
   if (!isAdmin) return json({ error: "forbidden" }, 403);
   if (!csrfValid(session, csrfValue(request, body))) return htmlForm ? redirect("/users?backup=csrf") : json({ error: "csrf mismatch" }, 403);
   try {
-    const snapshot = env.DB.backup();
-    const tables = ["sites", "events", "goals", "funnels", "funnel_steps", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "schema_migrations", "public_widgets", "annotations", "analytics_rollup_stats_days", "analytics_rollup_hours", "analytics_rollup_events", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty", "analytics_query_cache", "analytics_cache_days", "analytics_cache_config"];
+    const snapshot = await shared(c.env).backup();
+    // db.backup() snapshots the one D1 binding today. Once an org's events live in
+    // their own store, each store needs its own snapshot and these counts.
+    const sharedTables = ["sites", "users", "sessions", "site_users", "read_api_keys", "backup_settings", "backup_history", "public_widgets", "schema_migrations"];
+    const eventTables = ["events", "goals", "funnels", "funnel_steps", "annotations", "analytics_rollup_stats_days", "analytics_rollup_hours", "analytics_rollup_events", "analytics_rollup_days", "analytics_rollup_visitors", "analytics_rollup_dimensions", "analytics_rollup_dirty", "analytics_query_cache", "analytics_cache_days", "analytics_cache_config"];
     const counts = {};
-    for (let i = 0; i < tables.length; i++) {
-      counts[tables[i]] = Number(env.DB.prepare("SELECT count(*) AS n FROM " + tables[i]).first().n);
+    for (let i = 0; i < sharedTables.length; i++) {
+      counts[sharedTables[i]] = Number((await shared(c.env).prepare("SELECT count(*) AS n FROM " + sharedTables[i]).first()).n);
     }
-    recordBackup(env.DB, snapshot);
+    for (let i = 0; i < eventTables.length; i++) {
+      counts[eventTables[i]] = Number((await store(c.env, DEFAULT_ORG).prepare("SELECT count(*) AS n FROM " + eventTables[i]).first()).n);
+    }
+    await recordBackup(shared(c.env), snapshot);
     if (htmlForm) return redirect("/users?backup=success");
     return json({
       ok: true,
@@ -1145,39 +1192,39 @@ app.post("/api/backup", async (c) => {
   }
 });
 
-app.get("/sites/:id{[a-z0-9-]+}/conversions", (c) => {
-  const site = getSiteForUser(env.DB, c.req.param("id"), c.get("session"));
+app.get("/sites/:id{[a-z0-9-]+}/conversions", async (c) => {
+  const site = await getSiteForUser(shared(c.env), c.req.param("id"), c.get("session"));
   if (!site) return new Response("Unknown site", {status:404});
   return c.redirect("/sites/" + siteSlug(site) + "/goals" + new URL(c.req.url).search, 308);
 });
 
-app.get("/backups", (c) => {
+app.get("/backups", async (c) => {
   const session = c.get("session");
   if (session.role !== "admin") return redirect("/");
   const message = new URL(c.req.url).searchParams.get("saved") === "1" ? "Backup preferences saved." : "";
-  return new Response(backupsPage(session, backupSettings(env.DB), backupHistory(env.DB), message),
+  return new Response(backupsPage(session, await backupSettings(shared(c.env)), await backupHistory(shared(c.env)), message),
     { headers: { "content-type": "text/html;charset=utf-8", "cache-control": "no-store" } });
 });
 
-app.get("/api/backup/settings", (c) => {
+app.get("/api/backup/settings", async (c) => {
   if (c.get("session").role !== "admin") return json({ error: "forbidden" }, 403);
-  return json({ settings: backupSettings(env.DB), history: backupHistory(env.DB) }, 200, { "cache-control": "no-store" });
+  return json({ settings: await backupSettings(shared(c.env)), history: await backupHistory(shared(c.env)) }, 200, { "cache-control": "no-store" });
 });
 
-app.post("/api/backup/settings", (c) => {
+app.post("/api/backup/settings", async (c) => {
   const session = c.get("session");
   if (session.role !== "admin") return json({ error: "forbidden" }, 403);
   const request = c.req.raw;
-  const body = bodyOf(request);
+  const body = await bodyOf(request);
   const wantsJson = wantsJsonFrom(request);
   if (!csrfValid(session, csrfValue(request, body))) return json({ error: "csrf mismatch" }, 403);
   const parsed = inputFrom(body, wantsJson);
   if (!parsed.ok) return json({ error: "body must be JSON" }, 400);
   const input = backupInput(parsed.value);
   if (input.error) return wantsJson ? json({ error: input.error }, 400) : new Response(
-    backupsPage(session, backupSettings(env.DB), backupHistory(env.DB), input.error, true),
+    backupsPage(session, await backupSettings(shared(c.env)), await backupHistory(shared(c.env)), input.error, true),
     { status: 400, headers: { "content-type": "text/html;charset=utf-8" } });
-  saveBackupSettings(env.DB, input);
+  await saveBackupSettings(shared(c.env), input);
   return wantsJson ? json({ ok: true }) : redirect("/backups?saved=1");
 });
 
@@ -1188,15 +1235,16 @@ app.all("*", (c) => {
   const path = new URL(request.url).pathname;
   const apiRoute = path === "/api" || path.indexOf("/api/") === 0;
   if (apiRoute) return json({ error: "not found", path }, 404);
-  if (request.method === "GET") return env.ASSETS.fetch(request);
+  if (request.method === "GET") return c.env.ASSETS.fetch(request);
   return json({ error: "not found", path }, 404);
 });
 
-async function routeRequest(request) {
+async function routeRequest(request, env, ctx) {
   const startedAt = Date.now();
+  setLogLevel(cachedEnv(env, "RISULTA_LOG_LEVEL"));
   let response;
   try {
-    response = await app.fetch(request);
+    response = await app.fetch(request, env, ctx);
   } catch {
     incrementCounter("database_errors_total");
     response = json({ error: "internal error" }, 500);
@@ -1209,62 +1257,42 @@ async function routeRequest(request) {
   return response;
 }
 
-function runMaintenanceChild() {
+// Every-minute tick: scheduled backup (only where the entry point supplies
+// file operations, i.e. the standalone binary) and a bounded rollup pass, all
+// in this process. A tick that is still running makes the next one a no-op.
+let maintenanceRunning = false;
+async function runScheduled(env) {
+  if (maintenanceRunning) return;
+  maintenanceRunning = true;
+  setLogLevel(cachedEnv(env, "RISULTA_LOG_LEVEL"));
+  const startedAt = Date.now();
   try {
-    const ledger = env.DB.prepare("SELECT max(version) AS version FROM schema_migrations").first();
-    if (!ledger || Number(ledger.version) !== SCHEMA_VERSION) throw new Error("Initialize the matching Risulta schema before maintenance.");
-    ensureBackupSchema(env.DB);
-    const now = Math.floor(Date.now() / 1000);
-    let backup = "failed";
-    let days = 0;
-    let failed = false;
-    try {
-      backup = runScheduledBackup(env.DB, backupFiles, now);
-    } catch (error) {
-      failed = true;
-      console.error("Scheduled backup failed: " + String(error));
-    }
-    try {
-      days = runRollups(env.DB, now);
-    } catch (error) {
-      failed = true;
-      console.error("Rollup processing failed: " + String(error));
-    }
-    console.log(JSON.stringify({ type: "maintenance", backup, days }));
-    exitMaintenanceProcess(failed ? "1" : "0");
+    await ensureBackupSchema(shared(env));
+    await ensureReady(shared(env), store(env, DEFAULT_ORG), env);
+    const result = await runMaintenance(shared(env), (orgId) => store(env, orgId), await listOrgs(shared(env)), backupFiles, Math.floor(startedAt / 1000));
+    console.log(JSON.stringify({ type: "maintenance", backup: result.backup, days: result.days, ms: Date.now() - startedAt }));
+    if (result.failed) incrementCounter("database_errors_total");
   } catch (error) {
+    incrementCounter("database_errors_total");
     console.error("Maintenance failed: " + String(error));
-    exitMaintenanceProcess("1");
+  } finally {
+    maintenanceRunning = false;
   }
 }
 
-// Native startup can precede env becoming visible on globalThis. Read the
-// operating system flag directly; Bun tests have no Porffor intrinsic.
-let maintenanceChild = false;
-try {
-  maintenanceChild = isMaintenanceChild();
-} catch {
-  maintenanceChild = false;
+// The Workers module shape: fetch(request, env, ctx) and scheduled(controller,
+// env, ctx). `options.backupFiles` is the one standalone-only capability
+// (publish and prune backup files); without it, backups are left to the host.
+let backupFiles = null;
+export function createRisulta(options) {
+  backupFiles = options && options.backupFiles ? options.backupFiles : null;
+  setBackupsEnabled(!!backupFiles);
+  return {
+    async scheduled(controller, env) {
+      return await runScheduled(env);
+    },
+    async fetch(request, env, ctx) {
+      return await routeRequest(request, env, ctx);
+    },
+  };
 }
-if (maintenanceChild) {
-  console.log(JSON.stringify({ type: "maintenance_start" }));
-  runMaintenanceChild();
-}
-
-export default {
-  scheduled() {
-    if (maintenanceChild) return;
-    const result = startMaintenanceProcess();
-    if (result === "error") {
-      incrementCounter("database_errors_total");
-      console.error("Unable to start built-in maintenance.");
-    }
-  },
-  // The runtime resolves a returned promise directly; no .then() chaining on
-  // top of it (that shape hangs). Logging and error counting live inside
-  // routeRequest so this stays a direct return.
-  fetch(request) {
-    if (maintenanceChild) return new Response("Maintenance process", { status: 503 });
-    return routeRequest(request);
-  },
-};

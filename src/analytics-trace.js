@@ -27,25 +27,25 @@ export function analyticsTrace(database) {
   const spans = [];
   let dropped = 0;
   const db = {
-    exec(sql) { return database.exec(sql); },
+    async exec(sql) { return await database.exec(sql); },
     prepare(sql) {
       const before = Date.now();
       let statement = database.prepare(sql);
       let prepareMs = Date.now()-before;
       let bindMs = 0;
       let values = [];
-      function execute(method) {
-        if (spans.length>=64) { dropped++; return statement[method](); }
+      async function execute(method) {
+        if (spans.length>=64) { dropped++; return await statement[method](); }
         const planStarted = Date.now();
         let plan = [];
         if (method !== "run") {
           try {
-            plan = database.prepare("EXPLAIN QUERY PLAN " + sql).bind(...values).all().results.map((row)=>({id:row.id,parent:row.parent,detail:String(row.detail)})).slice(0,64);
+            plan = (await database.prepare("EXPLAIN QUERY PLAN " + sql).bind(...values).all()).results.map((row)=>({id:row.id,parent:row.parent,detail:String(row.detail)})).slice(0,64);
           } catch { /* An unavailable query plan must not prevent the original read. */ }
         }
         const planMs = Date.now()-planStarted;
         const at = Date.now();
-        const result = statement[method]();
+        const result = await statement[method]();
         const executeMs = Date.now()-at;
         spans.push({name:queryName(sql,values),query:sql.replace(/\s+/g," ").slice(0,180),offset_ms:at-started,prepare_ms:prepareMs,bind_ms:bindMs,execute_ms:executeMs,plan_ms:planMs,rows:method==="all" ? result.results.length : method==="first" ? (result ? 1 : 0) : 0,plan});
         prepareMs=0;bindMs=0;
@@ -53,9 +53,9 @@ export function analyticsTrace(database) {
       }
       return {
         bind(...args) { values=args;const at=Date.now();statement=statement.bind(...args);bindMs+=Date.now()-at;return this; },
-        first() { return execute("first"); },
-        all() { return execute("all"); },
-        run() { return execute("run"); },
+        async first() { return await execute("first"); },
+        async all() { return await execute("all"); },
+        async run() { return await execute("run"); },
       };
     },
   };

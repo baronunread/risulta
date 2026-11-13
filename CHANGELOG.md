@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- Runs on the current Sproutboat runtime (sproutboat 0.54, compatibility date 2026-11-18) in the
+  standard Workers style: `fetch(request, env, ctx)` and `scheduled(controller, env, ctx)`, D1 calls
+  that return Promises, and `db.batch()` for every multi-statement write (D1 has no BEGIN or COMMIT).
+- Maintenance (the once-a-minute rollup and backup tick) now runs inside the web process, with a time
+  budget, instead of a second process of the same binary. The standalone binary still publishes and
+  prunes backup files; `SB_SQLITE_EXCLUSIVE=0` is no longer needed by the app.
+- A second entry point, `src/worker.js` with `sproutboat.workers.example.jsonc`, builds the same app for Sproutboat
+  Cloud: no native code, backups left to the platform (the backup pages and routes are absent there).
+  The self-hosted release is still built from `sproutboat.jsonc` and `src/standalone.js`.
+- Data layer: every events, goals, funnels, annotations, rollups and cache query goes through
+  `store(env, orgId)`, and users, sessions, sites and read-API keys through `shared(env)`
+  (`src/data.js`). Both are the one D1 today. A test runs the whole app with the two as separate
+  databases, so no query can join across them.
+- New optional settings: `RISULTA_TRACKER_ORIGIN` (the origin the tracker snippet is built from) and
+  `RISULTA_TRACKER_HOSTS` (hosts that serve only the tracker, collector and widget routes, everything
+  else answers 404). Unset, nothing changes.
+- Fixes for the stricter runtime: request bodies are streams (read with `request.text()`), a declared
+  secret that is not set throws when read, `crypto.subtle.digest` takes bytes.
+
+No schema change. The slug, widget and annotation tables keep their shape; new databases create the
+annotations table without a foreign key to `sites` and without the site-delete cache trigger, because
+those two can sit in different stores.
+
 ## v0.2.2
 
 - Public widgets no longer show light square corners behind their rounded card

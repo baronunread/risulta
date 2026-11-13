@@ -91,15 +91,6 @@ with tempfile.TemporaryDirectory(prefix="risulta-verify-") as scratch:
                         if time.monotonic() >= deadline:
                             raise TimeoutError("Server readiness exceeded 30 seconds")
                         time.sleep(0.2)
-                    if suite == "seed.sh" and trust == 0:
-                        child_env = env.copy()
-                        child_env.update(RISULTA_MAINTENANCE_CHILD="1", PORT="0")
-                        child = subprocess.run([str(binary)], cwd=state, env=child_env,
-                                               capture_output=True, text=True, timeout=10)
-                        child_output = child.stdout + child.stderr
-                        if child.returncode or '"type":"maintenance"' not in child_output or "server listening" in child_output:
-                            raise RuntimeError("One-shot maintenance entry failed: " + child_output)
-                        print("One-shot maintenance entry passed without opening an HTTP listener.", flush=True)
                     runner = "python3" if suite.endswith(".py") else "sh"
                     checks = subprocess.Popen([runner, str(root / suite)], cwd=root,
                                               env=env, start_new_session=True)
@@ -108,6 +99,14 @@ with tempfile.TemporaryDirectory(prefix="risulta-verify-") as scratch:
                         raise RuntimeError(f"{label} exited {code}")
                     if server.poll() is not None:
                         raise RuntimeError("Server exited during verification")
+                    if suite == "seed.sh" and trust == 0:
+                        # The cron trigger runs maintenance inside the server once a minute.
+                        tick = time.monotonic() + 90
+                        while '"type":"maintenance"' not in log_path.read_text(errors="replace"):
+                            if time.monotonic() >= tick:
+                                raise RuntimeError("No in-process maintenance tick within 90 seconds")
+                            time.sleep(1)
+                        print("In-process maintenance tick ran.", flush=True)
             except BaseException:
                 print(log_path.read_text(errors="replace"), file=sys.stderr)
                 raise

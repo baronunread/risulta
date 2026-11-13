@@ -115,7 +115,7 @@ export async function hashPassword(password) {
 }
 
 async function digestHexString(message) {
-  const digest = await crypto.subtle.digest("SHA-256", String(message));
+  const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(utf8Bytes(String(message))));
   return bytesToHex(new Uint8Array(digest));
 }
 
@@ -189,7 +189,7 @@ export async function verifyPassword(password, encoded) {
 }
 
 async function tokenHash(token) {
-  const digest = await crypto.subtle.digest("SHA-256", String(token));
+  const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(utf8Bytes(String(token))));
   return bytesToHex(new Uint8Array(digest));
 }
 
@@ -230,18 +230,18 @@ export async function readSession(db, request) {
   const token = cookies["__Host-risulta_session"] || cookies["risulta_session"] || "";
   if (!token) return null;
   const now = Math.floor(Date.now() / 1000);
-  return db.prepare(
+  return (await db.prepare(
     "SELECT sessions.token_hash, sessions.csrf, sessions.expires_at, users.id AS user_id, users.email, users.display_name, users.role " +
       "FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
-  ).bind(await tokenHash(token), now).first() || null;
+  ).bind(await tokenHash(token), now).first()) || null;
 }
 
 export async function createSession(db, userId) {
   const token = randomHex(32);
   const csrf = randomHex(32);
   const now = Math.floor(Date.now() / 1000);
-  db.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(now).run();
-  db.prepare("INSERT INTO sessions (token_hash, user_id, csrf, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+  await db.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(now).run();
+  await db.prepare("INSERT INTO sessions (token_hash, user_id, csrf, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
     .bind(await tokenHash(token), userId, csrf, now, now + SESSION_SECONDS)
     .run();
   return { token, csrf };
@@ -250,7 +250,7 @@ export async function createSession(db, userId) {
 export async function destroySession(db, request) {
   const cookies = readCookies(request.headers.get("cookie"));
   const token = cookies["__Host-risulta_session"] || cookies["risulta_session"] || "";
-  if (token) db.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await tokenHash(token)).run();
+  if (token) await db.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await tokenHash(token)).run();
 }
 
 export function csrfValue(request, body) {
@@ -286,40 +286,20 @@ export function clearLoginFailures(key) {
 }
 
 export async function createUser(db, email, password, role, siteIds, displayName) {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const result = db.prepare("INSERT INTO users (email, password_hash, role, display_name, created_at) VALUES (?, ?, ?, ?, ?)")
-      .bind(email, await hashPassword(password), role, displayName || email.split("@")[0], Math.floor(Date.now() / 1000))
-      .run();
-    const userId = Number(result.meta.last_row_id);
-    if (role === "viewer") {
-      const assign = db.prepare("INSERT OR IGNORE INTO site_users (user_id, site_id, role) VALUES (?, ?, 'viewer')");
-      for (let i = 0; i < siteIds.length; i++) assign.bind(userId, siteIds[i]).run();
-    }
-    db.exec("COMMIT");
-    return userId;
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      /* already rolled back */
-    }
-    throw error;
+  const statements = [db.prepare("INSERT INTO users (email, password_hash, role, display_name, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(email, await hashPassword(password), role, displayName || email.split("@")[0], Math.floor(Date.now() / 1000))];
+  if (role === "viewer") {
+    // The email is unique (NOCASE), so it names the row just inserted by this batch.
+    const assign = db.prepare("INSERT OR IGNORE INTO site_users (user_id, site_id, role) SELECT id, ?, 'viewer' FROM users WHERE email = ?");
+    for (let i = 0; i < siteIds.length; i++) statements.push(assign.bind(siteIds[i], email));
   }
+  const results = await db.batch(statements);
+  return Number(results[0].meta.last_row_id);
 }
 
-export function changePassword(db, session, passwordHash) {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(passwordHash, session.user_id).run();
-    db.prepare("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?").bind(session.user_id, session.token_hash).run();
-    db.exec("COMMIT");
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      /* already rolled back */
-    }
-    throw error;
-  }
+export async function changePassword(db, session, passwordHash) {
+  await db.batch([
+    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(passwordHash, session.user_id),
+    db.prepare("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?").bind(session.user_id, session.token_hash),
+  ]);
 }

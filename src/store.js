@@ -1,4 +1,5 @@
 import { cachedAnalytics } from "./analytics-cache.js";
+import { execScript } from "./sql.ts";
 import { migrateSchema } from "./migrations.ts";
 import { rollupBoundary, rollupTraffic, rollupVisitors, rollupTop, rollupReport, rollupHours, rollupGoals } from "./rollups.ts";
 import { READ_KEYS_SCHEMA } from "./read-api.js";
@@ -8,6 +9,7 @@ import { READ_KEYS_SCHEMA } from "./read-api.js";
 // the Bun app's per-process stores; public keys are immutable so the
 // miss-fill site cache is exactly coherent.
 import { bytesToHex, hashPassword, normalizeEmail, randomHex } from "./auth.js";
+import { orgOfSite } from "./data.js";
 import { dayStringFromMs, unicodeText, utf8Bytes } from "./util.js";
 
 // Daily salts cached per process like the Bun app's SiteStore: the day
@@ -24,10 +26,15 @@ export { siteByKey };
 // cached: a cached null would stick a transient lookup failure (or a key
 // checked before its site exists) permanently. Unknown keys cost one
 // indexed SELECT per request instead.
-export function siteForKey(db, publicKey) {
+// Hot path: the cached hit, with no promise. Undefined means ask siteForKey.
+export function cachedSiteForKey(publicKey) {
+  return siteByKey.get(publicKey);
+}
+
+export async function siteForKey(db, publicKey) {
   const hit = siteByKey.get(publicKey);
   if (hit !== undefined) return hit;
-  const site = db.prepare("SELECT id, domain FROM sites WHERE public_key = ?").bind(publicKey).first() || null;
+  const site = (await db.prepare("SELECT id, domain FROM sites WHERE public_key = ?").bind(publicKey).first()) || null;
   if (site) siteByKey.set(publicKey, site);
   return site;
 }
@@ -37,7 +44,7 @@ export function siteForKey(db, publicKey) {
 // administrator is async.
 let schemaReady = null;
 
-export function optionalSecret(name) {
+export function optionalSecret(env, name) {
   try {
     return env[name] || "";
   } catch {
@@ -45,87 +52,91 @@ export function optionalSecret(name) {
   }
 }
 
-export function ensureReady(db) {
-  if (!schemaReady) schemaReady = ensureSchema(db);
+// True once the schema is in place: the per-request check awaits nothing after that.
+let schemaDone = false;
+export function isReady() {
+  return schemaDone;
+}
+
+// Memoized as a promise, so concurrent first requests share one run.
+export function ensureReady(db, events, env) {
+  if (!schemaReady) schemaReady = ensureSchema(db, events, env);
   return schemaReady;
 }
 
-async function ensureSchema(db) {
-  db.exec(
+// `db` is the shared store, `events` the org store (the same D1 for now).
+async function ensureSchema(db, events, env) {
+  await execScript(db,
     "CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, domain TEXT NOT NULL UNIQUE, public_key TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);" +
-      "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, ts INTEGER NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL, referrer TEXT NOT NULL DEFAULT '', visitor TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', medium TEXT NOT NULL DEFAULT '', campaign TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', term TEXT NOT NULL DEFAULT '', value REAL);" +
+      "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL COLLATE NOCASE UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('admin','viewer')), display_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);" +
+      "CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, csrf TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);" +
+      "CREATE TABLE IF NOT EXISTS site_users (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('viewer')), PRIMARY KEY (user_id, site_id));",
+  );
+  await execScript(events,
+    "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, ts INTEGER NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL, referrer TEXT NOT NULL DEFAULT '', visitor TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', medium TEXT NOT NULL DEFAULT '', campaign TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', term TEXT NOT NULL DEFAULT '', value REAL);" +
       "CREATE TABLE IF NOT EXISTS goals (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, name TEXT NOT NULL, event_name TEXT NOT NULL, path TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, UNIQUE (site_id, name));" +
       "CREATE TABLE IF NOT EXISTS funnels (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL);" +
       "CREATE TABLE IF NOT EXISTS funnel_steps (funnel_id INTEGER NOT NULL REFERENCES funnels(id) ON DELETE CASCADE, position INTEGER NOT NULL, goal_id INTEGER NOT NULL REFERENCES goals(id), PRIMARY KEY (funnel_id, position));" +
-      "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL COLLATE NOCASE UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('admin','viewer')), display_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);" +
-      "CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, csrf TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);" +
-      "CREATE TABLE IF NOT EXISTS site_users (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('viewer')), PRIMARY KEY (user_id, site_id));" +
       "CREATE TABLE IF NOT EXISTS site_salts (site_id INTEGER NOT NULL, day TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (site_id, day));",
   );
-  migrateSchema(db);
-  db.exec(READ_KEYS_SCHEMA);
-  db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts ON events(site_id, ts);");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_ts_visitor ON events(site_id, ts, visitor);");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_visitor_ts ON events(site_id, visitor, ts);");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_events_site_name_ts_overview ON events(site_id, name, ts, visitor, path, source, medium, campaign);");
-  db.exec("DROP INDEX IF EXISTS idx_events_site_name_ts;");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);");
+  await migrateSchema(db, "shared");
+  await migrateSchema(events, "org");
+  await execScript(db, READ_KEYS_SCHEMA);
+  await execScript(events,
+    "CREATE INDEX IF NOT EXISTS idx_events_site_ts ON events(site_id, ts);" +
+      "CREATE INDEX IF NOT EXISTS idx_events_site_ts_visitor ON events(site_id, ts, visitor);" +
+      "CREATE INDEX IF NOT EXISTS idx_events_site_visitor_ts ON events(site_id, visitor, ts);" +
+      "CREATE INDEX IF NOT EXISTS idx_events_site_name_ts_overview ON events(site_id, name, ts, visitor, path, source, medium, campaign);" +
+      "DROP INDEX IF EXISTS idx_events_site_name_ts;");
+  await execScript(db, "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);");
 
   // Bootstrap: first administrator from secrets, once. After that the
   // password lives only in D1; remove it from the environment.
-  const count = Number(db.prepare("SELECT count(*) AS n FROM users").first().n);
+  const count = Number((await db.prepare("SELECT count(*) AS n FROM users").first()).n);
   if (count === 0) {
-    const email = normalizeEmail(optionalSecret("RISULTA_ADMIN_EMAIL"));
-    const password = optionalSecret("RISULTA_ADMIN_PASSWORD");
-    const displayName = String(optionalSecret("RISULTA_ADMIN_DISPLAY_NAME") || "").trim().slice(0, 80);
+    const email = normalizeEmail(optionalSecret(env, "RISULTA_ADMIN_EMAIL"));
+    const password = optionalSecret(env, "RISULTA_ADMIN_PASSWORD");
+    const displayName = String(optionalSecret(env, "RISULTA_ADMIN_DISPLAY_NAME") || "").trim().slice(0, 80);
     if (email && password.length >= 12) {
-      db.prepare("INSERT INTO users (email, password_hash, role, display_name, created_at) VALUES (?, ?, 'admin', ?, ?)")
+      await db.prepare("INSERT INTO users (email, password_hash, role, display_name, created_at) VALUES (?, ?, 'admin', ?, ?)")
         .bind(email, await hashPassword(password), displayName || email.split("@")[0], Math.floor(Date.now() / 1000))
         .run();
     }
   }
+  schemaDone = true;
 }
 
-export function listSitesForUser(db, user) {
-  if (user.role === "admin") return db.prepare("SELECT * FROM sites ORDER BY name COLLATE NOCASE").all().results;
-  return db.prepare(
+export async function listSitesForUser(db, user) {
+  if (user.role === "admin") return (await db.prepare("SELECT * FROM sites ORDER BY name COLLATE NOCASE").all()).results;
+  return (await db.prepare(
     "SELECT sites.* FROM sites JOIN site_users ON site_users.site_id = sites.id WHERE site_users.user_id = ? ORDER BY sites.name COLLATE NOCASE",
-  ).bind(user.user_id).all().results;
+  ).bind(user.user_id).all()).results;
 }
 
-export function updateProfile(db, userId, displayName, email) {
-  db.prepare("UPDATE users SET display_name = ?, email = ? WHERE id = ?").bind(displayName, email, userId).run();
+export async function updateProfile(db, userId, displayName, email) {
+  await db.prepare("UPDATE users SET display_name = ?, email = ? WHERE id = ?").bind(displayName, email, userId).run();
 }
 
-export function adminCount(db) {
-  return Number(db.prepare("SELECT count(*) AS n FROM users WHERE role = 'admin'").first().n);
+export async function adminCount(db) {
+  return Number((await db.prepare("SELECT count(*) AS n FROM users WHERE role = 'admin'").first()).n);
 }
 
 // Full account removal with explicit child cleanup (deterministic whether
 // or not the connection enforces foreign keys).
-export function removeUser(db, userId) {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
-    db.prepare("DELETE FROM site_users WHERE user_id = ?").bind(userId).run();
-    db.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
-    db.exec("COMMIT");
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      /* already rolled back */
-    }
-    throw error;
-  }
+export async function removeUser(db, userId) {
+  await db.batch([
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId),
+    db.prepare("DELETE FROM site_users WHERE user_id = ?").bind(userId),
+    db.prepare("DELETE FROM users WHERE id = ?").bind(userId),
+  ]);
 }
 
-export function getSiteForUser(db, siteId, user) {
+export async function getSiteForUser(db, siteId, user) {
   const column = /^[0-9]+$/.test(String(siteId)) ? "id" : "slug";
-  if (user.role === "admin") return db.prepare("SELECT * FROM sites WHERE " + column + " = ?").bind(siteId).first() || null;
-  return db.prepare(
+  if (user.role === "admin") return (await db.prepare("SELECT * FROM sites WHERE " + column + " = ?").bind(siteId).first()) || null;
+  return (await db.prepare(
     "SELECT sites.* FROM sites JOIN site_users ON site_users.site_id = sites.id WHERE sites." + column + " = ? AND site_users.user_id = ?",
-  ).bind(siteId, user.user_id).first() || null;
+  ).bind(siteId, user.user_id).first()) || null;
 }
 
 // Client IP for visitor hashing. Only source is the runtime-resolved
@@ -148,12 +159,17 @@ export function dayString() {
   return dayStringFromMs(Date.now());
 }
 
-export function siteSalt(db, siteId, day) {
+export function cachedSiteSalt(siteId, day) {
+  const hit = saltCache.get(siteId);
+  return hit && hit.day === day ? hit.value : undefined;
+}
+
+export async function siteSalt(db, siteId, day) {
   const hit = saltCache.get(siteId);
   if (hit && hit.day === day) return hit.value;
-  db.prepare("DELETE FROM site_salts WHERE day != ?").bind(day).run();
-  db.prepare("INSERT OR IGNORE INTO site_salts (site_id, day, value) VALUES (?, ?, ?)").bind(siteId, day, randomHex(32)).run();
-  const value = db.prepare("SELECT value FROM site_salts WHERE site_id = ? AND day = ?").bind(siteId, day).first().value;
+  await db.prepare("DELETE FROM site_salts WHERE day != ?").bind(day).run();
+  await db.prepare("INSERT OR IGNORE INTO site_salts (site_id, day, value) VALUES (?, ?, ?)").bind(siteId, day, randomHex(32)).run();
+  const value = (await db.prepare("SELECT value FROM site_salts WHERE site_id = ? AND day = ?").bind(siteId, day).first()).value;
   if (saltCache.size > 64) saltCache.clear();
   saltCache.set(siteId, { day, value });
   return value;
@@ -164,15 +180,17 @@ export function siteSalt(db, siteId, day) {
 // round-trip) over the true UTF-8 bytes, matching the Bun app's visitor
 // hashes for the same inputs; async only, so callers await it.
 export async function visitorId(db, site, request) {
-  const salt = siteSalt(db, site.id, dayString());
+  const day = dayString();
+  let salt = cachedSiteSalt(site.id, day);
+  if (salt === undefined) salt = await siteSalt(db, site.id, day);
   const ua = (request.headers.get("user-agent") || "").slice(0, 512);
   const input = new Uint8Array(utf8Bytes(salt + "" + clientIp(request) + "" + ua));
   const digest = await crypto.subtle.digest("SHA-256", input);
   return bytesToHex(new Uint8Array(digest)).slice(0, 24);
 }
 
-export function siteSummary(db, siteId, since, until) {
-  return db.prepare(
+export async function siteSummary(db, siteId, since, until) {
+  return await db.prepare(
     "WITH pageviews AS (SELECT ts, visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'), " +
       "scoped AS (SELECT ts, visitor, date(ts, 'unixepoch') AS day FROM events " +
       "WHERE site_id = ? AND visitor != '' AND ts >= ? - 1800 AND ts < ?), " +
@@ -184,27 +202,35 @@ export function siteSummary(db, siteId, since, until) {
 }
 
 // One session scan supplies the summary and both chart resolutions.
-function sessionPeriods(db, siteId, since, until) {
-  return db.prepare(
+async function sessionPeriods(db, siteId, since, until) {
+  return (await db.prepare(
     "WITH scoped AS (SELECT ts, visitor, date(ts, 'unixepoch') AS day FROM events " +
       "WHERE site_id = ? AND visitor != '' AND ts >= ? - 1800 AND ts < ?), " +
       "marked AS (SELECT ts, visitor, day, lag(ts) OVER (PARTITION BY visitor, day ORDER BY ts) AS prev FROM scoped) " +
       "SELECT day, cast(strftime('%H', ts, 'unixepoch') AS INTEGER) AS hour, count(*) AS visits FROM marked " +
       "WHERE ts >= ? AND ts < ? AND (prev IS NULL OR ts - prev > 1800) GROUP BY day, hour ORDER BY day, hour",
-  ).bind(siteId, since, until, since, until).all().results;
+  ).bind(siteId, since, until, since, until).all()).results;
 }
 
-export function homeOverviews(db, user, now) {
-  const sites = listSitesForUser(db, user);
+// `db` is the shared registry, `storeFor(orgId)` the org store: sites come from
+// the first, their pageviews from the second, never from one joined query.
+export async function homeOverviews(db, storeFor, user, now) {
+  const sites = await listSitesForUser(db, user);
   const since = (Math.floor(now / 86400) - 6) * 86400;
-  // Join through authorized sites before aggregating, including for viewers.
-  const scope = user.role === "admin" ? "" : " JOIN site_users ON site_users.site_id = sites.id AND site_users.user_id = ?";
-  const query = db.prepare(
-    "SELECT events.site_id, date(events.ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT events.visitor) AS visitors " +
-      "FROM sites" + scope + " JOIN events ON events.site_id = sites.id " +
-      "WHERE events.ts >= ? AND events.ts < ? AND events.name = 'pageview' GROUP BY events.site_id, day ORDER BY events.site_id, day",
-  );
-  const rows = (user.role === "admin" ? query.bind(since, now + 1) : query.bind(user.user_id, since, now + 1)).all().results;
+  const idsByOrg = new Map();
+  for (let i = 0; i < sites.length; i++) {
+    const orgId = orgOfSite(sites[i]);
+    if (!idsByOrg.has(orgId)) idsByOrg.set(orgId, []);
+    idsByOrg.get(orgId).push(sites[i].id);
+  }
+  const rows = [];
+  for (const [orgId, ids] of idsByOrg) {
+    const found = (await storeFor(orgId).prepare(
+      "SELECT site_id, date(ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
+        "WHERE site_id IN (SELECT value FROM json_each(?)) AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY site_id, day ORDER BY site_id, day",
+    ).bind(JSON.stringify(ids), since, now + 1).all()).results;
+    for (let i = 0; i < found.length; i++) rows.push(found[i]);
+  }
   const daysBySite = {};
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -229,22 +255,22 @@ export function homeOverviews(db, user, now) {
   return result;
 }
 
-export function siteCurrent(db, siteId) {
-  return Number(db.prepare(
+export async function siteCurrent(db, siteId) {
+  return Number((await db.prepare(
     "SELECT count(DISTINCT visitor) AS n FROM events WHERE site_id = ? AND ts >= ? AND name = 'pageview'",
-  ).bind(siteId, Math.floor(Date.now() / 1000) - 300).first().n);
+  ).bind(siteId, Math.floor(Date.now() / 1000) - 300).first()).n);
 }
 
-export function topList(db, siteId, since, until, select) {
-  return db.prepare(
+export async function topList(db, siteId, since, until, select) {
+  return (await db.prepare(
     "SELECT " + select + " AS label, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY label ORDER BY visitors DESC, pageviews DESC LIMIT 8",
-  ).bind(siteId, since, until).all().results;
+  ).bind(siteId, since, until).all()).results;
 }
 
-export function siteGoals(db, siteId, since, until, visitors) {
+export async function siteGoals(db, siteId, since, until, visitors) {
   // Aggregate each event and exact path once, even when many goals share it.
-  const rows = db.prepare(
+  const rows = (await db.prepare(
     "WITH configured AS (SELECT id, name, event_name, path FROM goals WHERE site_id = ?), " +
     "hits AS MATERIALIZED (SELECT name, path, visitor, value FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name IN (SELECT event_name FROM configured)), " +
     "totals AS (SELECT name, '' AS path, count(*) AS conversions, count(DISTINCT visitor) AS unique_conversions, coalesce(sum(value),0) AS value FROM hits GROUP BY name " +
@@ -252,49 +278,39 @@ export function siteGoals(db, siteId, since, until, visitors) {
     "WHERE path IN (SELECT path FROM configured WHERE path != '') GROUP BY name, path) " +
     "SELECT g.name, g.event_name, g.path, coalesce(t.conversions,0) AS conversions, coalesce(t.unique_conversions,0) AS unique_conversions, coalesce(t.value,0) AS value " +
     "FROM configured g LEFT JOIN totals t ON t.name = g.event_name AND t.path = g.path ORDER BY g.id",
-  ).bind(siteId, siteId, since, until).all().results;
+  ).bind(siteId, siteId, since, until).all()).results;
   return rows.map((row) => ({ ...row, conversion_rate: visitors ? Number(row.unique_conversions) / visitors : 0 }));
 }
 
-export function listFunnels(db, siteId) {
-  const funnels = db.prepare("SELECT id, name FROM funnels WHERE site_id = ? ORDER BY id").bind(siteId).all().results;
+export async function listFunnels(db, siteId) {
+  const funnels = (await db.prepare("SELECT id, name FROM funnels WHERE site_id = ? ORDER BY id").bind(siteId).all()).results;
   const out = [];
   for (let i = 0; i < funnels.length; i++) {
-    const steps = db.prepare(
+    const steps = (await db.prepare(
       "SELECT goals.id, goals.name, goals.event_name, goals.path FROM funnel_steps " +
         "JOIN goals ON goals.id = funnel_steps.goal_id WHERE funnel_steps.funnel_id = ? ORDER BY funnel_steps.position",
-    ).bind(funnels[i].id).all().results;
+    ).bind(funnels[i].id).all()).results;
     out.push({ id: funnels[i].id, name: funnels[i].name, steps });
   }
   return out;
 }
 
-export function createFunnel(db, siteId, name, goalIds) {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const result = db.prepare("INSERT INTO funnels (site_id, name, created_at) VALUES (?, ?, ?)")
-      .bind(siteId, name, Math.floor(Date.now() / 1000))
-      .run();
-    const funnelId = Number(result.meta.last_row_id);
-    const assign = db.prepare("INSERT INTO funnel_steps (funnel_id, position, goal_id) VALUES (?, ?, ?)");
-    for (let i = 0; i < goalIds.length; i++) assign.bind(funnelId, i, goalIds[i]).run();
-    db.exec("COMMIT");
-    return funnelId;
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      /* already rolled back */
-    }
-    throw error;
-  }
+export async function createFunnel(db, siteId, name, goalIds) {
+  // One batch is one transaction. The steps name the funnel just inserted as
+  // the site's newest one; writes are serialized, so nothing can slip between.
+  const assign = db.prepare("INSERT INTO funnel_steps (funnel_id, position, goal_id) VALUES ((SELECT max(id) FROM funnels WHERE site_id = ?), ?, ?)");
+  const statements = [db.prepare("INSERT INTO funnels (site_id, name, created_at) VALUES (?, ?, ?)")
+    .bind(siteId, name, Math.floor(Date.now() / 1000))];
+  for (let i = 0; i < goalIds.length; i++) statements.push(assign.bind(siteId, i, goalIds[i]));
+  const results = await db.batch(statements);
+  return Number(results[0].meta.last_row_id);
 }
 
 // Ordered funnel conversions retain the bounded event stream and report truncation.
 export const FUNNEL_EVENT_LIMIT = 50000;
 
-export function siteFunnels(db, siteId, since, until) {
-  const funnels = listFunnels(db, siteId);
+export async function siteFunnels(db, siteId, since, until) {
+  const funnels = await listFunnels(db, siteId);
   if (!funnels.length) return { funnels: [], truncated: false };
   const matches = [];
   const names = [];
@@ -337,7 +353,7 @@ export function siteFunnels(db, siteId, since, until) {
       totals.push("SELECT count(*) AS conversions," + i + " AS funnel," + step + " AS step FROM " + prefix + step);
     }
   }
-  const rows = db.prepare("WITH " + clauses.join(",") + " " + totals.join(" UNION ALL ") + " ORDER BY funnel,step").bind(...args).all().results;
+  const rows = (await db.prepare("WITH " + clauses.join(",") + " " + totals.join(" UNION ALL ") + " ORDER BY funnel,step").bind(...args).all()).results;
   const truncated = Number(rows[0].conversions) >= FUNNEL_EVENT_LIMIT;
   const out = [];
   for (let i = 0; i < funnels.length; i++) {
@@ -379,92 +395,92 @@ export function overviewScope(db, siteId, since, until, filters) {
 }
 
 // One aggregate query previews five goals, including configured goals with no hits.
-export function overviewGoals(db, siteId, since, until, visitors) {
-  const rows = db.prepare("WITH preview AS (SELECT * FROM goals WHERE site_id = ? ORDER BY id LIMIT 5), " +
+export async function overviewGoals(db, siteId, since, until, visitors) {
+  const rows = (await db.prepare("WITH preview AS (SELECT * FROM goals WHERE site_id = ? ORDER BY id LIMIT 5), " +
     "eligible AS MATERIALIZED (SELECT DISTINCT visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'), " +
     "hits AS MATERIALIZED (SELECT id, name, path, visitor FROM events WHERE site_id = ? AND ts >= ? AND ts < ? AND name IN (SELECT event_name FROM preview)) " +
     "SELECT g.name, count(e.id) AS conversions, count(DISTINCT CASE WHEN e.visitor IN (SELECT visitor FROM eligible) THEN e.visitor END) AS unique_conversions " +
     "FROM preview g LEFT JOIN hits e ON e.name = g.event_name AND (g.path = '' OR e.path = g.path) GROUP BY g.id ORDER BY g.id")
-    .bind(siteId, siteId, since, until, siteId, since, until).all().results;
+    .bind(siteId, siteId, since, until, siteId, since, until).all()).results;
   return rows.map((row) => ({ ...row, conversion_rate: visitors ? Number(row.unique_conversions) / visitors : 0 }));
 }
 
-export function dashboardTraffic(db, site, range, now, skipDimensions = false, skipHours = false, fresh = false) {
+export async function dashboardTraffic(db, site, range, now, skipDimensions = false, skipHours = false, fresh = false) {
   const hourly = !skipHours && range.days === 1 && !range.from;
   const filtered = Object.keys(range.filters || {}).some((key) => range.filters[key]);
-  const boundary = filtered ? 0 : rollupBoundary(db, site.id, range.since, range.until, now);
-  if (!boundary) return siteAnalytics(overviewScope(db, site.id, range.since, range.until, range.filters), site, range.since, range.until, false, false, hourly, skipDimensions);
-  const history = fresh ? rollupTraffic(db, site.id, range.since, range.until, boundary) :
-    cachedAnalytics(db, site.id, "traffic-history", { since: range.since, until: boundary }, null, now, false,
-      () => rollupTraffic(db, site.id, range.since, boundary, boundary));
-  if (!fresh && boundary < range.until) history.summary.visitors = rollupVisitors(db, site.id, range.since, range.until, boundary);
-  const tail = boundary < range.until ? siteAnalytics(db, site, boundary, range.until, false, false, hourly, true) : {
-    summary: { pageviews: 0, visits: 0 }, byDay: [], byHour: [], current: siteCurrent(db, site.id),
-    hasConversions: Number(db.prepare("SELECT (SELECT count(*) FROM goals WHERE site_id = ?) + (SELECT count(*) FROM funnels WHERE site_id = ?) AS n").bind(site.id, site.id).first().n) > 0,
+  const boundary = filtered ? 0 : (await rollupBoundary(db, site.id, range.since, range.until, now));
+  if (!boundary) return await siteAnalytics(overviewScope(db, site.id, range.since, range.until, range.filters), site, range.since, range.until, false, false, hourly, skipDimensions);
+  const history = fresh ? (await rollupTraffic(db, site.id, range.since, range.until, boundary)) :
+    (await cachedAnalytics(db, site.id, "traffic-history", { since: range.since, until: boundary }, null, now, false,
+      async () => await rollupTraffic(db, site.id, range.since, boundary, boundary)));
+  if (!fresh && boundary < range.until) history.summary.visitors = await rollupVisitors(db, site.id, range.since, range.until, boundary);
+  const tail = boundary < range.until ? (await siteAnalytics(db, site, boundary, range.until, false, false, hourly, true)) : {
+    summary: { pageviews: 0, visits: 0 }, byDay: [], byHour: [], current: await siteCurrent(db, site.id),
+    hasConversions: Number((await db.prepare("SELECT (SELECT count(*) FROM goals WHERE site_id = ?) + (SELECT count(*) FROM funnels WHERE site_id = ?) AS n").bind(site.id, site.id).first()).n) > 0,
     goals: [], funnels: [], funnelsTruncated: false,
   };
   return { ...tail,
     summary: { pageviews: Number(history.summary.pageviews) + Number(tail.summary.pageviews), visitors: history.summary.visitors, visits: Number(history.summary.visits) + Number(tail.summary.visits) },
     byDay: history.byDay.concat(tail.byDay),
-    paths: skipDimensions ? [] : rollupTop(db, site.id, range.since, range.until, boundary, "path"),
-    referrers: skipDimensions ? [] : rollupTop(db, site.id, range.since, range.until, boundary, "source"),
-    mediums: skipDimensions ? [] : rollupTop(db, site.id, range.since, range.until, boundary, "medium"),
-    campaigns: skipDimensions ? [] : rollupTop(db, site.id, range.since, range.until, boundary, "campaign"),
+    paths: skipDimensions ? [] : (await rollupTop(db, site.id, range.since, range.until, boundary, "path")),
+    referrers: skipDimensions ? [] : (await rollupTop(db, site.id, range.since, range.until, boundary, "source")),
+    mediums: skipDimensions ? [] : (await rollupTop(db, site.id, range.since, range.until, boundary, "medium")),
+    campaigns: skipDimensions ? [] : (await rollupTop(db, site.id, range.since, range.until, boundary, "campaign")),
   };
 }
 
 // Fresh API reads combine completed-day facts with live events, without HTML snapshots.
-export function siteStats(db, site, range, now, sections = null, fresh = false) {
+export async function siteStats(db, site, range, now, sections = null, fresh = false) {
   const selected = sections || { hourly: true, acquisition: true, goals: true, funnels: true };
-  const boundary = rollupBoundary(db, site.id, range.since, range.until, now, true);
-  const traffic = boundary ? dashboardTraffic(db, site, range, now, !selected.acquisition, true, fresh) :
-    siteAnalytics(db, site, range.since, range.until, false, false, selected.hourly, !selected.acquisition);
+  const boundary = await rollupBoundary(db, site.id, range.since, range.until, now, true);
+  const traffic = boundary ? (await dashboardTraffic(db, site, range, now, !selected.acquisition, true, fresh)) :
+    (await siteAnalytics(db, site, range.since, range.until, false, false, selected.hourly, !selected.acquisition));
   const result = { summary: traffic.summary, current: traffic.current, byDay: traffic.byDay, hasConversions: false };
-  if (selected.hourly) result.byHour = boundary ? rollupHours(db, site.id, range.since, range.until, boundary) : traffic.byHour;
+  if (selected.hourly) result.byHour = boundary ? (await rollupHours(db, site.id, range.since, range.until, boundary)) : traffic.byHour;
   if (selected.acquisition) {
     result.paths = traffic.paths; result.referrers = traffic.referrers;
     result.mediums = traffic.mediums; result.campaigns = traffic.campaigns;
   }
-  if (selected.goals) result.goals = boundary ? rollupGoals(db, site.id, range.since, range.until, boundary, Number(traffic.summary.visitors)) : siteGoals(db, site.id, range.since, range.until, Number(traffic.summary.visitors));
+  if (selected.goals) result.goals = boundary ? (await rollupGoals(db, site.id, range.since, range.until, boundary, Number(traffic.summary.visitors))) : (await siteGoals(db, site.id, range.since, range.until, Number(traffic.summary.visitors)));
   if (selected.funnels) {
-    const funnels = siteFunnels(db, site.id, range.since, range.until);
+    const funnels = await siteFunnels(db, site.id, range.since, range.until);
     result.funnels = funnels.funnels; result.funnelsTruncated = funnels.truncated;
   }
   return result;
 }
 
-export function dashboardGoals(db, site, range, now) {
-  const visitors = Number(dashboardSummary(db, site, range, now).visitors);
+export async function dashboardGoals(db, site, range, now) {
+  const visitors = Number((await dashboardSummary(db, site, range, now)).visitors);
   const filtered = Object.keys(range.filters || {}).some((key) => range.filters[key]);
-  const boundary = filtered ? 0 : rollupBoundary(db, site.id, range.since, range.until, now, true);
-  return boundary ? rollupGoals(db, site.id, range.since, range.until, boundary, visitors) :
-    siteGoals(overviewScope(db, site.id, range.since, range.until, range.filters), site.id, range.since, range.until, visitors);
+  const boundary = filtered ? 0 : (await rollupBoundary(db, site.id, range.since, range.until, now, true));
+  return boundary ? (await rollupGoals(db, site.id, range.since, range.until, boundary, visitors)) :
+    (await siteGoals(overviewScope(db, site.id, range.since, range.until, range.filters), site.id, range.since, range.until, visitors));
 }
 
-export function dashboardSummary(db, site, range, now) {
+export async function dashboardSummary(db, site, range, now) {
   const filtered = Object.keys(range.filters || {}).some((key) => range.filters[key]);
-  const boundary = filtered ? 0 : rollupBoundary(db, site.id, range.since, range.until, now);
-  if (!boundary) return siteSummary(overviewScope(db, site.id, range.since, range.until, range.filters), site.id, range.since, range.until);
-  const history = rollupTraffic(db, site.id, range.since, range.until, boundary);
-  const tail = boundary < range.until ? siteSummary(db, site.id, boundary, range.until) : { pageviews: 0, visits: 0 };
+  const boundary = filtered ? 0 : (await rollupBoundary(db, site.id, range.since, range.until, now));
+  if (!boundary) return await siteSummary(overviewScope(db, site.id, range.since, range.until, range.filters), site.id, range.since, range.until);
+  const history = await rollupTraffic(db, site.id, range.since, range.until, boundary);
+  const tail = boundary < range.until ? (await siteSummary(db, site.id, boundary, range.until)) : { pageviews: 0, visits: 0 };
   return { pageviews: Number(history.summary.pageviews) + Number(tail.pageviews), visitors: history.summary.visitors, visits: Number(history.summary.visits) + Number(tail.visits) };
 }
 
-export function siteAnalytics(db, site, since, until, includeConversions, previewGoals, hourly, skipDimensions) {
-  const summary = db.prepare(
+export async function siteAnalytics(db, site, since, until, includeConversions, previewGoals, hourly, skipDimensions) {
+  const summary = await db.prepare(
     "SELECT count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview'",
   ).bind(site.id, since, until).first();
   summary.visits = 0;
-  const sessions = sessionPeriods(db, site.id, since, until);
-  const byDay = db.prepare(
+  const sessions = await sessionPeriods(db, site.id, since, until);
+  const byDay = (await db.prepare(
     "SELECT date(ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY day ORDER BY day",
-  ).bind(site.id, since, until).all().results;
-  const byHour = hourly === false ? [] : db.prepare(
+  ).bind(site.id, since, until).all()).results;
+  const byHour = hourly === false ? [] : (await db.prepare(
     "SELECT cast(strftime('%H', ts, 'unixepoch') AS INTEGER) AS hour, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
       "WHERE site_id = ? AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY hour ORDER BY hour",
-  ).bind(site.id, since, until).all().results;
+  ).bind(site.id, since, until).all()).results;
   const days = {};
   const hours = {};
   for (let i = 0; i < byDay.length; i++) { byDay[i].visits = 0; days[byDay[i].day] = byDay[i]; }
@@ -483,20 +499,20 @@ export function siteAnalytics(db, site, since, until, includeConversions, previe
   byDay.sort((a, b) => a.day < b.day ? -1 : a.day > b.day ? 1 : 0);
   byHour.sort((a, b) => a.hour - b.hour);
   const visitors = Number(summary.visitors);
-  const funnelResult = includeConversions === false ? { funnels: [], truncated: false } : siteFunnels(db, site.id, since, until);
+  const funnelResult = includeConversions === false ? { funnels: [], truncated: false } : (await siteFunnels(db, site.id, since, until));
   return {
     summary,
-    current: siteCurrent(db, site.id),
+    current: await siteCurrent(db, site.id),
     byDay,
     byHour,
-    paths: skipDimensions ? [] : topList(db, site.id, since, until, "path"),
-    referrers: skipDimensions ? [] : topList(db, site.id, since, until, "coalesce(nullif(source,''),'Direct / None')"),
-    mediums: skipDimensions ? [] : topList(db, site.id, since, until, "coalesce(nullif(medium,''),'None')"),
-    campaigns: skipDimensions ? [] : topList(db, site.id, since, until, "coalesce(nullif(campaign,''),'None')"),
-    goals: includeConversions === false ? (previewGoals === false ? [] : overviewGoals(db, site.id, since, until, visitors)) : siteGoals(db, site.id, since, until, visitors),
-    hasConversions: includeConversions === false ? Number(db.prepare(
+    paths: skipDimensions ? [] : (await topList(db, site.id, since, until, "path")),
+    referrers: skipDimensions ? [] : (await topList(db, site.id, since, until, "coalesce(nullif(source,''),'Direct / None')")),
+    mediums: skipDimensions ? [] : (await topList(db, site.id, since, until, "coalesce(nullif(medium,''),'None')")),
+    campaigns: skipDimensions ? [] : (await topList(db, site.id, since, until, "coalesce(nullif(campaign,''),'None')")),
+    goals: includeConversions === false ? (previewGoals === false ? [] : (await overviewGoals(db, site.id, since, until, visitors))) : (await siteGoals(db, site.id, since, until, visitors)),
+    hasConversions: includeConversions === false ? Number((await db.prepare(
       "SELECT (SELECT count(*) FROM goals WHERE site_id = ?) + (SELECT count(*) FROM funnels WHERE site_id = ?) AS n",
-    ).bind(site.id, site.id).first().n) > 0 : false,
+    ).bind(site.id, site.id).first()).n) > 0 : false,
     funnels: funnelResult.funnels,
     funnelsTruncated: funnelResult.truncated,
   };
@@ -504,7 +520,7 @@ export function siteAnalytics(db, site, since, until, includeConversions, previe
 
 // Bounded report query mirroring the Bun app's report semantics: exact-match
 // filters, pageviews-only dimensions except event, sortable, paginated.
-export function siteReport(db, siteId, since, until, dimension, filters, limit, offset, sort) {
+export async function siteReport(db, siteId, since, until, dimension, filters, limit, offset, sort) {
   const dimensions = {
     path: { label: "path", pageviewsOnly: true },
     source: { label: "coalesce(nullif(source,''),'Direct / None')", pageviewsOnly: true },
@@ -538,24 +554,24 @@ export function siteReport(db, siteId, since, until, dimension, filters, limit, 
   const grouped =
     "SELECT " + selected.label + " AS label, count(*) AS pageviews, count(DISTINCT visitor) AS visitors, coalesce(sum(value), 0) AS value " +
     "FROM events WHERE " + where + " GROUP BY label";
-  const result = db.prepare("SELECT *, count(*) OVER () AS total_rows FROM (" + grouped + ") ORDER BY " + ordering + " DESC, label LIMIT ? OFFSET ?")
-    .bind(...values, boundedLimit, boundedOffset).all().results;
+  const result = (await db.prepare("SELECT *, count(*) OVER () AS total_rows FROM (" + grouped + ") ORDER BY " + ordering + " DESC, label LIMIT ? OFFSET ?")
+    .bind(...values, boundedLimit, boundedOffset).all()).results;
   // An offset beyond the final page still needs the exact total.
   const total = result.length ? Number(result[0].total_rows) :
-    Number(db.prepare("SELECT count(*) AS n FROM (SELECT " + selected.label + " AS label FROM events WHERE " + where + " GROUP BY label)").bind(...values).first().n);
+    Number((await db.prepare("SELECT count(*) AS n FROM (SELECT " + selected.label + " AS label FROM events WHERE " + where + " GROUP BY label)").bind(...values).first()).n);
   for (let i = 0; i < result.length; i++) delete result[i].total_rows;
   return { dimension: dimensions[dimension] ? dimension : "path", filters, rows: result, total, limit: boundedLimit, offset: boundedOffset, sort: ordering };
 }
 
-export function dashboardReport(db, site, range, input, cohort, now) {
+export async function dashboardReport(db, site, range, input, cohort, now) {
   const filtered = Object.keys(input.filters).some((key) => input.filters[key]);
-  const boundary = filtered || input.dimension === "event" ? 0 : rollupBoundary(db, site.id, range.since, range.until, now);
+  const boundary = filtered || input.dimension === "event" ? 0 : (await rollupBoundary(db, site.id, range.since, range.until, now));
   if (boundary) {
     const dimension = ["path", "source", "medium", "campaign"].indexOf(input.dimension) >= 0 ? input.dimension : "path";
     const bounds = { limit: Math.max(1, Math.min(100, Math.floor(Number(input.limit)) || 50)), offset: Math.max(0, Math.min(10000, Math.floor(Number(input.offset)) || 0)), sort: input.sort === "pageviews" || input.sort === "value" ? input.sort : "visitors" };
-    return rollupReport(db, site.id, range.since, range.until, boundary, dimension, bounds);
+    return await rollupReport(db, site.id, range.since, range.until, boundary, dimension, bounds);
   }
-  return siteReport(cohort ? overviewScope(db, site.id, range.since, range.until, input.filters) : db, site.id, range.since, range.until,
+  return await siteReport(cohort ? overviewScope(db, site.id, range.since, range.until, input.filters) : db, site.id, range.since, range.until,
     input.dimension, cohort ? { event: input.filters.event } : input.filters, input.limit, input.offset, input.sort);
 }
 
