@@ -57,3 +57,10 @@ export function breakBatch(db, matches) {
     : original.call(db, statements);
   return () => { db.batch = original; };
 }
+
+// Run both stores' migrations (the same database in most tests).
+export async function migrateAll(shared, events = shared) {
+  const { migrateSchema } = await import("../src/migrations.ts");
+  await migrateSchema(shared, "shared");
+  await migrateSchema(events, "org");
+}

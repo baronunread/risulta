@@ -252,3 +252,13 @@ export function dayStringFromMs(ms) {
   const day = d < 10 ? "0" + d : "" + d;
   return year + "-" + month + "-" + day;
 }
+
+// A secret that is declared but not set throws when read on the runtime;
+// treat that as "not configured".
+export function optionalEnv(env, name) {
+  try {
+    return env[name] || "";
+  } catch {
+    return "";
+  }
+}

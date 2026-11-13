@@ -7,7 +7,7 @@ sqlite.exec("CREATE TABLE sites(id INTEGER PRIMARY KEY,name TEXT,domain TEXT); C
 let queries = 0;
 const db = { prepare(sql) { queries++; const stmt = sqlite.prepare(sql); let params = []; return { bind(...args) { params = args; return this; }, all() { return { results: stmt.all(...params) }; } }; } };
 try {
-  const sites = await homeOverviews(db, { role: "viewer", user_id: 7 }, 604800);
+  const sites = await homeOverviews(db, () => db, { role: "viewer", user_id: 7 }, 604800);
   assert.equal(queries, 2, "Home traffic uses two queries regardless of card count");
   assert.deepEqual(sites.map(s => s.id), [3, 1]);
   const shop = sites[1].overview;
@@ -21,7 +21,7 @@ try {
   assert.equal((html.match(/class="home-sparkline"/g) || []).length, 2);
   assert.ok(!html.includes('NaN'));
   assert.ok(!html.includes('private.example'));
-  assert.ok((await homeOverviews(db, { role: "admin" }, 604800)).some(site => site.id === 2));
-  assert.deepEqual(await homeOverviews(db, { role: "viewer", user_id: 99 }, 604800), []);
+  assert.ok((await homeOverviews(db, () => db, { role: "admin" }, 604800)).some(site => site.id === 2));
+  assert.deepEqual(await homeOverviews(db, () => db, { role: "viewer", user_id: 99 }, 604800), []);
 } finally { sqlite.close(); }
 console.log("home OK");

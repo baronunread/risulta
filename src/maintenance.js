@@ -32,10 +32,14 @@ export async function buildRollupDay(db, siteId, day, now) {
   await db.batch(statements);
 }
 
-export async function runRollups(db, now, maxDays = 4, overBudget = null) {
+// `shared` holds the site registry, `db` the org store with the events and rollups.
+export async function runRollups(shared, db, now, maxDays = 4, overBudget = null) {
   if (!Number.isInteger(maxDays) || maxDays < 1 || maxDays > 1000) throw new Error("maxDays must be between 1 and 1000.");
   const today = Math.floor(now / DAY) * DAY;
-  const sites = (await db.prepare("SELECT id,(SELECT min(ts) FROM events WHERE site_id=sites.id) AS first FROM sites ORDER BY id").all()).results;
+  const ids = (await shared.prepare("SELECT id FROM sites ORDER BY id").all()).results;
+  const firsts = new Map();
+  for (const row of (await db.prepare("SELECT site_id, min(ts) AS first FROM events GROUP BY site_id").all()).results) firsts.set(row.site_id, row.first);
+  const sites = ids.map((row) => ({ id: row.id, first: firsts.has(row.id) ? firsts.get(row.id) : null }));
   const queues = [];
   for (const site of sites) {
     const covered = new Set((await db.prepare("SELECT day FROM analytics_rollup_stats_days WHERE site_id=?").bind(site.id).all()).results.map(row => row.day));
@@ -66,7 +70,8 @@ export async function runRollups(db, now, maxDays = 4, overBudget = null) {
 
 // One maintenance tick. A time budget keeps the tick short on the shared event
 // loop: no new rollup day starts after it is spent (one always runs).
-export async function runMaintenance(db, files, now, budgetMs = 1200) {
+// The backup covers the shared store; each org's rollups are separate work.
+export async function runMaintenance(db, storeFor, orgs, files, now, budgetMs = 1200) {
   const started = Date.now();
   let backup = "unavailable";
   let days = 0;
@@ -81,7 +86,10 @@ export async function runMaintenance(db, files, now, budgetMs = 1200) {
     }
   }
   try {
-    days = await runRollups(db, now, 4, () => Date.now() - started > budgetMs);
+    for (const orgId of orgs) {
+      if (days > 0 && Date.now() - started > budgetMs) break;
+      days += await runRollups(db, storeFor(orgId), now, 4, () => Date.now() - started > budgetMs);
+    }
   } catch (error) {
     failed = true;
     console.error("Rollup processing failed: " + String(error));

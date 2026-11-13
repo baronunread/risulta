@@ -9,6 +9,7 @@ import { READ_KEYS_SCHEMA } from "./read-api.js";
 // the Bun app's per-process stores; public keys are immutable so the
 // miss-fill site cache is exactly coherent.
 import { bytesToHex, hashPassword, normalizeEmail, randomHex } from "./auth.js";
+import { orgOfSite } from "./data.js";
 import { dayStringFromMs, unicodeText, utf8Bytes } from "./util.js";
 
 // Daily salts cached per process like the Bun app's SiteStore: the day
@@ -46,32 +47,36 @@ export function optionalSecret(env, name) {
   }
 }
 
-export function ensureReady(db, env) {
-  if (!schemaReady) schemaReady = ensureSchema(db, env);
+export async function ensureReady(db, events, env) {
+  if (!schemaReady) schemaReady = await ensureSchema(db, events, env);
   return schemaReady;
 }
 
-async function ensureSchema(db, env) {
+// `db` is the shared store, `events` the org store (the same D1 for now).
+async function ensureSchema(db, events, env) {
   await execScript(db,
     "CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, domain TEXT NOT NULL UNIQUE, public_key TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);" +
-      "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, ts INTEGER NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL, referrer TEXT NOT NULL DEFAULT '', visitor TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', medium TEXT NOT NULL DEFAULT '', campaign TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', term TEXT NOT NULL DEFAULT '', value REAL);" +
+      "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL COLLATE NOCASE UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('admin','viewer')), display_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);" +
+      "CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, csrf TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);" +
+      "CREATE TABLE IF NOT EXISTS site_users (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('viewer')), PRIMARY KEY (user_id, site_id));",
+  );
+  await execScript(events,
+    "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, ts INTEGER NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL, referrer TEXT NOT NULL DEFAULT '', visitor TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', medium TEXT NOT NULL DEFAULT '', campaign TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', term TEXT NOT NULL DEFAULT '', value REAL);" +
       "CREATE TABLE IF NOT EXISTS goals (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, name TEXT NOT NULL, event_name TEXT NOT NULL, path TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, UNIQUE (site_id, name));" +
       "CREATE TABLE IF NOT EXISTS funnels (id INTEGER PRIMARY KEY AUTOINCREMENT, site_id INTEGER NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL);" +
       "CREATE TABLE IF NOT EXISTS funnel_steps (funnel_id INTEGER NOT NULL REFERENCES funnels(id) ON DELETE CASCADE, position INTEGER NOT NULL, goal_id INTEGER NOT NULL REFERENCES goals(id), PRIMARY KEY (funnel_id, position));" +
-      "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL COLLATE NOCASE UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('admin','viewer')), display_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);" +
-      "CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, csrf TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);" +
-      "CREATE TABLE IF NOT EXISTS site_users (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('viewer')), PRIMARY KEY (user_id, site_id));" +
       "CREATE TABLE IF NOT EXISTS site_salts (site_id INTEGER NOT NULL, day TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (site_id, day));",
   );
-  await migrateSchema(db);
+  await migrateSchema(db, "shared");
+  await migrateSchema(events, "org");
   await execScript(db, READ_KEYS_SCHEMA);
-  await execScript(db,
+  await execScript(events,
     "CREATE INDEX IF NOT EXISTS idx_events_site_ts ON events(site_id, ts);" +
       "CREATE INDEX IF NOT EXISTS idx_events_site_ts_visitor ON events(site_id, ts, visitor);" +
       "CREATE INDEX IF NOT EXISTS idx_events_site_visitor_ts ON events(site_id, visitor, ts);" +
       "CREATE INDEX IF NOT EXISTS idx_events_site_name_ts_overview ON events(site_id, name, ts, visitor, path, source, medium, campaign);" +
-      "DROP INDEX IF EXISTS idx_events_site_name_ts;" +
-      "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);");
+      "DROP INDEX IF EXISTS idx_events_site_name_ts;");
+  await execScript(db, "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);");
 
   // Bootstrap: first administrator from secrets, once. After that the
   // password lives only in D1; remove it from the environment.
@@ -187,17 +192,25 @@ async function sessionPeriods(db, siteId, since, until) {
   ).bind(siteId, since, until, since, until).all()).results;
 }
 
-export async function homeOverviews(db, user, now) {
+// `db` is the shared registry, `storeFor(orgId)` the org store: sites come from
+// the first, their pageviews from the second, never from one joined query.
+export async function homeOverviews(db, storeFor, user, now) {
   const sites = await listSitesForUser(db, user);
   const since = (Math.floor(now / 86400) - 6) * 86400;
-  // Join through authorized sites before aggregating, including for viewers.
-  const scope = user.role === "admin" ? "" : " JOIN site_users ON site_users.site_id = sites.id AND site_users.user_id = ?";
-  const query = db.prepare(
-    "SELECT events.site_id, date(events.ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT events.visitor) AS visitors " +
-      "FROM sites" + scope + " JOIN events ON events.site_id = sites.id " +
-      "WHERE events.ts >= ? AND events.ts < ? AND events.name = 'pageview' GROUP BY events.site_id, day ORDER BY events.site_id, day",
-  );
-  const rows = (await (user.role === "admin" ? query.bind(since, now + 1) : query.bind(user.user_id, since, now + 1)).all()).results;
+  const idsByOrg = new Map();
+  for (let i = 0; i < sites.length; i++) {
+    const orgId = orgOfSite(sites[i]);
+    if (!idsByOrg.has(orgId)) idsByOrg.set(orgId, []);
+    idsByOrg.get(orgId).push(sites[i].id);
+  }
+  const rows = [];
+  for (const [orgId, ids] of idsByOrg) {
+    const found = (await storeFor(orgId).prepare(
+      "SELECT site_id, date(ts, 'unixepoch') AS day, count(*) AS pageviews, count(DISTINCT visitor) AS visitors FROM events " +
+        "WHERE site_id IN (SELECT value FROM json_each(?)) AND ts >= ? AND ts < ? AND name = 'pageview' GROUP BY site_id, day ORDER BY site_id, day",
+    ).bind(JSON.stringify(ids), since, now + 1).all()).results;
+    for (let i = 0; i < found.length; i++) rows.push(found[i]);
+  }
   const daysBySite = {};
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];

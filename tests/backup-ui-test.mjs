@@ -98,6 +98,7 @@ runInNewContext(route, {
   redirect: (path) => new Response(null, { status: 303, headers: { location: path } }),
   incrementCounter: () => { databaseErrors++; },
   recordBackup: () => {},
+  shared: (env) => env.DB, store: (env) => env.DB, DEFAULT_ORG: 1,
 });
 async function post(role, token, html) {
   const req = new Request("https://risulta.example/api/backup", { method: "POST", headers: {

@@ -3,9 +3,8 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cachedAnalytics } from '../src/analytics-cache.js';
-import { d1, breakBatch } from './d1.mjs';
-import { migrateSchema } from '../src/migrations.ts';
+import { cachedAnalytics, forgetSiteCache } from '../src/analytics-cache.js';
+import { d1, breakBatch, migrateAll } from './d1.mjs';
 
 const root = mkdtempSync(join(tmpdir(),'risulta-cache-'));
 const path = join(root,'data.sqlite');
@@ -14,10 +13,10 @@ let sqlite=new Database(path);let db=adapter(sqlite);
 try {
   sqlite.exec("CREATE TABLE sites(id INTEGER PRIMARY KEY,name TEXT,domain TEXT,public_key TEXT,created_at INTEGER);CREATE TABLE events(id INTEGER PRIMARY KEY,site_id INTEGER,ts INTEGER,name TEXT,path TEXT,visitor TEXT);CREATE TABLE goals(id INTEGER PRIMARY KEY,site_id INTEGER,name TEXT,event_name TEXT,path TEXT);CREATE TABLE funnels(id INTEGER PRIMARY KEY,site_id INTEGER,name TEXT);CREATE TABLE funnel_steps(funnel_id INTEGER,position INTEGER,goal_id INTEGER);INSERT INTO sites VALUES(1,'One','one.test','one',0),(2,'Two','two.test','two',0);");
   const restore=breakBatch(db,(sqls)=>sqls.some((sql)=>sql.includes('analytics_query_cache')));
-  await assert.rejects(() => migrateSchema(db));
-  assert.equal(sqlite.query('SELECT max(version) AS n FROM schema_migrations').get().n,3);
+  await assert.rejects(() => migrateAll(db));
+  assert.equal(sqlite.query('SELECT max(version) AS n FROM schema_migrations WHERE version<6').get().n,3);
   assert.equal(sqlite.query("SELECT count(*) AS n FROM sqlite_master WHERE name='analytics_query_cache'").get().n,0);
-  restore();await migrateSchema(db);await migrateSchema(db);
+  restore();await migrateAll(db);await migrateAll(db);
   const range={since:86400,until:172800};const now=260000;let reads=0;
   const read=()=>{reads++;return {n:sqlite.query('SELECT count(*) AS n FROM events WHERE site_id=1 AND ts>=86400 AND ts<172800').get().n};};
   const get=async (clock=now,fresh=false,input=null)=>await cachedAnalytics(db,1,'stats',range,input,clock,fresh,read);
@@ -44,6 +43,6 @@ try {
   assert.equal(sqlite.query('SELECT count(*) AS n FROM analytics_query_cache').get().n,128);
   await cachedAnalytics(db,1,'large',range,null,now,false,()=>({text:'x'.repeat(262145)}));
   assert.equal(sqlite.query("SELECT count(*) AS n FROM analytics_query_cache WHERE query_key LIKE '%large%'").get().n,0);
-  const beforeDelete=reads;await live(now+6);sqlite.exec('DELETE FROM sites WHERE id=1');await live(now+6);assert.equal(reads,beforeDelete+1,'deletion invalidates in-memory results too');assert.equal(sqlite.query('SELECT count(*) AS n FROM analytics_query_cache').get().n,0);
+  const beforeDelete=reads;await live(now+6);await forgetSiteCache(db,1);await live(now+6);assert.equal(reads,beforeDelete+1,'deletion invalidates in-memory results too');assert.equal(sqlite.query('SELECT count(*) AS n FROM analytics_query_cache').get().n,0);
   console.log('analytics cache OK (migration retry, restart, external writes, day/site moves, config, TTL, bypass and bounds)');
 } finally { sqlite.close();rmSync(root,{recursive:true,force:true}); }

@@ -3,9 +3,8 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { d1, breakBatch } from './d1.mjs';
+import { d1, breakBatch, migrateAll } from './d1.mjs';
 import { runRollups } from '../src/maintenance.js';
-import { migrateSchema } from '../src/migrations.ts';
 import { ROLLUP_SCHEMA, rollupBoundary } from '../src/rollups.ts';
 import { siteStats, dashboardGoals, siteGoals, dashboardTraffic, dashboardSummary, siteAnalytics, siteSummary, dashboardReport, siteReport } from '../src/store.js';
 
@@ -18,23 +17,23 @@ const legacy = "CREATE TABLE sites(id INTEGER PRIMARY KEY,name TEXT,domain TEXT 
 const failure = new Database(':memory:'); failure.exec(legacy);
 const failingDb = adapter(failure);
 const restoreFailing = breakBatch(failingDb, (sqls) => sqls.some((sql) => sql.includes('analytics_rollup_days')));
-await assert.rejects(() => migrateSchema(failingDb));
-assert.equal(failure.query('SELECT max(version) AS n FROM schema_migrations').get().n, 1);
+await assert.rejects(() => migrateAll(failingDb));
+assert.equal(failure.query('SELECT max(version) AS n FROM schema_migrations WHERE version<6').get().n, 1);
 assert.equal(failure.query("SELECT count(*) AS n FROM sqlite_master WHERE name='analytics_rollup_days'").get().n, 0);
-restoreFailing(); await migrateSchema(failingDb); await migrateSchema(failingDb);
+restoreFailing(); await migrateAll(failingDb); await migrateAll(failingDb);
 assert.equal(failure.query('SELECT count(*) AS n FROM schema_migrations').get().n, 7);
 failure.exec("INSERT INTO schema_migrations VALUES(8,'future',0)");
-await assert.rejects(() => migrateSchema(failingDb), /newer Risulta/);
+await assert.rejects(() => migrateAll(failingDb), /newer Risulta/);
 failure.close();
 // A schema-4 database keeps its events when the covering-index upgrade retries.
 const indexUpgrade = new Database(':memory:'); indexUpgrade.exec(legacy);
-const indexDb = adapter(indexUpgrade); await migrateSchema(indexDb);
+const indexDb = adapter(indexUpgrade); await migrateAll(indexDb);
 indexUpgrade.exec("DROP INDEX idx_events_site_visitor_ts_funnels; DELETE FROM schema_migrations WHERE version>=5; INSERT INTO events(id,site_id,ts,name,path,visitor) VALUES(1,1,10,'pageview','/','a');");
 const restoreIndex = breakBatch(indexDb, (sqls) => sqls.some((sql) => sql.includes('idx_events_site_visitor_ts_funnels')));
-await assert.rejects(() => migrateSchema(indexDb));
-assert.equal(indexUpgrade.query('SELECT max(version) AS n FROM schema_migrations').get().n,4);
+await assert.rejects(() => migrateAll(indexDb));
+assert.equal(indexUpgrade.query('SELECT max(version) AS n FROM schema_migrations WHERE version<6').get().n,4);
 assert.equal(indexUpgrade.query("SELECT count(*) AS n FROM sqlite_master WHERE name='idx_events_site_visitor_ts_funnels'").get().n,0);
-restoreIndex(); await migrateSchema(indexDb); await migrateSchema(indexDb);
+restoreIndex(); await migrateAll(indexDb); await migrateAll(indexDb);
 assert.equal(indexUpgrade.query('SELECT count(*) AS n FROM events').get().n,1);
 assert.equal(indexUpgrade.query('SELECT max(version) AS n FROM schema_migrations').get().n,7);
 indexUpgrade.close();
@@ -43,10 +42,10 @@ const upgrade = new Database(':memory:'); upgrade.exec(legacy + "INSERT INTO sit
 const upgradeDb = adapter(upgrade);
 upgrade.exec("ALTER TABLE sites ADD COLUMN slug TEXT;CREATE UNIQUE INDEX idx_sites_slug ON sites(slug);" + ROLLUP_SCHEMA + "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT,applied_at INTEGER);INSERT INTO schema_migrations VALUES(1,'slugs',0),(2,'daily',0);INSERT INTO analytics_rollup_days VALUES(1,86400,0);");
 const restoreUpgrade = breakBatch(upgradeDb, (sqls) => sqls.some((sql) => sql.includes('analytics_rollup_stats_days')));
-await assert.rejects(() => migrateSchema(upgradeDb));
-assert.equal(upgrade.query('SELECT max(version) AS n FROM schema_migrations').get().n, 2);
+await assert.rejects(() => migrateAll(upgradeDb));
+assert.equal(upgrade.query('SELECT max(version) AS n FROM schema_migrations WHERE version<6').get().n, 2);
 assert.equal(upgrade.query("SELECT count(*) AS n FROM sqlite_master WHERE name='analytics_rollup_stats_days'").get().n, 0);
-restoreUpgrade(); await migrateSchema(upgradeDb); await migrateSchema(upgradeDb);
+restoreUpgrade(); await migrateAll(upgradeDb); await migrateAll(upgradeDb);
 assert.equal(await rollupBoundary(upgradeDb,1,86400,172800,172800),172800);
 assert.equal(await rollupBoundary(upgradeDb,1,86400,172800,172800,true),0);
 upgrade.close();
@@ -57,7 +56,7 @@ mkdirSync(join(root, 'd1'));
 const sqlite = new Database(join(root, 'd1/DB.sqlite'));
 const db = adapter(sqlite);
 const day = 86400; const start = 10 * day; const today = start + 3 * day; const now = today + 1000;
-async function worker(maxDays = 100) { return await runRollups(db, now, maxDays); }
+async function worker(maxDays = 100) { return await runRollups(db, db, now, maxDays); }
 
 function normalized(result) {
   const fields = ['paths', 'referrers', 'mediums', 'campaigns'];
@@ -90,7 +89,7 @@ try {
   sqlite.exec('UPDATE events SET value=10 WHERE id=1;UPDATE events SET value=-4 WHERE id=3;UPDATE events SET value=1.5 WHERE id=8;');
   sqlite.exec("INSERT INTO goals VALUES(1,1,'Views','pageview',''),(2,1,'Home','pageview','/home'),(3,1,'Signup','signup',''),(4,1,'Thanks','signup','/thanks'),(5,1,'Missing','purchase','/missing'),(6,2,'Other','pageview','');INSERT INTO funnels VALUES(1,1,'Signup funnel');INSERT INTO funnel_steps VALUES(1,0,1),(1,1,3);");
   const before = sqlite.query('SELECT * FROM events ORDER BY id').all();
-  await migrateSchema(db); await migrateSchema(db);
+  await migrateAll(db); await migrateAll(db);
   assert.deepEqual(sqlite.query('SELECT * FROM events ORDER BY id').all(), before);
   assert.equal(sqlite.query('SELECT slug FROM sites WHERE id=1').get().slug, 'shop');
   const range = { since: start, until: now + 1, days: 7, filters: {} };

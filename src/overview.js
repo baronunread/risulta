@@ -78,14 +78,14 @@ export async function reportAnalytics(db, site, range, input, cohort, now) {
   now = now === undefined ? Date.now() : now;
   const seconds = Math.floor(now / 1000);
   return await cachedAnalytics(db, site.id, "report", range, [input,cohort], seconds, false,
-    () => dashboardReport(db, site, range, input, cohort, seconds));
+    async () => await dashboardReport(db, site, range, input, cohort, seconds));
 }
 
 export async function journeyAnalytics(db, site, range, input, now) {
   now = now === undefined ? Date.now() : now;
   const entry = snapshot(db, site, range, now);
   const key = JSON.stringify(["journeys", input.visitor, input.limit, input.offset]);
-  return await cachedReport(entry, key, now, () => siteJourneys(
+  return await cachedReport(entry, key, now, async () => await siteJourneys(
     overviewScope(db, site.id, range.since, range.until, range.filters),
     site.id, range.since, range.until, input,
   ));

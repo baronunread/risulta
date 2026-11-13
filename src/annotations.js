@@ -1,6 +1,6 @@
 import { dayStringFromMs } from "./util.js";
 
-export const ANNOTATION_SCHEMA = "CREATE TABLE IF NOT EXISTS annotations (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE, ts INTEGER NOT NULL, text TEXT NOT NULL CHECK(length(text) BETWEEN 1 AND 240));CREATE INDEX IF NOT EXISTS idx_annotations_site_ts ON annotations(site_id,ts,id);";
+export const ANNOTATION_SCHEMA = "CREATE TABLE IF NOT EXISTS annotations (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL, ts INTEGER NOT NULL, text TEXT NOT NULL CHECK(length(text) BETWEEN 1 AND 240));CREATE INDEX IF NOT EXISTS idx_annotations_site_ts ON annotations(site_id,ts,id);";
 
 export function annotationInput(body) {
   const day = String(body.day || "");

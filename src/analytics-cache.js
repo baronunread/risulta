@@ -7,8 +7,7 @@ export const ANALYTICS_CACHE_SCHEMA =
   "CREATE TABLE analytics_query_cache(site_id INTEGER NOT NULL,query_key TEXT NOT NULL,revision TEXT NOT NULL,created_at INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(site_id,query_key)) WITHOUT ROWID;" +
   "CREATE TABLE analytics_cache_days(site_id INTEGER NOT NULL,day INTEGER NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(site_id,day)) WITHOUT ROWID;" +
   "CREATE TABLE analytics_cache_config(site_id INTEGER PRIMARY KEY,revision INTEGER NOT NULL);" +
-  eventTriggers() + configTriggers() +
-  "CREATE TRIGGER analytics_cache_site_delete AFTER DELETE ON sites BEGIN DELETE FROM analytics_query_cache WHERE site_id=OLD.id;DELETE FROM analytics_cache_days WHERE site_id=OLD.id;INSERT INTO analytics_cache_config VALUES(OLD.id,1) ON CONFLICT(site_id) DO UPDATE SET revision=revision+1;END;";
+  eventTriggers() + configTriggers();
 
 function eventTriggers() {
   let sql = "";
@@ -68,4 +67,15 @@ export async function cachedAnalytics(db, siteId, kind, range, input, now, fresh
     snapshots.push({db,siteId,key,revision,at:now,payload});
   }
   return value;
+}
+
+// A site's cached results go when the site does (the registry lives in the
+// shared store, so no trigger can see the deletion).
+export async function forgetSiteCache(db, siteId) {
+  await db.batch([
+    db.prepare("DELETE FROM analytics_query_cache WHERE site_id=?").bind(siteId),
+    db.prepare("DELETE FROM analytics_cache_days WHERE site_id=?").bind(siteId),
+    db.prepare("INSERT INTO analytics_cache_config VALUES(?,1) ON CONFLICT(site_id) DO UPDATE SET revision=revision+1").bind(siteId),
+  ]);
+  snapshots.splice(0, snapshots.length, ...snapshots.filter((row) => row.siteId !== siteId));
 }
